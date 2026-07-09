@@ -26,6 +26,7 @@ struct UsagePopoverView: View {
         }
         .frame(width: 414)
         .frame(height: 720)
+        .preferredColorScheme(settings.theme.preferredColorScheme)
         .background(
             LiquidGlassBackdrop(
                 health: QuotaHealthLevel.from(shortWindow: store.snapshot.shortWindow, isLoggedIn: store.isLoggedIn),
@@ -66,6 +67,7 @@ struct DetachedUsageWindowView: View {
             alignment: .topLeading
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .preferredColorScheme(settings.theme.preferredColorScheme)
         .background(
             LiquidGlassBackdrop(
                 health: QuotaHealthLevel.from(shortWindow: store.snapshot.shortWindow, isLoggedIn: store.isLoggedIn),
@@ -475,26 +477,32 @@ struct CodexChromeBackground: View {
         }()
         let edgeSheen: Double = isDark ? 0.08 : 0.26
 
-        ZStack {
-            Rectangle()
-                .fill(Color.codexChrome)
+        Group {
+            if isDark {
+                Color.codexChrome
+            } else {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.codexChrome)
 
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(topSheen),
-                    Color.codexChrome,
-                    Color.codexChrome
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(topSheen),
+                            Color.codexChrome,
+                            Color.codexChrome
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
 
-            if intensity == .header {
-                LinearGradient(
-                    colors: [Color.white.opacity(edgeSheen), Color.white.opacity(0)],
-                    startPoint: .top,
-                    endPoint: UnitPoint(x: 0.5, y: 0.34)
-                )
+                    if intensity == .header {
+                        LinearGradient(
+                            colors: [Color.white.opacity(edgeSheen), Color.white.opacity(0)],
+                            startPoint: .top,
+                            endPoint: UnitPoint(x: 0.5, y: 0.34)
+                        )
+                    }
+                }
             }
         }
     }
@@ -684,8 +692,8 @@ struct IconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
         let tint = configuration.isPressed
-            ? (isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
-            : Color.white.opacity(isDark ? 0.06 : 0.08)
+            ? (isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+            : (isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08))
 
         configuration.label
             .foregroundStyle(Color.codexInk)
@@ -693,7 +701,7 @@ struct IconButtonStyle: ButtonStyle {
             .liquidGlassSurface(
                 cornerRadius: 9,
                 tint: tint,
-                shadowOpacity: isDark ? 0.22 : 0.035
+                shadowOpacity: isDark ? 0 : 0.035
             )
     }
 }
@@ -731,8 +739,8 @@ struct SecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
         let tint = configuration.isPressed
-            ? (isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
-            : Color.white.opacity(isDark ? 0.06 : 0.08)
+            ? (isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+            : (isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08))
 
         configuration.label
             .font(.system(size: 13, weight: .medium))
@@ -741,7 +749,7 @@ struct SecondaryButtonStyle: ButtonStyle {
             .liquidGlassSurface(
                 cornerRadius: 9,
                 tint: tint,
-                shadowOpacity: isDark ? 0.22 : 0.035
+                shadowOpacity: isDark ? 0 : 0.035
             )
     }
 }
@@ -754,36 +762,42 @@ struct LiquidGlassBackdrop: View {
     var body: some View {
         let isDark = colorScheme == .dark
 
-        ZStack {
-            LinearGradient(
-                colors: [Color.codexSurface, Color.codexBackground],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+        Group {
+            if isDark {
+                Color.codexBackground
+            } else {
+                ZStack {
+                    LinearGradient(
+                        colors: [Color.codexSurface, Color.codexBackground],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
 
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(isDark ? 0.06 : 0.32),
-                    Color.white.opacity(0.0)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            if topChromeHeight > 0 {
-                VStack(spacing: 0) {
                     LinearGradient(
                         colors: [
-                            Color.codexPopoverBeak,
-                            Color.codexSurface,
-                            Color.codexSurface.opacity(0.0)
+                            Color.white.opacity(0.32),
+                            Color.white.opacity(0.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .frame(height: topChromeHeight)
 
-                    Spacer(minLength: 0)
+                    if topChromeHeight > 0 {
+                        VStack(spacing: 0) {
+                            LinearGradient(
+                                colors: [
+                                    Color.codexPopoverBeak,
+                                    Color.codexSurface,
+                                    Color.codexSurface.opacity(0.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: topChromeHeight)
+
+                            Spacer(minLength: 0)
+                        }
+                    }
                 }
             }
         }
@@ -798,47 +812,59 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let isDark = colorScheme == .dark
-        let sheenTop = Color.white.opacity(isDark ? 0.10 : 0.32)
-        let sheenBottom = Color.white.opacity(isDark ? 0.02 : 0.02)
-        let edgeHighlight = Color.white.opacity(isDark ? 0.22 : 0.70)
-        let shadowColor = isDark
-            ? Color.black.opacity(min(shadowOpacity * 2.4, 0.55))
-            : Color.codexInk.opacity(shadowOpacity)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-        content
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.codexCard)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [sheenTop, tint, sheenBottom],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
+        Group {
+            if isDark {
+                content
+                    .background {
+                        shape.fill(Color.codexCard)
                     }
+                    .clipShape(shape)
+                    .overlay {
+                        shape.stroke(Color.codexLine.opacity(0.72), lineWidth: 0.7)
+                    }
+            } else {
+                let sheenTop = Color.white.opacity(0.32)
+                let sheenBottom = Color.white.opacity(0.02)
+                let edgeHighlight = Color.white.opacity(0.70)
+                let shadowColor = Color.codexInk.opacity(shadowOpacity)
+
+                content
+                    .background {
+                        shape
+                            .fill(Color.codexCard)
+                            .overlay {
+                                shape
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [sheenTop, tint, sheenBottom],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            }
+                    }
+                    .clipShape(shape)
+                    .overlay {
+                        shape.stroke(Color.codexLine, lineWidth: 0.7)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        shape
+                            .stroke(
+                                LinearGradient(
+                                    colors: [edgeHighlight, Color.white.opacity(0.0)],
+                                    startPoint: .topLeading,
+                                    endPoint: .center
+                                ),
+                                lineWidth: 0.8
+                            )
+                            .padding(1)
+                            .allowsHitTesting(false)
+                    }
+                    .shadow(color: shadowColor, radius: 10, x: 0, y: 3)
             }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.codexLine, lineWidth: 0.7)
-            }
-            .overlay(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [edgeHighlight, Color.white.opacity(0.0)],
-                            startPoint: .topLeading,
-                            endPoint: .center
-                        ),
-                        lineWidth: 0.8
-                    )
-                    .padding(1)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: shadowColor, radius: isDark ? 12 : 10, x: 0, y: isDark ? 4 : 3)
+        }
     }
 }
 
@@ -879,27 +905,27 @@ extension Color {
 
     static let codexBackground = codexDynamic(
         light: (0.957, 0.957, 0.957),
-        dark: (0.118, 0.118, 0.128)
+        dark: (0.118, 0.118, 0.122)
     )
     static let codexSurface = codexDynamic(
         light: (0.957, 0.957, 0.957),
-        dark: (0.130, 0.130, 0.140)
+        dark: (0.118, 0.118, 0.122)
     )
     static let codexChrome = codexDynamic(
         light: (0.982, 0.982, 0.980),
-        dark: (0.165, 0.165, 0.175)
+        dark: (0.133, 0.133, 0.138)
     )
     static let codexCard = codexDynamic(
         light: (1.000, 1.000, 0.998),
-        dark: (0.200, 0.200, 0.215)
+        dark: (0.165, 0.165, 0.172)
     )
     static let codexMist = codexDynamic(
         light: (0.948, 0.954, 0.961),
-        dark: (0.150, 0.155, 0.170)
+        dark: (0.133, 0.133, 0.138)
     )
     static let codexPopoverBeak = codexDynamic(
         light: (0.930, 0.930, 0.930),
-        dark: (0.145, 0.145, 0.155)
+        dark: (0.118, 0.118, 0.122)
     )
     static let codexInk = codexDynamic(
         light: (0.142, 0.161, 0.184),

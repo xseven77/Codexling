@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onAutoRefreshIntervalChanged = { [weak self] _ in
             self?.startAutoRefreshTimer()
         }
+        settingsStore.onThemeChanged = { [weak self] _ in
+            self?.statusController?.refreshThemeAppearance()
+            self?.windowController?.refreshThemeAppearance()
+        }
 
         let actions = UsageActions(
             refresh: { [weak self] in

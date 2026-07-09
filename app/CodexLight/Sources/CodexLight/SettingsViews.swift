@@ -154,26 +154,23 @@ struct SettingsView: View {
 
     private var themeSection: some View {
         SettingsInlineRow(title: "主题", subtitle: "跟随系统，或固定浅色 / 深色") {
-            SettingsMenuPicker(selection: $settings.theme) {
-                ForEach(AppThemePreference.allCases) { option in
-                    Label(option.title, systemImage: option.symbolName)
-                        .tag(option)
-                }
-            }
+            SettingsMenuPicker(
+                selection: $settings.theme,
+                options: AppThemePreference.allCases,
+                title: \.title,
+                symbol: \.symbolName
+            )
         }
     }
 
     private var refreshSection: some View {
         SettingsInlineRow(title: "自动刷新", subtitle: "登录后按设定间隔自动拉取额度") {
-            SettingsMenuPicker(selection: $settings.autoRefreshInterval) {
-                ForEach(AutoRefreshInterval.allCases) { option in
-                    Label(
-                        option.title,
-                        systemImage: option == .off ? "pause.circle" : "clock"
-                    )
-                    .tag(option)
-                }
-            }
+            SettingsMenuPicker(
+                selection: $settings.autoRefreshInterval,
+                options: AutoRefreshInterval.allCases,
+                title: \.title,
+                symbol: { $0 == .off ? "pause.circle" : "clock" }
+            )
         }
     }
 }
@@ -224,17 +221,41 @@ private struct SettingsInlineRow<Content: View>: View {
     }
 }
 
-private struct SettingsMenuPicker<SelectionValue: Hashable, Content: View>: View {
-    @Binding var selection: SelectionValue
-    @ViewBuilder let content: Content
+private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
+    @Binding var selection: Option
+    let options: [Option]
+    let title: (Option) -> String
+    let symbol: (Option) -> String
 
     var body: some View {
-        Picker("", selection: $selection) {
-            content
+        Menu {
+            ForEach(options) { option in
+                Button {
+                    selection = option
+                } label: {
+                    Label {
+                        Text(title(option))
+                    } icon: {
+                        if selection == option {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Label(title(selection), systemImage: symbol(selection))
+                    .labelStyle(.titleOnly)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .liquidGlassSurface(cornerRadius: 8, tint: Color.codexGlassTint, shadowOpacity: 0.03)
         }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .font(.system(size: 13, weight: .medium))
+        .menuStyle(.borderlessButton)
         .fixedSize(horizontal: true, vertical: false)
     }
 }

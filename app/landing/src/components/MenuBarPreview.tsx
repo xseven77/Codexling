@@ -74,30 +74,30 @@ export function MenuBarPreview() {
       aria-hidden
     >
       {/* macOS menu bar */}
-      <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-4 py-2 backdrop-blur-xl">
-        <div className="flex items-center justify-between text-[11px] text-[var(--preview-menubar-fg)]">
-          <div className="flex gap-3">
-            <span></span>
-            <span>Finder</span>
-            <span>文件</span>
-            <span>编辑</span>
+      <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-3 py-2 backdrop-blur-xl sm:px-4">
+        <div className="flex items-center justify-between gap-2 text-[10px] text-[var(--preview-menubar-fg)] sm:text-[11px]">
+          <div className="flex min-w-0 shrink gap-2 sm:gap-3">
+            <span className="shrink-0"></span>
+            <span className="hidden min-[380px]:inline">Finder</span>
+            <span className="hidden min-[420px]:inline">文件</span>
+            <span className="hidden min-[480px]:inline">编辑</span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--preview-menubar-pill)] px-2 py-0.5 font-medium text-[var(--preview-menubar-pill-fg)]">
+          <div className="flex min-w-0 items-center justify-end gap-2 sm:gap-3">
+            <span className="inline-flex max-w-[58vw] items-center gap-1 truncate rounded-md bg-[var(--preview-menubar-pill)] px-1.5 py-0.5 font-medium text-[var(--preview-menubar-pill-fg)] sm:max-w-none sm:px-2">
               <span
                 className="h-2 w-2 shrink-0 rounded-full bg-[var(--preview-green)] shadow-[0_0_6px_rgba(40,192,78,0.55)]"
                 aria-hidden
               />
-              Codex 5h 77% · 周 57%
+              <span className="truncate">Codex 5h 77% · 周 57%</span>
             </span>
-            <span>Wed 17:57</span>
+            <span className="hidden shrink-0 sm:inline">Wed 17:57</span>
           </div>
         </div>
       </div>
 
       {/* Desktop + popover */}
       <div
-        className="relative p-5 sm:p-6"
+        className="relative p-3 sm:p-6"
         style={{
           background:
             "linear-gradient(to bottom right, var(--preview-desktop), var(--preview-bg) 45%, var(--preview-desktop-end))",
@@ -157,9 +157,9 @@ export function MenuBarPreview() {
           {/* Body */}
           <div className="space-y-3 px-4 py-3">
             <GlassCard>
-              <div className="flex items-center gap-3.5">
-                <div className="w-[118px] shrink-0">
-                  <div className="text-[40px] font-bold leading-none tabular-nums text-[var(--preview-green)]">
+              <div className="flex flex-col gap-3.5 min-[400px]:flex-row min-[400px]:items-center">
+                <div className="shrink-0 min-[400px]:w-[118px]">
+                  <div className="text-[36px] font-bold leading-none tabular-nums text-[var(--preview-green)] sm:text-[40px]">
                     77%
                   </div>
                   <div className="mt-1.5 text-xs leading-5 text-[var(--preview-muted)]">
@@ -176,9 +176,9 @@ export function MenuBarPreview() {
             </GlassCard>
 
             <div>
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
                 <span className="text-[13px] font-semibold text-[var(--preview-ink)]">重置券 3 张</span>
-                <span className="text-xs text-[var(--preview-muted)]">按过期时间从近到远</span>
+                <span className="text-[11px] text-[var(--preview-muted)] sm:text-xs">按过期时间从近到远</span>
               </div>
               <div className="space-y-2">
                 <CouponRow expires="2026-07-18 08:08:34" source="available" />
@@ -196,13 +196,15 @@ export function MenuBarPreview() {
             }}
           >
             <div className="space-y-2 text-[13px]">
-              <div className="flex items-baseline justify-between gap-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                 <span className="text-[var(--preview-muted)]">周额度重置</span>
-                <span className="font-medium tabular-nums text-[var(--preview-ink)]">2026-07-14 15:19:37</span>
+                <span className="text-right text-[12px] font-medium tabular-nums text-[var(--preview-ink)] sm:text-[13px]">
+                  2026-07-14 15:19:37
+                </span>
               </div>
-              <div className="flex items-baseline justify-between gap-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                 <span className="text-[var(--preview-muted)]">最近更新</span>
-                <span className="inline-flex items-center gap-1.5 font-medium tabular-nums text-[var(--preview-ink)]">
+                <span className="inline-flex items-center gap-1.5 text-right text-[12px] font-medium tabular-nums text-[var(--preview-ink)] sm:text-[13px]">
                   <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[var(--preview-green)]" fill="currentColor">
                     <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm3.03 4.47-3.56 3.56a.75.75 0 0 1-1.06 0L4.97 8.1a.75.75 0 0 1 1.06-1.06l1.44 1.44 3.03-3.03a.75.75 0 1 1 1.06 1.06Z" />
                   </svg>

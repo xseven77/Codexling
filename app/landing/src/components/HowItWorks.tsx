@@ -26,19 +26,19 @@ const steps = [
 export function HowItWorks() {
   return (
     <section id="how-it-works" className="border-y border-border/70 bg-surface/50" aria-labelledby="how-heading">
-      <div className="mx-auto max-w-6xl px-6 py-24">
+      <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
         <div className="max-w-2xl">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-accent">
             How it works
           </p>
-          <h2 id="how-heading" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+          <h2 id="how-heading" className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl">
             四步完成登录与额度同步
           </h2>
         </div>
 
-        <div className="mt-12 grid gap-6 lg:grid-cols-4">
+        <div className="mt-10 grid gap-4 sm:mt-12 sm:gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {steps.map((item) => (
-            <div key={item.step} className="relative rounded-3xl border border-border p-6">
+            <div key={item.step} className="relative rounded-2xl border border-border p-5 sm:rounded-3xl sm:p-6">
               <div className="text-sm font-mono text-accent">{item.step}</div>
               <h3 className="mt-4 text-lg font-medium">{item.title}</h3>
               <p className="mt-2 text-sm leading-7 text-muted">{item.description}</p>

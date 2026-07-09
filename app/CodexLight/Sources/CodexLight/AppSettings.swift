@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import SwiftUI
+import SwiftUI
 
 enum AppThemePreference: String, CaseIterable, Identifiable {
     case system
@@ -33,6 +34,18 @@ enum AppThemePreference: String, CaseIterable, Identifiable {
             NSAppearance(named: .aqua)
         case .dark:
             NSAppearance(named: .darkAqua)
+        }
+    }
+
+    /// Drives SwiftUI `colorScheme` inside popovers/windows where AppKit appearance alone is not enough.
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            nil
+        case .light:
+            .light
+        case .dark:
+            .dark
         }
     }
 }
@@ -78,6 +91,7 @@ final class AppSettingsStore {
             guard theme != oldValue else { return }
             defaults.set(theme.rawValue, forKey: Keys.theme)
             applyAppearance()
+            onThemeChanged?(theme)
         }
     }
 
@@ -90,6 +104,7 @@ final class AppSettingsStore {
     }
 
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
+    var onThemeChanged: ((AppThemePreference) -> Void)?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -110,6 +125,11 @@ final class AppSettingsStore {
     }
 
     func applyAppearance() {
-        NSApplication.shared.appearance = theme.nsAppearance
+        let appearance = theme.nsAppearance
+        NSApplication.shared.appearance = appearance
+
+        for window in NSApplication.shared.windows {
+            window.appearance = appearance
+        }
     }
 }

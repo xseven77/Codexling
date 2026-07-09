@@ -10,9 +10,11 @@ final class StatusBarController: NSObject {
     private let popover: NSPopover
     private let hostingController: NSHostingController<UsagePopoverView>
     private let store: UsageSnapshotStore
+    private let settings: AppSettingsStore
 
     init(store: UsageSnapshotStore, settings: AppSettingsStore, updater: AppUpdateController, actions: UsageActions) {
         self.store = store
+        self.settings = settings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover = NSPopover()
         hostingController = NSHostingController(
@@ -32,6 +34,10 @@ final class StatusBarController: NSObject {
         statusItem.isVisible = true
         configureStatusButton()
         refreshStatusTitle()
+    }
+
+    func refreshThemeAppearance() {
+        applyPopoverWindowAppearance()
     }
 
     private func configureStatusButton() {
@@ -101,6 +107,7 @@ final class StatusBarController: NSObject {
     private func applyPopoverWindowAppearance() {
         guard let window = popover.contentViewController?.view.window else { return }
 
+        window.appearance = settings.theme.nsAppearance
         window.isOpaque = false
         // Dynamic NSColor follows system appearance; avoid freezing a resolved CGColor on the layer.
         window.backgroundColor = NSColor.codexPopoverChrome
@@ -136,11 +143,11 @@ final class StatusBarController: NSObject {
 extension NSColor {
     static let codexPopoverChrome = NSColor.codexDynamic(
         light: (0.902, 0.906, 0.910, 1),
-        dark: (0.145, 0.145, 0.155, 1)
+        dark: (0.118, 0.118, 0.122, 1)
     )
 
     static let codexWindowBackground = NSColor.codexDynamic(
         light: (0.957, 0.957, 0.957, 1),
-        dark: (0.118, 0.118, 0.128, 1)
+        dark: (0.118, 0.118, 0.122, 1)
     )
 }

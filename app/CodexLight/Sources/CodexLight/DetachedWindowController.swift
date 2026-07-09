@@ -21,6 +21,7 @@ enum DetachedWindowMetrics {
 final class DetachedWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private let hostingController: NSHostingController<DetachedUsageWindowView>
+    private let settings: AppSettingsStore
     private let onClose: (() -> Void)?
 
     init(
@@ -30,6 +31,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         actions: UsageActions,
         onClose: (() -> Void)? = nil
     ) {
+        self.settings = settings
         self.onClose = onClose
         window = NSWindow(
             contentRect: NSRect(
@@ -67,6 +69,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    func refreshThemeAppearance() {
+        applyWindowChrome()
+    }
+
     func windowWillClose(_ notification: Notification) {
         onClose?()
     }
@@ -92,14 +98,13 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.setFrame(frame, display: true)
     }
 
-    private func applyWindowChrome() {
+    private func applyWindowChrome(for theme: AppThemePreference? = nil) {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.backgroundColor = NSColor.codexWindowBackground
-        // Inherit NSApp.appearance from AppSettingsStore (system / light / dark).
-        window.appearance = nil
+        window.appearance = (theme ?? settings.theme).nsAppearance
     }
 
     private func applyContentSizeLimits(to window: NSWindow) {

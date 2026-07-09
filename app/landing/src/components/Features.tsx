@@ -43,24 +43,24 @@ const features = [
 
 export function Features() {
   return (
-    <section id="features" className="mx-auto max-w-6xl px-6 py-24" aria-labelledby="features-heading">
+    <section id="features" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24" aria-labelledby="features-heading">
       <div className="max-w-2xl">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-accent">
           Features
         </p>
-        <h2 id="features-heading" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+        <h2 id="features-heading" className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl">
           为 macOS 原生体验而生
         </h2>
-        <p className="mt-4 text-lg text-muted">
+        <p className="mt-4 text-base text-muted sm:text-lg">
           借鉴 OpenAI 与 Notion 的简洁产品叙事，把复杂额度信息压缩成一眼可读的状态栏体验。
         </p>
       </div>
 
-      <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="mt-10 grid gap-4 sm:mt-12 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {features.map((feature) => (
           <article
             key={feature.title}
-            className="glass group rounded-3xl p-6 transition-transform duration-300 hover:-translate-y-1"
+            className="glass group rounded-2xl p-5 transition-transform duration-300 sm:rounded-3xl sm:p-6 sm:hover:-translate-y-1"
           >
             <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-accent-soft text-lg">
               {feature.icon}
