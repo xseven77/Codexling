@@ -153,32 +153,25 @@ struct SettingsView: View {
     }
 
     private var themeSection: some View {
-        SettingsSection(title: "主题", subtitle: "跟随系统，或固定浅色 / 深色") {
-            VStack(spacing: 8) {
+        SettingsInlineRow(title: "主题", subtitle: "跟随系统，或固定浅色 / 深色") {
+            SettingsMenuPicker(selection: $settings.theme) {
                 ForEach(AppThemePreference.allCases) { option in
-                    SettingsOptionRow(
-                        title: option.title,
-                        systemName: option.symbolName,
-                        isSelected: settings.theme == option
-                    ) {
-                        settings.theme = option
-                    }
+                    Label(option.title, systemImage: option.symbolName)
+                        .tag(option)
                 }
             }
         }
     }
 
     private var refreshSection: some View {
-        SettingsSection(title: "自动刷新", subtitle: "登录后按设定间隔自动拉取额度") {
-            VStack(spacing: 8) {
+        SettingsInlineRow(title: "自动刷新", subtitle: "登录后按设定间隔自动拉取额度") {
+            SettingsMenuPicker(selection: $settings.autoRefreshInterval) {
                 ForEach(AutoRefreshInterval.allCases) { option in
-                    SettingsOptionRow(
-                        title: option.title,
-                        systemName: option == .off ? "pause.circle" : "clock",
-                        isSelected: settings.autoRefreshInterval == option
-                    ) {
-                        settings.autoRefreshInterval = option
-                    }
+                    Label(
+                        option.title,
+                        systemImage: option == .off ? "pause.circle" : "clock"
+                    )
+                    .tag(option)
                 }
             }
         }
@@ -206,41 +199,42 @@ private struct SettingsSection<Content: View>: View {
     }
 }
 
-private struct SettingsOptionRow: View {
+private struct SettingsInlineRow<Content: View>: View {
     let title: String
-    let systemName: String
-    let isSelected: Bool
-    let action: () -> Void
+    let subtitle: String
+    @ViewBuilder let content: Content
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: systemName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.codexMuted)
-                    .frame(width: 18)
-
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.codexInk)
-
-                Spacer(minLength: 8)
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Color.codexPrimary)
-                }
+                    .font(.system(size: 13, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.codexMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 11)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            content
         }
-        .buttonStyle(.plain)
-        .liquidGlassSurface(
-            cornerRadius: 10,
-            tint: isSelected ? Color.codexPrimary.opacity(0.06) : Color.codexGlassTint,
-            shadowOpacity: 0.035
-        )
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.04)
+    }
+}
+
+private struct SettingsMenuPicker<SelectionValue: Hashable, Content: View>: View {
+    @Binding var selection: SelectionValue
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            content
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .font(.system(size: 13, weight: .medium))
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
