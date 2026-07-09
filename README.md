@@ -15,6 +15,15 @@ cd app/CodexLight
 open "dist/Codex Light.app"
 ```
 
+Release packaging and GitHub publishing are handled by the interactive script:
+
+```bash
+cd app/CodexLight
+./release_app.sh
+```
+
+See [发布脚本说明](app/CodexLight/RELEASE.zh-CN.md).
+
 If `swift build` asks for the Apple SDK license, run this once in Terminal:
 
 ```bash

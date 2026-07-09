@@ -1,0 +1,172 @@
+# Codex Light 发布脚本说明
+
+本文档说明如何使用 `release_app.sh` 交互式完成 macOS App 打包和 GitHub Release 发布。
+
+## 脚本位置
+
+```bash
+app/CodexLight/release_app.sh
+```
+
+## 发布顺序
+
+脚本会按下面顺序执行：
+
+1. 检查本机依赖命令。
+2. 检查 GitHub CLI 登录状态。
+3. 如果未登录，启动 `gh auth login` 的交互式网页登录授权。
+4. 授权完成后，检查 Git 工作区是否干净。
+5. 提示输入本次发布版本号。
+6. 提示输入 build number。
+7. 写入 `Resources/Info.plist` 的版本号。
+8. 执行 `package_app.sh`，重新生成 `.app`、`.zip` 和 `.dmg`。
+9. 挂载 DMG，验证其中包含 `Codex Light.app` 和 `Applications` 快捷方式。
+10. 如版本文件有变化，自动提交 `Release <version>`。
+11. 推送当前分支。
+12. 创建并推送 `v<version>` tag。
+13. 创建或更新 GitHub Release。
+14. 上传本次新生成的 DMG 和 ZIP。
+
+注意：脚本一定会先完成授权检查，再询问版本号；输入版本号之后才会开始打包发布流程。
+
+## 使用方法
+
+在仓库根目录运行：
+
+```bash
+cd app/CodexLight
+./release_app.sh
+```
+
+或者从任意目录运行：
+
+```bash
+/Users/qiizo/code/Personal/codex-light/app/CodexLight/release_app.sh
+```
+
+## 前置依赖
+
+脚本需要以下命令：
+
+- `swift`
+- `hdiutil`
+- `codesign`
+- `gh`
+
+其中 `hdiutil` 和 `codesign` 是 macOS 自带命令。
+
+如果缺少 GitHub CLI，先安装：
+
+```bash
+brew install gh
+```
+
+## GitHub 授权
+
+脚本启动后会先执行：
+
+```bash
+gh auth status
+```
+
+如果尚未登录，会自动进入：
+
+```bash
+gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key --web
+```
+
+你只需要按终端提示复制验证码，并在浏览器中完成 GitHub 授权。
+
+授权完成后，脚本才会继续询问版本号。
+
+## 版本号输入
+
+脚本会显示当前 `Info.plist` 中的版本，例如：
+
+```text
+当前版本：0.1.0 (1)
+请输入本次发布版本号，例如 0.1.1（留空使用 0.1.0）：
+```
+
+版本号格式必须类似：
+
+```text
+0.1.1
+1.0.0
+```
+
+build number 必须是整数。默认值会在当前 build number 基础上加 1。
+
+## 打包产物
+
+脚本会重新运行 `package_app.sh`，并生成：
+
+```text
+app/CodexLight/dist/Codex Light-<version>.dmg
+app/CodexLight/dist/Codex Light-<version>.zip
+```
+
+DMG 内容包括：
+
+- `Codex Light.app`
+- `Applications` 快捷方式
+
+## GitHub Release 行为
+
+脚本会使用 tag：
+
+```text
+v<version>
+```
+
+例如版本 `0.1.1` 对应：
+
+```text
+v0.1.1
+```
+
+如果 Release 不存在，脚本会创建新的 GitHub Release。
+
+如果 Release 已存在，脚本会询问是否覆盖上传 DMG/ZIP，并更新 release notes。
+
+## Release Notes
+
+脚本会自动生成 release notes，包含：
+
+- DMG 下载说明
+- ZIP 下载说明
+- SHA-256 校验值
+- ad-hoc 签名说明
+
+## 注意事项
+
+发布前工作区必须是干净的。如果存在未提交改动，脚本会停止。这样可以避免把错误的代码状态打进 release tag。
+
+当前 App 使用 ad-hoc 签名，没有做 Apple notarization。因此首次打开时，macOS 可能需要用户在系统设置中手动允许。
+
+## 常见问题
+
+### 提示 `缺少命令：gh`
+
+安装 GitHub CLI：
+
+```bash
+brew install gh
+```
+
+### GitHub 授权失败
+
+重新运行脚本即可。脚本会在版本输入前再次检查授权状态。
+
+### tag 已存在但不指向当前提交
+
+脚本会停止。这通常说明你正在尝试复用一个已经发布过的版本号，但当前代码已经变化。
+
+解决方式：
+
+1. 使用新的版本号发布。
+2. 或者手动检查 tag 指向，确认后再处理。
+
+### DMG 验证失败
+
+脚本会挂载 DMG 并检查内容。如果失败，说明打包产物不完整，需要先修复 `package_app.sh` 或构建问题。
