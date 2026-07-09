@@ -2,16 +2,27 @@ import SwiftUI
 
 struct UsagePopoverView: View {
     @Bindable var store: UsageSnapshotStore
+    @Bindable var settings: AppSettingsStore
     let actions: UsageActions
+    @State private var showsSettings = false
 
     var body: some View {
-        UsagePanel(
-            snapshot: store.snapshot,
-            isLoggedIn: store.isLoggedIn,
-            actions: actions,
-            layout: .compact,
-            showsDetachedButton: true
-        )
+        Group {
+            if showsSettings {
+                SettingsView(settings: settings, layout: .compact) {
+                    showsSettings = false
+                }
+            } else {
+                UsagePanel(
+                    snapshot: store.snapshot,
+                    isLoggedIn: store.isLoggedIn,
+                    actions: actions,
+                    layout: .compact,
+                    showsDetachedButton: true,
+                    onOpenSettings: { showsSettings = true }
+                )
+            }
+        }
         .frame(width: 414)
         .frame(height: 720)
         .background(
@@ -25,16 +36,27 @@ struct UsagePopoverView: View {
 
 struct DetachedUsageWindowView: View {
     @Bindable var store: UsageSnapshotStore
+    @Bindable var settings: AppSettingsStore
     let actions: UsageActions
+    @State private var showsSettings = false
 
     var body: some View {
-        UsagePanel(
-            snapshot: store.snapshot,
-            isLoggedIn: store.isLoggedIn,
-            actions: actions,
-            layout: .window,
-            showsDetachedButton: false
-        )
+        Group {
+            if showsSettings {
+                SettingsView(settings: settings, layout: .window) {
+                    showsSettings = false
+                }
+            } else {
+                UsagePanel(
+                    snapshot: store.snapshot,
+                    isLoggedIn: store.isLoggedIn,
+                    actions: actions,
+                    layout: .window,
+                    showsDetachedButton: false,
+                    onOpenSettings: { showsSettings = true }
+                )
+            }
+        }
         .frame(
             minWidth: DetachedWindowMetrics.minWidth,
             maxWidth: DetachedWindowMetrics.maxWidth,
@@ -63,6 +85,7 @@ struct UsagePanel: View {
     let actions: UsageActions
     let layout: UsagePanelLayout
     let showsDetachedButton: Bool
+    let onOpenSettings: () -> Void
 
     @State private var showLogoutConfirmation = false
 
@@ -216,12 +239,12 @@ struct UsagePanel: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 6) {
-                IconButton(systemName: "arrow.clockwise", title: "刷新", action: actions.refresh)
                 IconButton(
                     systemName: "person.crop.circle.badge.checkmark",
                     title: "退出登录",
                     action: { showLogoutConfirmation = true }
                 )
+                IconButton(systemName: "gearshape", title: "设置", action: onOpenSettings)
                 if showsDetachedButton {
                     IconButton(systemName: "rectangle.on.rectangle.angled", title: "打开窗口", action: actions.openDetachedWindow)
                 }
@@ -243,6 +266,8 @@ struct UsagePanel: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Codex Light")
                     .font(.system(size: 15, weight: .semibold))
+                    .padding(.leading, accountTitleLeadingPadding)
+                    .offset(y: accountTitleVerticalOffset)
                 Text("连接 OpenAI 账号以查看额度")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
@@ -251,6 +276,7 @@ struct UsagePanel: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 6) {
+                IconButton(systemName: "gearshape", title: "设置", action: onOpenSettings)
                 if showsDetachedButton {
                     IconButton(systemName: "rectangle.on.rectangle.angled", title: "打开窗口", action: actions.openDetachedWindow)
                 }
@@ -268,24 +294,7 @@ struct UsagePanel: View {
     }
 
     private var headerBackground: some View {
-        ZStack {
-            Rectangle()
-                .fill(Color.codexChrome)
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.34),
-                    Color.codexChrome,
-                    Color.codexChrome
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            LinearGradient(
-                colors: [Color.white.opacity(0.26), Color.white.opacity(0)],
-                startPoint: .top,
-                endPoint: UnitPoint(x: 0.5, y: 0.34)
-            )
-        }
+        CodexChromeBackground(intensity: .header)
     }
 
     private var loginBody: some View {
@@ -308,7 +317,7 @@ struct UsagePanel: View {
             }
         .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .liquidGlassSurface(cornerRadius: 10, tint: .white.opacity(0.08), shadowOpacity: 0.04)
+            .liquidGlassSurface(cornerRadius: 10, tint: Color.codexGlassTint, shadowOpacity: 0.04)
 
             if isAuthenticating {
                 HStack(spacing: 8) {
@@ -379,7 +388,7 @@ struct UsagePanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .liquidGlassSurface(cornerRadius: 12, tint: .white.opacity(0.06), shadowOpacity: 0.06)
+        .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.06)
     }
 
     private var coupons: some View {
@@ -439,14 +448,52 @@ struct UsagePanel: View {
     }
 
     private var actionBarBackground: some View {
+        CodexChromeBackground(intensity: .actionBar)
+    }
+}
+
+struct CodexChromeBackground: View {
+    enum Intensity {
+        case header
+        case actionBar
+    }
+
+    let intensity: Intensity
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let isDark = colorScheme == .dark
+        let topSheen: Double = {
+            switch intensity {
+            case .header:
+                isDark ? 0.10 : 0.34
+            case .actionBar:
+                isDark ? 0.08 : 0.24
+            }
+        }()
+        let edgeSheen: Double = isDark ? 0.08 : 0.26
+
         ZStack {
             Rectangle()
                 .fill(Color.codexChrome)
+
             LinearGradient(
-                colors: [Color.white.opacity(0.24), Color.white.opacity(0.0)],
+                colors: [
+                    Color.white.opacity(topSheen),
+                    Color.codexChrome,
+                    Color.codexChrome
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
+
+            if intensity == .header {
+                LinearGradient(
+                    colors: [Color.white.opacity(edgeSheen), Color.white.opacity(0)],
+                    startPoint: .top,
+                    endPoint: UnitPoint(x: 0.5, y: 0.34)
+                )
+            }
         }
     }
 }
@@ -494,6 +541,7 @@ struct QuotaRow: View {
 
 struct CouponRow: View {
     let coupon: ResetCoupon
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 10) {
@@ -513,12 +561,12 @@ struct CouponRow: View {
                 .foregroundStyle(Color.codexPink)
                 .frame(minWidth: 38, minHeight: 30)
                 .padding(.horizontal, 8)
-                .background(Color.codexPink.opacity(0.07))
+                .background(Color.codexPink.opacity(colorScheme == .dark ? 0.16 : 0.07))
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .liquidGlassSurface(cornerRadius: 10, tint: .white.opacity(0.05), shadowOpacity: 0.035)
+        .liquidGlassSurface(cornerRadius: 10, tint: Color.codexGlassTint, shadowOpacity: 0.035)
     }
 }
 
@@ -629,25 +677,35 @@ struct IconButton: View {
 }
 
 struct IconButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeBody(configuration: Configuration) -> some View {
+        let isDark = colorScheme == .dark
+        let tint = configuration.isPressed
+            ? (isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
+            : Color.white.opacity(isDark ? 0.06 : 0.08)
+
         configuration.label
             .foregroundStyle(Color.codexInk)
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .liquidGlassSurface(
                 cornerRadius: 9,
-                tint: configuration.isPressed ? Color.black.opacity(0.04) : Color.white.opacity(0.08),
-                shadowOpacity: 0.035
+                tint: tint,
+                shadowOpacity: isDark ? 0.22 : 0.035
             )
     }
 }
 
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
+        let isDark = colorScheme == .dark
+
         configuration.label
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.codexOnPrimary)
             .frame(height: 36)
             .background(
                 ZStack {
@@ -655,7 +713,10 @@ struct PrimaryButtonStyle: ButtonStyle {
                         .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.86) : Color.codexPrimary)
                         .opacity(isEnabled ? 1 : 0.45)
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+                        .stroke(
+                            isDark ? Color.black.opacity(0.18) : Color.white.opacity(0.16),
+                            lineWidth: 0.8
+                        )
                 }
             )
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -663,15 +724,22 @@ struct PrimaryButtonStyle: ButtonStyle {
 }
 
 struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeBody(configuration: Configuration) -> some View {
+        let isDark = colorScheme == .dark
+        let tint = configuration.isPressed
+            ? (isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
+            : Color.white.opacity(isDark ? 0.06 : 0.08)
+
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(Color.codexInk)
             .frame(height: 36)
             .liquidGlassSurface(
                 cornerRadius: 9,
-                tint: configuration.isPressed ? Color.black.opacity(0.04) : Color.white.opacity(0.08),
-                shadowOpacity: 0.035
+                tint: tint,
+                shadowOpacity: isDark ? 0.22 : 0.035
             )
     }
 }
@@ -679,8 +747,11 @@ struct SecondaryButtonStyle: ButtonStyle {
 struct LiquidGlassBackdrop: View {
     let health: QuotaHealthLevel
     var topChromeHeight: CGFloat = 0
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let isDark = colorScheme == .dark
+
         ZStack {
             LinearGradient(
                 colors: [Color.codexSurface, Color.codexBackground],
@@ -689,7 +760,10 @@ struct LiquidGlassBackdrop: View {
             )
 
             LinearGradient(
-                colors: [Color.white.opacity(0.32), Color.white.opacity(0.0)],
+                colors: [
+                    Color.white.opacity(isDark ? 0.06 : 0.32),
+                    Color.white.opacity(0.0)
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -718,8 +792,17 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
     let cornerRadius: CGFloat
     let tint: Color
     let shadowOpacity: Double
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
+        let isDark = colorScheme == .dark
+        let sheenTop = Color.white.opacity(isDark ? 0.10 : 0.32)
+        let sheenBottom = Color.white.opacity(isDark ? 0.02 : 0.02)
+        let edgeHighlight = Color.white.opacity(isDark ? 0.22 : 0.70)
+        let shadowColor = isDark
+            ? Color.black.opacity(min(shadowOpacity * 2.4, 0.55))
+            : Color.codexInk.opacity(shadowOpacity)
+
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -728,11 +811,7 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .fill(
                                 LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.32),
-                                        tint,
-                                        Color.white.opacity(0.02)
-                                    ],
+                                    colors: [sheenTop, tint, sheenBottom],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
@@ -748,7 +827,7 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.70), Color.white.opacity(0.0)],
+                            colors: [edgeHighlight, Color.white.opacity(0.0)],
                             startPoint: .topLeading,
                             endPoint: .center
                         ),
@@ -757,7 +836,7 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
                     .padding(1)
                     .allowsHitTesting(false)
             }
-            .shadow(color: Color.codexInk.opacity(shadowOpacity), radius: 10, x: 0, y: 3)
+            .shadow(color: shadowColor, radius: isDark ? 12 : 10, x: 0, y: isDark ? 4 : 3)
     }
 }
 
@@ -767,18 +846,87 @@ extension View {
     }
 }
 
+extension NSColor {
+    static func codexDynamic(
+        light: (CGFloat, CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat, CGFloat)
+    ) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let components = isDark ? dark : light
+            return NSColor(
+                red: components.0,
+                green: components.1,
+                blue: components.2,
+                alpha: components.3
+            )
+        }
+    }
+}
+
 extension Color {
-    static let codexBackground = Color(red: 0.957, green: 0.957, blue: 0.957)
-    static let codexSurface = Color(red: 0.957, green: 0.957, blue: 0.957)
-    static let codexChrome = Color(red: 0.982, green: 0.982, blue: 0.980)
-    static let codexCard = Color(red: 1.000, green: 1.000, blue: 0.998)
-    static let codexMist = Color(red: 0.948, green: 0.954, blue: 0.961)
-    static let codexPopoverBeak = Color(red: 0.930, green: 0.930, blue: 0.930)
-    static let codexInk = Color(red: 0.142, green: 0.161, blue: 0.184)
-    static let codexMuted = Color(red: 0.357, green: 0.397, blue: 0.447)
-    static let codexLine = Color(red: 0.819, green: 0.851, blue: 0.890)
-    static let codexTrack = Color(red: 0.918, green: 0.925, blue: 0.933)
-    static let codexPrimary = Color(red: 0.096, green: 0.105, blue: 0.118)
+    private static func codexDynamic(
+        light: (CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(nsColor: .codexDynamic(
+            light: (light.0, light.1, light.2, 1),
+            dark: (dark.0, dark.1, dark.2, 1)
+        ))
+    }
+
+    static let codexBackground = codexDynamic(
+        light: (0.957, 0.957, 0.957),
+        dark: (0.118, 0.118, 0.128)
+    )
+    static let codexSurface = codexDynamic(
+        light: (0.957, 0.957, 0.957),
+        dark: (0.130, 0.130, 0.140)
+    )
+    static let codexChrome = codexDynamic(
+        light: (0.982, 0.982, 0.980),
+        dark: (0.165, 0.165, 0.175)
+    )
+    static let codexCard = codexDynamic(
+        light: (1.000, 1.000, 0.998),
+        dark: (0.200, 0.200, 0.215)
+    )
+    static let codexMist = codexDynamic(
+        light: (0.948, 0.954, 0.961),
+        dark: (0.150, 0.155, 0.170)
+    )
+    static let codexPopoverBeak = codexDynamic(
+        light: (0.930, 0.930, 0.930),
+        dark: (0.145, 0.145, 0.155)
+    )
+    static let codexInk = codexDynamic(
+        light: (0.142, 0.161, 0.184),
+        dark: (0.925, 0.930, 0.940)
+    )
+    static let codexMuted = codexDynamic(
+        light: (0.357, 0.397, 0.447),
+        dark: (0.620, 0.645, 0.680)
+    )
+    static let codexLine = codexDynamic(
+        light: (0.819, 0.851, 0.890),
+        dark: (0.300, 0.310, 0.340)
+    )
+    static let codexTrack = codexDynamic(
+        light: (0.918, 0.925, 0.933),
+        dark: (0.250, 0.255, 0.270)
+    )
+    static let codexPrimary = codexDynamic(
+        light: (0.096, 0.105, 0.118),
+        dark: (0.920, 0.925, 0.935)
+    )
+    static let codexOnPrimary = codexDynamic(
+        light: (1.000, 1.000, 1.000),
+        dark: (0.096, 0.105, 0.118)
+    )
+    static let codexGlassTint = Color(nsColor: .codexDynamic(
+        light: (1.000, 1.000, 1.000, 0.08),
+        dark: (1.000, 1.000, 1.000, 0.05)
+    ))
     static let codexGreen = Color(red: 0.157, green: 0.753, blue: 0.306)
     static let codexBlue = Color(red: 0.000, green: 0.478, blue: 1.000)
     static let codexRed = Color(red: 1.000, green: 0.373, blue: 0.373)

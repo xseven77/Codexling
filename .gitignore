@@ -33,3 +33,6 @@ app/landing/.next/
 app/landing/out/
 app/landing/.env*.local
 app/landing/package-lock.json
+
+# pnpm local store (content-addressable cache)
+.pnpm-store/

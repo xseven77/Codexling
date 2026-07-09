@@ -8,9 +8,9 @@ enum CodexLightMain {
 
     @MainActor
     static func main() {
+        let application = NSApplication.shared
         let delegate = AppDelegate()
         appDelegate = delegate
-        let application = NSApplication.shared
         application.delegate = delegate
         application.run()
     }

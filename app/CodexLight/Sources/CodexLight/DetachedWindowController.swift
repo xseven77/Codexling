@@ -21,8 +21,15 @@ enum DetachedWindowMetrics {
 final class DetachedWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private let hostingController: NSHostingController<DetachedUsageWindowView>
+    private let onClose: (() -> Void)?
 
-    init(store: UsageSnapshotStore, actions: UsageActions) {
+    init(
+        store: UsageSnapshotStore,
+        settings: AppSettingsStore,
+        actions: UsageActions,
+        onClose: (() -> Void)? = nil
+    ) {
+        self.onClose = onClose
         window = NSWindow(
             contentRect: NSRect(
                 x: 0,
@@ -35,7 +42,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         hostingController = NSHostingController(
-            rootView: DetachedUsageWindowView(store: store, actions: actions)
+            rootView: DetachedUsageWindowView(store: store, settings: settings, actions: actions)
         )
 
         super.init()
@@ -52,6 +59,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
@@ -80,7 +91,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor(red: 0.957, green: 0.957, blue: 0.957, alpha: 1)
+        window.backgroundColor = NSColor.codexWindowBackground
+        // Inherit NSApp.appearance from AppSettingsStore (system / light / dark).
+        window.appearance = nil
     }
 
     private func applyContentSizeLimits(to window: NSWindow) {

@@ -2,10 +2,10 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let autoRefreshInterval: TimeInterval = 60
     private var statusController: StatusBarController?
     private var windowController: DetachedWindowController?
     private let snapshotStore = UsageSnapshotStore()
+    private let settingsStore = AppSettingsStore()
     private let usageService = CodexUsageService()
     private var actions: UsageActions?
     private var autoRefreshTimer: Timer?
@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        settingsStore.applyAppearance()
+        settingsStore.onAutoRefreshIntervalChanged = { [weak self] _ in
+            self?.startAutoRefreshTimer()
+        }
 
         let actions = UsageActions(
             refresh: { [weak self] in
@@ -38,9 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         self.actions = actions
-        statusController = StatusBarController(store: snapshotStore, actions: actions)
+        statusController = StatusBarController(
+            store: snapshotStore,
+            settings: settingsStore,
+            actions: actions
+        )
         startAutoRefreshTimer()
         migrateLegacyTokenIfNeeded()
+        openDetachedWindow()
     }
 
     private func migrateLegacyTokenIfNeeded() {
@@ -114,16 +123,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let actions else { return }
 
         if windowController == nil {
-            windowController = DetachedWindowController(store: snapshotStore, actions: actions)
+            windowController = DetachedWindowController(
+                store: snapshotStore,
+                settings: settingsStore,
+                actions: actions,
+                onClose: { [weak self] in
+                    self?.handleDetachedWindowClosed()
+                }
+            )
         }
 
+        // Show Dock icon (and app logo) while the detached window is open.
+        NSApp.setActivationPolicy(.regular)
         windowController?.show()
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func handleDetachedWindowClosed() {
+        // Return to menu-bar-only mode after the window is closed.
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            openDetachedWindow()
+        }
+        return true
+    }
+
     private func startAutoRefreshTimer() {
         autoRefreshTimer?.invalidate()
-        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: autoRefreshInterval, repeats: true) { [weak self] _ in
+        autoRefreshTimer = nil
+
+        guard let interval = settingsStore.autoRefreshInterval.timeInterval else { return }
+
+        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoRefreshUsage()
             }

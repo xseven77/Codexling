@@ -52,7 +52,13 @@ export function Hero() {
 
           <div className="mt-10 flex flex-wrap gap-6 text-sm text-muted">
             <div className="flex items-center gap-2">
-              <Image src="/logo.svg" alt="Codex Light logo" width={18} height={18} />
+              <Image
+                src="/logo.svg"
+                alt="Codex Light logo"
+                width={18}
+                height={18}
+                className="rounded-[4px]"
+              />
               Swift + SwiftUI
             </div>
             <div>Keychain 存储 Token</div>

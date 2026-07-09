@@ -1,6 +1,7 @@
 import { GITHUB_RELEASES_URL } from "@/lib/github";
 import Image from "next/image";
 import Link from "next/link";
+import { ThemeToggle } from "./ThemeToggle";
 
 const nav = [
   { href: "#features", label: "功能" },
@@ -14,7 +15,13 @@ export function Header() {
     <header className="sticky top-0 z-50 border-b border-border/80 bg-background/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         <Link href="/" className="flex items-center gap-3">
-          <Image src="/logo.svg" alt="Codex Light" width={32} height={32} />
+          <Image
+            src="/logo.svg"
+            alt="Codex Light"
+            width={32}
+            height={32}
+            className="rounded-[8px]"
+          />
           <span className="text-sm font-semibold tracking-tight">Codex Light</span>
         </Link>
 
@@ -31,6 +38,7 @@ export function Header() {
         </nav>
 
         <div className="flex items-center gap-3">
+          <ThemeToggle />
           <a
             href="https://github.com/xseven77/codex-light"
             target="_blank"

@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #fafafa;
   --foreground: #0f0f0f;
@@ -14,6 +16,35 @@
   --github-muted: #8b949e;
   --github-text: #c9d1d9;
   --github-green: #238636;
+
+  /* App preview tokens (aligned with CodexLight light theme) */
+  --preview-bg: #f4f4f4;
+  --preview-desktop: #ececec;
+  --preview-desktop-end: #e8e8e8;
+  --preview-panel: #f4f4f4;
+  --preview-chrome: #fafafa;
+  --preview-chrome-end: #f7f7f7;
+  --preview-card: #ffffff;
+  --preview-ink: #242933;
+  --preview-muted: #5b6572;
+  --preview-line: #d1d9e3;
+  --preview-track: #eaebee;
+  --preview-primary: #181a1e;
+  --preview-on-primary: #ffffff;
+  --preview-icon-bg: rgba(255, 255, 255, 0.8);
+  --preview-menubar-bg: rgba(236, 236, 236, 0.95);
+  --preview-menubar-fg: rgba(0, 0, 0, 0.7);
+  --preview-menubar-pill: rgba(0, 0, 0, 0.06);
+  --preview-menubar-pill-fg: rgba(0, 0, 0, 0.8);
+  --preview-hairline: rgba(0, 0, 0, 0.08);
+  --preview-frame-border: rgba(0, 0, 0, 0.1);
+  --preview-shadow: 0 30px 80px rgba(0, 0, 0, 0.16);
+  --preview-panel-shadow: 0 24px 60px rgba(36, 41, 51, 0.14);
+  --preview-card-shadow: 0 3px 10px rgba(36, 41, 51, 0.06);
+  --preview-coupon-bg: rgba(255, 95, 95, 0.07);
+  --preview-green: #28c04e;
+  --preview-blue: #007aef;
+  --preview-pink: #ff5f5f;
 }
 
 @theme inline {
@@ -29,15 +60,42 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #050505;
-    --foreground: #f5f5f5;
-    --muted: #9ca3af;
-    --border: rgba(255, 255, 255, 0.1);
-    --card: rgba(18, 18, 18, 0.72);
-    --surface: #111111;
-  }
+.dark {
+  --background: #050505;
+  --foreground: #f5f5f5;
+  --muted: #9ca3af;
+  --border: rgba(255, 255, 255, 0.1);
+  --card: rgba(18, 18, 18, 0.72);
+  --surface: #111111;
+
+  /* App preview tokens (aligned with CodexLight dark theme) */
+  --preview-bg: #1e1e21;
+  --preview-desktop: #1a1a1d;
+  --preview-desktop-end: #161618;
+  --preview-panel: #212124;
+  --preview-chrome: #2a2a2d;
+  --preview-chrome-end: #252528;
+  --preview-card: #333337;
+  --preview-ink: #ecedf0;
+  --preview-muted: #9ea4ad;
+  --preview-line: #4c4f57;
+  --preview-track: #404145;
+  --preview-primary: #ebecf0;
+  --preview-on-primary: #181a1e;
+  --preview-icon-bg: rgba(255, 255, 255, 0.06);
+  --preview-menubar-bg: rgba(36, 36, 40, 0.95);
+  --preview-menubar-fg: rgba(255, 255, 255, 0.72);
+  --preview-menubar-pill: rgba(255, 255, 255, 0.08);
+  --preview-menubar-pill-fg: rgba(255, 255, 255, 0.88);
+  --preview-hairline: rgba(255, 255, 255, 0.1);
+  --preview-frame-border: rgba(255, 255, 255, 0.12);
+  --preview-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  --preview-panel-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --preview-card-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  --preview-coupon-bg: rgba(255, 95, 95, 0.16);
+  --preview-green: #28c04e;
+  --preview-blue: #007aef;
+  --preview-pink: #ff5f5f;
 }
 
 * {
@@ -46,6 +104,11 @@
 
 html {
   scroll-behavior: smooth;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 body {

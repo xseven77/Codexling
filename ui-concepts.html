@@ -6,21 +6,75 @@
   <title>Codex Light — UI 预览</title>
   <style>
     :root {
-      color-scheme: light;
+      color-scheme: light dark;
       --bg: #f4f4f4;
+      --page-top: #fafafa;
       --ink: #242933;
       --muted: #5b6572;
       --line: #d1d9e3;
       --panel: #f4f4f4;
       --chrome: #fafafa;
+      --chrome-end: #f7f7f7;
       --card: #ffffff;
       --track: #eaebee;
       --green: #28c04e;
       --blue: #007aef;
       --pink: #ff5f5f;
       --primary: #181a1e;
+      --on-primary: #ffffff;
+      --icon-bg: rgba(255, 255, 255, 0.8);
+      --principle-bg: rgba(255, 255, 255, 0.72);
+      --menubar-bg: rgba(236, 236, 236, 0.95);
+      --menubar-fg: rgba(0, 0, 0, 0.7);
+      --menubar-pill: rgba(0, 0, 0, 0.06);
+      --menubar-pill-fg: rgba(0, 0, 0, 0.8);
+      --hairline: rgba(0, 0, 0, 0.08);
+      --canvas-start: #ececec;
+      --canvas-mid: #f4f4f4;
+      --canvas-end: #e8e8e8;
+      --head-sheen: rgba(255, 255, 255, 0.92);
+      --coupon-bg: rgba(255, 95, 95, 0.07);
+      --glow: rgba(40, 192, 78, 0.12);
       --shadow: 0 24px 60px rgba(36, 41, 51, 0.14);
+      --card-shadow: 0 3px 10px rgba(36, 41, 51, 0.06);
+      --icon-shadow: 0 3px 10px rgba(36, 41, 51, 0.04);
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1e1e21;
+        --page-top: #161618;
+        --ink: #ecedf0;
+        --muted: #9ea4ad;
+        --line: #4c4f57;
+        --panel: #212124;
+        --chrome: #2a2a2d;
+        --chrome-end: #252528;
+        --card: #333337;
+        --track: #404145;
+        --green: #28c04e;
+        --blue: #007aef;
+        --pink: #ff5f5f;
+        --primary: #ebecf0;
+        --on-primary: #181a1e;
+        --icon-bg: rgba(255, 255, 255, 0.06);
+        --principle-bg: rgba(51, 51, 55, 0.72);
+        --menubar-bg: rgba(36, 36, 40, 0.95);
+        --menubar-fg: rgba(255, 255, 255, 0.72);
+        --menubar-pill: rgba(255, 255, 255, 0.08);
+        --menubar-pill-fg: rgba(255, 255, 255, 0.88);
+        --hairline: rgba(255, 255, 255, 0.1);
+        --canvas-start: #1a1a1d;
+        --canvas-mid: #1e1e21;
+        --canvas-end: #161618;
+        --head-sheen: rgba(255, 255, 255, 0.08);
+        --coupon-bg: rgba(255, 95, 95, 0.16);
+        --glow: rgba(40, 192, 78, 0.08);
+        --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        --card-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+        --icon-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+      }
     }
 
     * {
@@ -31,8 +85,8 @@
       margin: 0;
       color: var(--ink);
       background:
-        radial-gradient(circle at 18% 12%, rgba(40, 192, 78, 0.12), transparent 34%),
-        linear-gradient(180deg, #fafafa, var(--bg));
+        radial-gradient(circle at 18% 12%, var(--glow), transparent 34%),
+        linear-gradient(180deg, var(--page-top), var(--bg));
       min-height: 100vh;
     }
 
@@ -68,11 +122,11 @@
 
     .canvas {
       position: relative;
-      border: 1px solid rgba(0, 0, 0, 0.08);
+      border: 1px solid var(--hairline);
       border-radius: 28px;
       overflow: hidden;
       box-shadow: var(--shadow);
-      background: linear-gradient(135deg, #ececec, #f4f4f4 45%, #e8e8e8);
+      background: linear-gradient(135deg, var(--canvas-start), var(--canvas-mid) 45%, var(--canvas-end));
     }
 
     .desktop-bar {
@@ -81,11 +135,11 @@
       align-items: center;
       justify-content: space-between;
       padding: 0 14px 0 16px;
-      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-      background: rgba(236, 236, 236, 0.95);
+      border-bottom: 1px solid var(--hairline);
+      background: var(--menubar-bg);
       backdrop-filter: blur(18px);
       font-size: 11px;
-      color: rgba(0, 0, 0, 0.7);
+      color: var(--menubar-fg);
     }
 
     .menu-left,
@@ -103,10 +157,10 @@
       height: 22px;
       padding: 0 8px;
       border-radius: 6px;
-      background: rgba(0, 0, 0, 0.06);
+      background: var(--menubar-pill);
       white-space: nowrap;
       font-weight: 560;
-      color: rgba(0, 0, 0, 0.8);
+      color: var(--menubar-pill-fg);
     }
 
     .signal {
@@ -154,7 +208,7 @@
 
     .principle {
       border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.72);
+      background: var(--principle-bg);
       border-radius: 12px;
       padding: 12px;
       min-height: 78px;
@@ -176,7 +230,7 @@
     .popover {
       justify-self: end;
       width: min(100%, 414px);
-      border: 1px solid rgba(209, 217, 227, 0.9);
+      border: 1px solid color-mix(in srgb, var(--line) 90%, transparent);
       border-radius: 16px;
       background: var(--panel);
       box-shadow: var(--shadow);
@@ -189,8 +243,8 @@
       justify-content: space-between;
       gap: 12px;
       padding: 16px;
-      border-bottom: 1px solid rgba(209, 217, 227, 0.75);
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), var(--chrome));
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+      background: linear-gradient(180deg, var(--head-sheen), var(--chrome));
     }
 
     .identity {
@@ -245,11 +299,11 @@
       height: 30px;
       display: inline-grid;
       place-items: center;
-      border: 1px solid rgba(209, 217, 227, 0.8);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
       border-radius: 9px;
-      background: rgba(255, 255, 255, 0.8);
+      background: var(--icon-bg);
       color: var(--ink);
-      box-shadow: 0 3px 10px rgba(36, 41, 51, 0.04);
+      box-shadow: var(--icon-shadow);
       cursor: pointer;
     }
 
@@ -272,7 +326,7 @@
       background: var(--card);
       border-radius: 12px;
       padding: 14px;
-      box-shadow: 0 3px 10px rgba(36, 41, 51, 0.06);
+      box-shadow: var(--card-shadow);
     }
 
     .usage-summary {
@@ -321,7 +375,7 @@
       height: 6px;
       border-radius: 99px;
       background: var(--track);
-      border: 1px solid rgba(209, 217, 227, 0.55);
+      border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
       overflow: hidden;
     }
 
@@ -373,7 +427,7 @@
       background: var(--card);
       border-radius: 10px;
       padding: 9px 10px;
-      box-shadow: 0 3px 10px rgba(36, 41, 51, 0.035);
+      box-shadow: var(--card-shadow);
     }
 
     .coupon strong,
@@ -399,7 +453,7 @@
       display: grid;
       place-items: center;
       border-radius: 7px;
-      background: rgba(255, 95, 95, 0.07);
+      background: var(--coupon-bg);
       color: var(--pink);
       font-size: 13px;
       font-weight: 700;
@@ -412,7 +466,7 @@
       margin-top: 12px;
       padding: 14px 16px 16px;
       border-top: 1px solid var(--line);
-      background: linear-gradient(180deg, var(--chrome), #f7f7f7);
+      background: linear-gradient(180deg, var(--chrome), var(--chrome-end));
     }
 
     .detail-list {
@@ -465,7 +519,7 @@
       padding: 0 10px;
       cursor: pointer;
       min-height: 36px;
-      color: white;
+      color: var(--on-primary);
       background: var(--primary);
       font-size: 13px;
       font-weight: 650;
@@ -512,7 +566,7 @@
   <main class="page">
     <section class="topline">
       <h1>Codex Light UI 预览</h1>
-      <p class="subtitle">与 Landing 页和 macOS App 对齐的弹窗概念稿：浅色 Liquid Glass、绿色额度健康态、菜单栏圆灯摘要。</p>
+      <p class="subtitle">与 Landing 页和 macOS App 对齐的弹窗概念稿：设置入口、主题切换、自动刷新配置，以及跟随系统的浅色 / 暗色 Liquid Glass。</p>
     </section>
 
     <section class="canvas">
@@ -537,7 +591,7 @@
             <div class="principles">
               <div class="principle"><strong>状态栏摘要</strong><span>圆灯 + Codex 5h / 周额度百分比，扫一眼即可。</span></div>
               <div class="principle"><strong>官方 OAuth 登录</strong><span>通过 ChatGPT / Codex 官方页面授权，Token 存 Keychain。</span></div>
-              <div class="principle"><strong>账号上下文</strong><span>用户名、API 徽章、邮箱与工作区信息放在弹窗顶部。</span></div>
+              <div class="principle"><strong>主题与自动刷新</strong><span>设置页可切换浅色 / 深色 / 跟随系统，并配置自动刷新间隔。</span></div>
               <div class="principle"><strong>重置券排序</strong><span>多张重置券按过期时间从近到远排列。</span></div>
             </div>
           </div>
@@ -552,11 +606,11 @@
                 <span>name@example.com · Personal · Plus</span>
               </div>
               <div class="icon-row">
-                <button class="icon-btn" title="刷新" aria-label="刷新">
-                  <svg viewBox="0 0 16 16"><path d="M13 3v3H10M3 13V10H6"/><path d="M13.5 8a5.5 5.5 0 0 0-9.8-3.5M2.5 8a5.5 5.5 0 0 0 9.8 3.5"/></svg>
-                </button>
                 <button class="icon-btn" title="退出登录" aria-label="退出登录">
                   <svg viewBox="0 0 16 16"><circle cx="8" cy="5.5" r="2.2"/><path d="M3.5 13c0-2.5 2-4.5 4.5-4.5s4.5 2 4.5 4.5"/><path d="M11.5 3.5l1 1"/></svg>
+                </button>
+                <button class="icon-btn" title="设置" aria-label="设置">
+                  <svg viewBox="0 0 16 16"><path d="M6.4 2.2h3.2l.35 1.35a4.8 4.8 0 0 1 1.05.6l1.35-.4 1.6 1.6-.4 1.35c.24.33.44.68.6 1.05L15 8.4v3.2l-1.35.35a4.8 4.8 0 0 1-.6 1.05l.4 1.35-1.6 1.6-1.35-.4a4.8 4.8 0 0 1-1.05.6L9.6 15.8H6.4l-.35-1.35a4.8 4.8 0 0 1-1.05-.6l-1.35.4-1.6-1.6.4-1.35a4.8 4.8 0 0 1-.6-1.05L.2 11.6V8.4l1.35-.35c.16-.37.36-.72.6-1.05l-.4-1.35 1.6-1.6 1.35.4c.33-.24.68-.44 1.05-.6L6.4 2.2Z"/><circle cx="8" cy="8" r="2.1"/></svg>
                 </button>
                 <button class="icon-btn" title="打开窗口" aria-label="打开窗口">
                   <svg viewBox="0 0 16 16"><rect x="2.5" y="4.5" width="8" height="8" rx="1.2"/><path d="M6 4.5V3.8A1.3 1.3 0 0 1 7.3 2.5H12.2A1.3 1.3 0 0 1 13.5 3.8V8.7A1.3 1.3 0 0 1 12.2 10H11.5"/></svg>
