@@ -3,7 +3,17 @@ set -euo pipefail
 
 APP_NAME="Codex Light"
 BINARY_NAME="CodexLight"
-APP_BUNDLE="dist/${APP_NAME}.app"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${ROOT_DIR}"
+
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
+DIST_DIR="dist"
+APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
+ZIP_PATH="${DIST_DIR}/${APP_NAME}-${VERSION}.zip"
+DMG_PATH="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
+DMG_VOLUME_NAME="${APP_NAME} ${VERSION}"
+DMG_STAGING_DIR="${DIST_DIR}/dmg-staging"
 
 if ! swift build -c release; then
   if [[ -x ".build/release/${BINARY_NAME}" ]]; then
@@ -24,7 +34,7 @@ if ! swift build -c release; then
   fi
 fi
 
-rm -rf dist
+rm -rf "${DIST_DIR}"
 mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
 
 cp ".build/release/${BINARY_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
@@ -35,7 +45,23 @@ chmod +x "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 codesign --force --deep --sign - "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 
-ditto -c -k --keepParent "${APP_BUNDLE}" "dist/${APP_NAME}.app.zip"
+ditto -c -k --keepParent "${APP_BUNDLE}" "${ZIP_PATH}"
+
+rm -rf "${DMG_STAGING_DIR}"
+mkdir -p "${DMG_STAGING_DIR}"
+cp -R "${APP_BUNDLE}" "${DMG_STAGING_DIR}/${APP_NAME}.app"
+ln -s /Applications "${DMG_STAGING_DIR}/Applications"
+
+hdiutil create \
+  -volname "${DMG_VOLUME_NAME}" \
+  -srcfolder "${DMG_STAGING_DIR}" \
+  -ov \
+  -format UDZO \
+  "${DMG_PATH}"
+
+rm -rf "${DMG_STAGING_DIR}"
 
 echo "Built ${APP_BUNDLE}"
-echo "Archive dist/${APP_NAME}.app.zip"
+echo "Version ${VERSION} (${BUILD_NUMBER})"
+echo "Archive ${ZIP_PATH}"
+echo "Disk image ${DMG_PATH}"
