@@ -388,7 +388,10 @@ struct UsagePanel: View {
                 if snapshot.hasShortWindow, let shortWindow = snapshot.shortWindow {
                     QuotaRow(window: shortWindow, tint: primaryHealth.color)
                 }
-                QuotaRow(window: snapshot.weekly, tint: .codexBlue)
+                QuotaRow(
+                    window: snapshot.weekly,
+                    tint: snapshot.hasShortWindow ? .codexBlue : primaryHealth.color
+                )
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
