@@ -9,10 +9,18 @@ enum DetachedWindowMetrics {
     static let defaultWidth: CGFloat = 460
     static let defaultHeight: CGFloat = 840
 
-    static func clampContentSize(_ size: NSSize) -> NSSize {
-        NSSize(
+    static func maximumContentHeight(for screen: NSScreen?) -> CGFloat {
+        let visibleHeight = screen?.visibleFrame.height
+            ?? NSScreen.main?.visibleFrame.height
+            ?? maxHeight
+        return min(maxHeight, max(1, visibleHeight - 32))
+    }
+
+    static func clampContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
+        let dynamicMaxHeight = maximumContentHeight(for: screen)
+        return NSSize(
             width: min(max(size.width, minWidth), maxWidth),
-            height: min(max(size.height, minHeight), maxHeight)
+            height: min(max(size.height, min(minHeight, dynamicMaxHeight)), dynamicMaxHeight)
         )
     }
 }
@@ -59,6 +67,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         applyWindowChrome()
         applyContentSizeLimits(to: window)
         hostingController.sizingOptions = [.minSize, .maxSize]
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.isOpaque = false
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
         window.contentViewController = hostingController
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -79,7 +90,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         let contentSize = sender.contentRect(forFrameRect: NSRect(origin: .zero, size: frameSize)).size
-        let clampedContent = DetachedWindowMetrics.clampContentSize(contentSize)
+        let clampedContent = DetachedWindowMetrics.clampContentSize(contentSize, screen: sender.screen)
         return sender.frameRect(forContentRect: NSRect(origin: .zero, size: clampedContent)).size
     }
 
@@ -87,7 +98,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         guard let window = notification.object as? NSWindow else { return }
 
         let contentSize = window.contentView?.frame.size ?? .zero
-        let clampedContent = DetachedWindowMetrics.clampContentSize(contentSize)
+        let clampedContent = DetachedWindowMetrics.clampContentSize(contentSize, screen: window.screen)
         guard contentSize != clampedContent else { return }
 
         var frame = window.frame
@@ -98,28 +109,43 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.setFrame(frame, display: true)
     }
 
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        applyContentSizeLimits(to: window)
+    }
+
     private func applyWindowChrome(for theme: AppThemePreference? = nil) {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor.codexWindowBackground
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
+        window.hasShadow = true
         window.appearance = (theme ?? settings.theme).nsAppearance
     }
 
     private func applyContentSizeLimits(to window: NSWindow) {
+        let dynamicMaxHeight = DetachedWindowMetrics.maximumContentHeight(for: window.screen)
+        let dynamicMinHeight = min(DetachedWindowMetrics.minHeight, dynamicMaxHeight)
         let contentMin = NSSize(
             width: DetachedWindowMetrics.minWidth,
-            height: DetachedWindowMetrics.minHeight
+            height: dynamicMinHeight
         )
         let contentMax = NSSize(
             width: DetachedWindowMetrics.maxWidth,
-            height: DetachedWindowMetrics.maxHeight
+            height: dynamicMaxHeight
         )
 
         window.contentMinSize = contentMin
         window.contentMaxSize = contentMax
         window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: contentMin)).size
         window.maxSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: contentMax)).size
+
+        let currentContent = window.contentRect(forFrameRect: window.frame).size
+        let clampedContent = DetachedWindowMetrics.clampContentSize(currentContent, screen: window.screen)
+        if currentContent != clampedContent {
+            window.setContentSize(clampedContent)
+        }
     }
 }

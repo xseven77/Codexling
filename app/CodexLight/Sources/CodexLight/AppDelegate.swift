@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: DetachedWindowController?
     private let snapshotStore = UsageSnapshotStore()
     private let settingsStore = AppSettingsStore()
+    private let activityStore = CodexActivityStore()
     private let updateController = AppUpdateController()
     private let usageService = CodexUsageService()
     private var actions: UsageActions?
@@ -21,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onThemeChanged = { [weak self] _ in
             self?.statusController?.refreshThemeAppearance()
             self?.windowController?.refreshThemeAppearance()
+        }
+        settingsStore.onPetSettingsChanged = { [weak self] in
+            self?.statusController?.refreshStatusTitle()
+        }
+        activityStore.onSnapshotChanged = { [weak self] _ in
+            self?.statusController?.refreshStatusTitle()
         }
 
         let actions = UsageActions(
@@ -50,12 +57,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController = StatusBarController(
             store: snapshotStore,
             settings: settingsStore,
+            activityStore: activityStore,
             updater: updateController,
             actions: actions
         )
         startAutoRefreshTimer()
+        activityStore.start()
         migrateLegacyTokenIfNeeded()
         openDetachedWindow()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        activityStore.stop()
+    }
+
+    func applicationDidUpdate(_ notification: Notification) {
+        settingsStore.refreshSystemAppearanceIfNeeded()
     }
 
     private func migrateLegacyTokenIfNeeded() {

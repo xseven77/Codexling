@@ -17,19 +17,31 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    updateSection
-                    themeSection
-                    refreshSection
+            ViewThatFits(in: .vertical) {
+                settingsContent
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ScrollView {
+                    settingsContent
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .scrollIndicators(.hidden)
+                .background(ScrollIndicatorHider())
             }
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
+    }
+
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            updateSection
+            themeSection
+            refreshSection
+            statusBarDivider
+            petSection
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
@@ -39,7 +51,7 @@ struct SettingsView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .padding(.leading, titleLeadingPadding)
                     .offset(y: titleVerticalOffset)
-                Text("更新、主题与自动刷新")
+                Text("更新、主题、状态与 Pets、自动刷新")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
             }
@@ -173,6 +185,194 @@ struct SettingsView: View {
             )
         }
     }
+
+    private var statusBarDivider: some View {
+        Rectangle()
+            .fill(Color.codexLine.opacity(0.74))
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+    }
+
+    private var petSection: some View {
+        SettingsSection(
+            title: "状态与 Pets",
+            subtitle: "配置状态栏任务状态、胶囊颜色与 Codex 动画角色"
+        ) {
+            VStack(spacing: 10) {
+                SettingsInlineRow(
+                    title: "胶囊背景色",
+                    subtitle: "自动模式按任务状态变色，也可以固定一种颜色"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.petBackgroundColor,
+                        options: StatusBarPetBackgroundColor.allCases,
+                        title: \.title,
+                        symbol: \.symbolName
+                    )
+                }
+
+                SettingsInlineRow(
+                    title: "显示动画 Pet",
+                    subtitle: "开启显示动画 Pet，关闭显示原来的额度健康圆灯"
+                ) {
+                    Toggle("", isOn: $settings.petsEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+
+                if let pet = settings.selectedPet {
+                    HStack(spacing: 12) {
+                        PetSettingsThumbnail(pet: pet)
+                            .frame(width: 48, height: 48)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(pet.displayName)
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("\(pet.source.title) · v\(pet.spriteVersionNumber) · \(pet.rowCount) 行动画")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+
+                        Spacer(minLength: 8)
+                        petPicker
+                    }
+                    .padding(12)
+                    .liquidGlassSurface(
+                        cornerRadius: 12,
+                        tint: Color.codexGlassTint,
+                        shadowOpacity: 0.04
+                    )
+                } else {
+                    Text("没有发现可用 Pet。请安装 Codex，或把自定义 Pet 放入 ~/.codex/pets。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.codexAmber)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .liquidGlassSurface(
+                            cornerRadius: 12,
+                            tint: Color.codexGlassTint,
+                            shadowOpacity: 0.04
+                        )
+                }
+
+                HStack {
+                    let builtInCount = settings.availablePets.filter { $0.source == .codexBuiltIn }.count
+                    let customCount = settings.availablePets.filter { $0.source == .custom }.count
+                    Text("已发现 \(builtInCount) 个内置 Pet，\(customCount) 个自定义 Pet")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                    Spacer()
+                    Button("重新扫描") {
+                        settings.reloadPets()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.codexPrimary)
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    private var petPicker: some View {
+        Menu {
+            let builtIns = settings.availablePets.filter { $0.source == .codexBuiltIn }
+            let custom = settings.availablePets.filter { $0.source == .custom }
+
+            if !builtIns.isEmpty {
+                Section("Codex 内置") {
+                    ForEach(builtIns) { pet in
+                        petPickerButton(pet)
+                    }
+                }
+            }
+            if !custom.isEmpty {
+                Section("自定义") {
+                    ForEach(custom) { pet in
+                        petPickerButton(pet)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("选择")
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .liquidGlassSurface(
+                cornerRadius: 8,
+                tint: Color.codexGlassTint,
+                shadowOpacity: 0.03,
+                interactive: true
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func petPickerButton(_ pet: CodexPet) -> some View {
+        Button {
+            settings.selectedPetID = pet.id
+        } label: {
+            if settings.selectedPetID == pet.id {
+                Label(pet.displayName, systemImage: "checkmark")
+            } else {
+                Text(pet.displayName)
+            }
+        }
+    }
+}
+
+private struct ScrollIndicatorHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        hideIndicators(from: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        hideIndicators(from: nsView)
+    }
+
+    private func hideIndicators(from view: NSView) {
+        DispatchQueue.main.async {
+            guard let scrollView = view.enclosingScrollView else { return }
+            scrollView.hasVerticalScroller = false
+            scrollView.hasHorizontalScroller = false
+            scrollView.autohidesScrollers = true
+        }
+    }
+}
+
+private struct PetSettingsThumbnail: View {
+    let pet: CodexPet
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+            } else {
+                Image(systemName: "pawprint.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.codexMuted)
+            }
+        }
+        .task(id: pet.id) {
+            image = PetSpriteSheet(url: pet.spritesheetURL)?.frame(
+                row: 0,
+                column: 0,
+                displayHeight: 44
+            )
+        }
+        .accessibilityLabel(pet.displayName)
+    }
 }
 
 private struct SettingsSection<Content: View>: View {
@@ -253,7 +453,12 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .liquidGlassSurface(cornerRadius: 8, tint: Color.codexGlassTint, shadowOpacity: 0.03)
+            .liquidGlassSurface(
+                cornerRadius: 8,
+                tint: Color.codexGlassTint,
+                shadowOpacity: 0.03,
+                interactive: true
+            )
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: true, vertical: false)

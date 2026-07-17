@@ -13,7 +13,15 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "CodexLight",
-            path: "Sources/CodexLight"
+            path: "Sources/CodexLight",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
+        ),
+        .testTarget(
+            name: "CodexLightTests",
+            dependencies: ["CodexLight"],
+            path: "Tests/CodexLightTests"
         )
     ]
 )

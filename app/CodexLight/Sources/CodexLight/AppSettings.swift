@@ -1,7 +1,6 @@
 import AppKit
 import Observation
 import SwiftUI
-import SwiftUI
 
 enum AppThemePreference: String, CaseIterable, Identifiable {
     case system
@@ -48,6 +47,10 @@ enum AppThemePreference: String, CaseIterable, Identifiable {
             .dark
         }
     }
+
+    func resolvedColorScheme(system: ColorScheme) -> ColorScheme {
+        preferredColorScheme ?? system
+    }
 }
 
 enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
@@ -76,15 +79,99 @@ enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
     }
 }
 
+enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
+    case neutral
+    case automatic
+    case blue
+    case purple
+    case cyan
+    case amber
+    case green
+    case red
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: "跟随状态"
+        case .neutral: "中性"
+        case .blue: "蓝色"
+        case .purple: "紫色"
+        case .cyan: "青色"
+        case .amber: "橙色"
+        case .green: "绿色"
+        case .red: "红色"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .automatic: "wand.and.stars"
+        case .neutral: "circle.lefthalf.filled"
+        case .blue: "circle.fill"
+        case .purple: "circle.fill"
+        case .cyan: "circle.fill"
+        case .amber: "circle.fill"
+        case .green: "circle.fill"
+        case .red: "circle.fill"
+        }
+    }
+
+    func resolved(for state: CodexActivityState) -> Self {
+        guard self == .automatic else { return self }
+        return switch state {
+        case .unavailable, .idle: .neutral
+        case .thinking: .purple
+        case .executing: .blue
+        case .reviewing: .cyan
+        case .waitingForUser: .amber
+        case .completed: .green
+        case .interrupted: .red
+        }
+    }
+
+    var nsColor: NSColor {
+        switch self {
+        case .automatic, .neutral:
+            NSColor.white.withAlphaComponent(0.18)
+        case .blue:
+            NSColor(red: 0.18, green: 0.42, blue: 1.00, alpha: 0.88)
+        case .purple:
+            NSColor(red: 0.48, green: 0.26, blue: 0.96, alpha: 0.88)
+        case .cyan:
+            NSColor(red: 0.02, green: 0.63, blue: 0.80, alpha: 0.88)
+        case .amber:
+            NSColor(red: 0.95, green: 0.46, blue: 0.08, alpha: 0.90)
+        case .green:
+            NSColor(red: 0.05, green: 0.65, blue: 0.31, alpha: 0.88)
+        case .red:
+            NSColor(red: 0.93, green: 0.22, blue: 0.30, alpha: 0.88)
+        }
+    }
+
+    var foregroundColor: NSColor {
+        switch self {
+        case .automatic, .neutral:
+            .labelColor
+        case .blue, .purple, .cyan, .amber, .green, .red:
+            .white
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AppSettingsStore {
     private enum Keys {
         static let theme = "codexLight.theme"
         static let autoRefreshInterval = "codexLight.autoRefreshInterval"
+        static let petsEnabled = "codexLight.petsEnabled"
+        static let selectedPetID = "codexLight.selectedPetID"
+        static let petBackgroundColor = "codexLight.petBackgroundColor"
     }
 
     private let defaults: UserDefaults
+    private(set) var systemColorScheme: ColorScheme
 
     var theme: AppThemePreference {
         didSet {
@@ -103,11 +190,47 @@ final class AppSettingsStore {
         }
     }
 
+    var petsEnabled: Bool {
+        didSet {
+            guard petsEnabled != oldValue else { return }
+            defaults.set(petsEnabled, forKey: Keys.petsEnabled)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var selectedPetID: String {
+        didSet {
+            guard selectedPetID != oldValue else { return }
+            defaults.set(selectedPetID, forKey: Keys.selectedPetID)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var petBackgroundColor: StatusBarPetBackgroundColor {
+        didSet {
+            guard petBackgroundColor != oldValue else { return }
+            defaults.set(petBackgroundColor.rawValue, forKey: Keys.petBackgroundColor)
+            onPetSettingsChanged?()
+        }
+    }
+
+    private(set) var availablePets: [CodexPet] = []
+
+    var selectedPet: CodexPet? {
+        availablePets.first { $0.id == selectedPetID } ?? availablePets.first
+    }
+
+    var resolvedColorScheme: ColorScheme {
+        theme.resolvedColorScheme(system: systemColorScheme)
+    }
+
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
+    var onPetSettingsChanged: (() -> Void)?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        systemColorScheme = Self.currentSystemColorScheme()
 
         if let raw = defaults.string(forKey: Keys.theme),
            let saved = AppThemePreference(rawValue: raw) {
@@ -122,6 +245,12 @@ final class AppSettingsStore {
         } else {
             autoRefreshInterval = .minutes1
         }
+
+        petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
+        selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
+        petBackgroundColor = defaults.string(forKey: Keys.petBackgroundColor)
+            .flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
+        reloadPets(notify: false)
     }
 
     func applyAppearance() {
@@ -130,6 +259,31 @@ final class AppSettingsStore {
         // system menu bar, whose text contrast must continue to follow macOS.
         for window in NSApplication.shared.windows {
             window.appearance = appearance
+            window.contentView?.needsDisplay = true
+        }
+    }
+
+    func refreshSystemAppearanceIfNeeded(_ colorScheme: ColorScheme? = nil) {
+        let next = colorScheme ?? Self.currentSystemColorScheme()
+        guard next != systemColorScheme else { return }
+        systemColorScheme = next
+        guard theme == .system else { return }
+        applyAppearance()
+        onThemeChanged?(theme)
+    }
+
+    private static func currentSystemColorScheme() -> ColorScheme {
+        let match = NSApplication.shared.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        return match == .darkAqua ? .dark : .light
+    }
+
+    func reloadPets(notify: Bool = true) {
+        availablePets = CodexPetCatalog().discover()
+        if !availablePets.contains(where: { $0.id == selectedPetID }),
+           let fallback = availablePets.first {
+            selectedPetID = fallback.id
+        } else if notify {
+            onPetSettingsChanged?()
         }
     }
 }

@@ -5,13 +5,20 @@ struct UsagePopoverView: View {
     @Bindable var settings: AppSettingsStore
     @Bindable var updater: AppUpdateController
     let actions: UsageActions
+    let onLayoutChanged: () -> Void
     @State private var showsSettings = false
+
+    private var viewportAwareMinimumHeight: CGFloat {
+        let visibleHeight = NSScreen.main?.visibleFrame.height ?? DetachedWindowMetrics.minHeight
+        return min(DetachedWindowMetrics.minHeight, max(1, visibleHeight - 28))
+    }
 
     var body: some View {
         Group {
             if showsSettings {
                 SettingsView(settings: settings, updater: updater, layout: .compact) {
                     showsSettings = false
+                    notifyLayoutChanged()
                 }
             } else {
                 UsagePanel(
@@ -20,19 +27,25 @@ struct UsagePopoverView: View {
                     actions: actions,
                     layout: .compact,
                     showsDetachedButton: true,
-                    onOpenSettings: { showsSettings = true }
+                    onOpenSettings: {
+                        showsSettings = true
+                        notifyLayoutChanged()
+                    }
                 )
             }
         }
         .frame(width: 414)
-        .frame(height: 720)
-        .preferredColorScheme(settings.theme.preferredColorScheme)
-        .background(
-            LiquidGlassBackdrop(
-                health: QuotaHealthLevel.from(window: store.snapshot.primaryWindow, isLoggedIn: store.isLoggedIn),
-                topChromeHeight: 96
-            )
+        .frame(minHeight: viewportAwareMinimumHeight, alignment: .top)
+        .preferredColorScheme(settings.resolvedColorScheme)
+        .rootLiquidGlass(
+            cornerRadius: 18,
+            health: QuotaHealthLevel.from(window: store.snapshot.primaryWindow, isLoggedIn: store.isLoggedIn),
+            topChromeHeight: 96
         )
+    }
+
+    private func notifyLayoutChanged() {
+        onLayoutChanged()
     }
 }
 
@@ -67,13 +80,8 @@ struct DetachedUsageWindowView: View {
             alignment: .topLeading
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .preferredColorScheme(settings.theme.preferredColorScheme)
-        .background(
-            LiquidGlassBackdrop(
-                health: QuotaHealthLevel.from(window: store.snapshot.primaryWindow, isLoggedIn: store.isLoggedIn),
-                topChromeHeight: 0
-            )
-        )
+        .preferredColorScheme(settings.resolvedColorScheme)
+        .background(Color.codexBackground)
         .ignoresSafeArea(.container, edges: .top)
     }
 }
@@ -483,7 +491,16 @@ struct CodexChromeBackground: View {
         let edgeSheen: Double = isDark ? 0.08 : 0.26
 
         Group {
-            if isDark {
+            if #available(macOS 26.0, *) {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(isDark ? 0.035 : 0.10),
+                        Color.white.opacity(isDark ? 0.008 : 0.025)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else if isDark {
                 Color.codexChrome
             } else {
                 ZStack {
@@ -709,7 +726,8 @@ struct IconButtonStyle: ButtonStyle {
             .liquidGlassSurface(
                 cornerRadius: 9,
                 tint: tint,
-                shadowOpacity: isDark ? 0 : 0.035
+                shadowOpacity: isDark ? 0 : 0.035,
+                interactive: true
             )
     }
 }
@@ -721,23 +739,40 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
 
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color.codexOnPrimary)
-            .frame(height: 36)
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.86) : Color.codexPrimary)
-                        .opacity(isEnabled ? 1 : 0.45)
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(
-                            isDark ? Color.black.opacity(0.18) : Color.white.opacity(0.16),
-                            lineWidth: 0.8
-                        )
-                }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        Group {
+            if #available(macOS 26.0, *) {
+                configuration.label
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+                    .frame(height: 36)
+                    .opacity(isEnabled ? 1 : 0.45)
+                    .scaleEffect(configuration.isPressed ? 0.985 : 1)
+                    .glassEffect(
+                        .regular
+                            .tint(Color.codexPrimary.opacity(isDark ? 0.18 : 0.12))
+                            .interactive(),
+                        in: .rect(cornerRadius: 9)
+                    )
+            } else {
+                configuration.label
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.codexOnPrimary)
+                    .frame(height: 36)
+                    .background(
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.86) : Color.codexPrimary)
+                                .opacity(isEnabled ? 1 : 0.45)
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(
+                                    isDark ? Color.black.opacity(0.18) : Color.white.opacity(0.16),
+                                    lineWidth: 0.8
+                                )
+                        }
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+        }
     }
 }
 
@@ -757,7 +792,8 @@ struct SecondaryButtonStyle: ButtonStyle {
             .liquidGlassSurface(
                 cornerRadius: 9,
                 tint: tint,
-                shadowOpacity: isDark ? 0 : 0.035
+                shadowOpacity: isDark ? 0 : 0.035,
+                interactive: true
             )
     }
 }
@@ -770,42 +806,32 @@ struct LiquidGlassBackdrop: View {
     var body: some View {
         let isDark = colorScheme == .dark
 
-        Group {
-            if isDark {
-                Color.codexBackground
-            } else {
-                ZStack {
-                    LinearGradient(
-                        colors: [Color.codexSurface, Color.codexBackground],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            Color.codexBackground.opacity(isDark ? 0.94 : 0.96)
 
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(isDark ? 0.10 : 0.28),
+                    Color.clear
+                ],
+                startPoint: .top,
+                endPoint: UnitPoint(x: 0.5, y: 0.42)
+            )
+
+            if topChromeHeight > 0 {
+                VStack(spacing: 0) {
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.32),
-                            Color.white.opacity(0.0)
+                            Color.codexPopoverBeak.opacity(0.42),
+                            Color.clear
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
+                    .frame(height: topChromeHeight)
 
-                    if topChromeHeight > 0 {
-                        VStack(spacing: 0) {
-                            LinearGradient(
-                                colors: [
-                                    Color.codexPopoverBeak,
-                                    Color.codexSurface,
-                                    Color.codexSurface.opacity(0.0)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: topChromeHeight)
-
-                            Spacer(minLength: 0)
-                        }
-                    }
+                    Spacer(minLength: 0)
                 }
             }
         }
@@ -816,6 +842,7 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
     let cornerRadius: CGFloat
     let tint: Color
     let shadowOpacity: Double
+    let interactive: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
@@ -823,7 +850,15 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         Group {
-            if isDark {
+            if #available(macOS 26.0, *) {
+                if interactive {
+                    content
+                        .glassEffect(.regular.tint(tint).interactive(), in: shape)
+                } else {
+                    content
+                        .glassEffect(.regular.tint(tint), in: shape)
+                }
+            } else if isDark {
                 content
                     .background {
                         shape.fill(Color.codexCard)
@@ -877,8 +912,54 @@ struct LiquidGlassSurfaceModifier: ViewModifier {
 }
 
 extension View {
-    func liquidGlassSurface(cornerRadius: CGFloat, tint: Color = .white.opacity(0.18), shadowOpacity: Double = 0.10) -> some View {
-        modifier(LiquidGlassSurfaceModifier(cornerRadius: cornerRadius, tint: tint, shadowOpacity: shadowOpacity))
+    func liquidGlassSurface(
+        cornerRadius: CGFloat,
+        tint: Color = .white.opacity(0.18),
+        shadowOpacity: Double = 0.10,
+        interactive: Bool = false
+    ) -> some View {
+        modifier(LiquidGlassSurfaceModifier(
+            cornerRadius: cornerRadius,
+            tint: tint,
+            shadowOpacity: shadowOpacity,
+            interactive: interactive
+        ))
+    }
+
+    func rootLiquidGlass(
+        cornerRadius: CGFloat,
+        health: QuotaHealthLevel,
+        topChromeHeight: CGFloat
+    ) -> some View {
+        modifier(RootLiquidGlassModifier(
+            cornerRadius: cornerRadius,
+            health: health,
+            topChromeHeight: topChromeHeight
+        ))
+    }
+}
+
+private struct RootLiquidGlassModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let health: QuotaHealthLevel
+    let topChromeHeight: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                // Keep this identical to PetHoverContentView so the large
+                // surfaces retain the system's native refraction and highlights.
+                .glassEffect(in: .rect(cornerRadius: cornerRadius))
+        } else {
+            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .overlay {
+                    shape.stroke(Color.white.opacity(0.42), lineWidth: 0.8)
+                }
+                .shadow(color: Color.black.opacity(0.08), radius: 9, x: 0, y: 3)
+        }
     }
 }
 
