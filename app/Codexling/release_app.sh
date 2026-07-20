@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
 PLIST_PATH="${ROOT_DIR}/Resources/Info.plist"
 DIST_DIR="${ROOT_DIR}/dist"
 CURRENT_BRANCH="$(git -C "${REPO_ROOT}" branch --show-current)"
+ORIGINAL_VERSION=""
+ORIGINAL_BUILD=""
+ROLLBACK_VERSION_ON_FAILURE="false"
 
 cd "${ROOT_DIR}"
 
@@ -23,6 +26,21 @@ fail() {
   printf "\033[1;31merror:\033[0m %s\n" "$*" >&2
   exit 1
 }
+
+restore_version_on_failure() {
+  local exit_status="$?"
+  trap - EXIT
+
+  if [[ "${exit_status}" -ne 0 && "${ROLLBACK_VERSION_ON_FAILURE}" == "true" ]]; then
+    warn "发布在提交版本号之前失败，恢复版本 ${ORIGINAL_VERSION} (${ORIGINAL_BUILD})"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${ORIGINAL_VERSION}" "${PLIST_PATH}" || true
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${ORIGINAL_BUILD}" "${PLIST_PATH}" || true
+  fi
+
+  exit "${exit_status}"
+}
+
+trap restore_version_on_failure EXIT
 
 confirm() {
   local prompt="$1"
@@ -116,6 +134,8 @@ read_release_inputs() {
   local current_version current_build default_build version_choice
   current_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${PLIST_PATH}")"
   current_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${PLIST_PATH}")"
+  ORIGINAL_VERSION="${current_version}"
+  ORIGINAL_BUILD="${current_build}"
 
   if [[ "${current_build}" =~ ^[0-9]+$ ]]; then
     default_build="$((current_build + 1))"
@@ -171,6 +191,7 @@ read_release_inputs() {
 
 update_plist_version() {
   info "写入版本号 ${RELEASE_VERSION} (${RELEASE_BUILD})"
+  ROLLBACK_VERSION_ON_FAILURE="true"
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${RELEASE_VERSION}" "${PLIST_PATH}"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${RELEASE_BUILD}" "${PLIST_PATH}"
 }
@@ -307,6 +328,7 @@ main() {
   build_release_artifacts
   verify_dmg
   commit_version_if_needed
+  ROLLBACK_VERSION_ON_FAILURE="false"
   push_branch_and_tag
   publish_github_release
 
