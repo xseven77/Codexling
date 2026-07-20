@@ -157,10 +157,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
 
-        // Show Dock icon (and app logo) while the detached window is open.
-        NSApp.setActivationPolicy(.regular)
+        // Present first. Changing activation policy can synchronously ask Dock
+        // and WindowServer to re-register the app, which made a capsule click
+        // feel delayed when the app was in menu-bar-only mode.
         windowController?.show()
         NSApp.activate(ignoringOtherApps: true)
+
+        guard NSApp.activationPolicy() != .regular else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.windowController != nil else { return }
+            NSApp.setActivationPolicy(.regular)
+            self.windowController?.show()
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func handleDetachedWindowClosed() {

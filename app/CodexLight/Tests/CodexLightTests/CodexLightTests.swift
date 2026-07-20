@@ -92,6 +92,62 @@ final class CodexLightTests: XCTestCase {
         XCTAssertGreaterThan(edge?.alphaComponent ?? 0, 0.5)
     }
 
+    func testStatusPetFrameIsGeometricallyCenteredWithoutAssetCompensation() {
+        let container = NSRect(x: 0, y: 0, width: 22, height: 22)
+        let petRect = StatusPetBadgeRenderer.centeredRect(
+            contentSize: NSSize(width: 13, height: 15),
+            in: container
+        )
+
+        XCTAssertEqual(petRect.midX, container.midX, accuracy: 0.0001)
+        XCTAssertEqual(petRect.midY, container.midY, accuracy: 0.0001)
+    }
+
+    func testHoverSafeTriangleKeepsPointerPathTowardCardOpen() {
+        let triangle = HoverSafeTriangle(
+            origin: CGPoint(x: 100, y: 200),
+            targetFrame: CGRect(x: 20, y: 80, width: 200, height: 80),
+            buffer: 4
+        )
+
+        XCTAssertTrue(triangle.contains(CGPoint(x: 100, y: 190)))
+        XCTAssertTrue(triangle.contains(CGPoint(x: 60, y: 165)))
+    }
+
+    func testHoverSafeTriangleRejectsPointerMovingAwayFromCard() {
+        let triangle = HoverSafeTriangle(
+            origin: CGPoint(x: 100, y: 200),
+            targetFrame: CGRect(x: 20, y: 80, width: 200, height: 80),
+            buffer: 4
+        )
+
+        XCTAssertFalse(triangle.contains(CGPoint(x: 100, y: 210)))
+        XCTAssertFalse(triangle.contains(CGPoint(x: 10, y: 190)))
+    }
+
+    func testHoverSafeTriangleToleratesJitterNearDeparturePoint() {
+        let safeArea = HoverSafeTriangle(
+            origin: CGPoint(x: 100, y: 200),
+            targetFrame: CGRect(x: 20, y: 80, width: 200, height: 80),
+            buffer: 8
+        )
+
+        XCTAssertTrue(safeArea.contains(CGPoint(x: 106, y: 199)))
+        XCTAssertTrue(safeArea.contains(CGPoint(x: 94, y: 198)))
+    }
+
+    func testHoverSafeTriangleSupportsMovingBackUpToStatusCapsule() {
+        let safeArea = HoverSafeTriangle(
+            origin: CGPoint(x: 100, y: 100),
+            targetFrame: CGRect(x: 80, y: 150, width: 40, height: 22),
+            buffer: 8
+        )
+
+        XCTAssertTrue(safeArea.contains(CGPoint(x: 101, y: 120)))
+        XCTAssertTrue(safeArea.contains(CGPoint(x: 96, y: 145)))
+        XCTAssertFalse(safeArea.contains(CGPoint(x: 145, y: 115)))
+    }
+
     @MainActor
     func testStatusCapsulePressInvokesPopoverAction() {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
@@ -99,6 +155,40 @@ final class CodexLightTests: XCTestCase {
         view.onClick = { clickCount += 1 }
 
         XCTAssertTrue(view.accessibilityPerformPress())
+        XCTAssertEqual(clickCount, 1)
+    }
+
+    @MainActor
+    func testStatusCapsuleMouseUpInsideInvokesClickAction() throws {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        var clickCount = 0
+        view.onClick = { clickCount += 1 }
+
+        let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 12),
+            modifierFlags: [],
+            timestamp: 10,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let mouseUp = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 20, y: 12),
+            modifierFlags: [],
+            timestamp: 10.05,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 0
+        ))
+
+        view.mouseDown(with: mouseDown)
+        view.mouseUp(with: mouseUp)
         XCTAssertEqual(clickCount, 1)
     }
 
@@ -113,6 +203,50 @@ final class CodexLightTests: XCTestCase {
 
         let restored = AppSettingsStore(defaults: defaults)
         XCTAssertEqual(restored.petBackgroundColor, .cyan)
+    }
+
+    @MainActor
+    func testStatusBarWaveDefaultsOnAndPersists() throws {
+        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(settings.statusBarWaveEnabled)
+
+        settings.statusBarWaveEnabled = false
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertFalse(restored.statusBarWaveEnabled)
+    }
+
+    @MainActor
+    func testStatusBarCornerPercentDefaultsPersistsAndClamps() throws {
+        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.statusBarCornerPercent, 50)
+
+        settings.statusBarCornerPercent = 32
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarCornerPercent, 32)
+
+        defaults.set(90.0, forKey: "codexLight.statusBarCornerPercent")
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarCornerPercent, 50)
+    }
+
+    @MainActor
+    func testStatusBarClickBehaviorDefaultsToDetachedWindowAndPersists() throws {
+        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.statusBarClickBehavior, .detachedWindow)
+
+        settings.statusBarClickBehavior = .popover
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(restored.statusBarClickBehavior, .popover)
     }
 
     @MainActor

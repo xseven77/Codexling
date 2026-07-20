@@ -12,10 +12,16 @@ final class StatusBarController: NSObject {
     private let store: UsageSnapshotStore
     private let settings: AppSettingsStore
     private let activityStore: CodexActivityStore
+    private let actions: UsageActions
     private let animationPlayer = PetAnimationPlayer()
     private let hoverPanel = PetHoverPanelController()
+    private var currentPetFrame: NSImage?
     private var capsuleView: StatusCapsuleView?
     private var pendingHoverWorkItem: DispatchWorkItem?
+    private var pendingHoverHideWorkItem: DispatchWorkItem?
+    private var hoverSafeTriangle: HoverSafeTriangle?
+    private var hoverSafeTriangleTimer: Timer?
+    private var hoverSafeTriangleDeadline: Date?
 
     init(
         store: UsageSnapshotStore,
@@ -27,6 +33,7 @@ final class StatusBarController: NSObject {
         self.store = store
         self.settings = settings
         self.activityStore = activityStore
+        self.actions = actions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover = NSPopover()
         super.init()
@@ -49,6 +56,25 @@ final class StatusBarController: NSObject {
         hostingController.view.layer?.isOpaque = false
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
         popover.contentViewController = hostingController
+
+        hoverPanel.onMouseEntered = { [weak self] in
+            self?.cancelHoverPanelHide()
+        }
+        hoverPanel.onMouseExited = { [weak self] in
+            guard let self else { return }
+            guard let statusFrame = self.statusCapsuleScreenFrame else {
+                self.scheduleHoverPanelHide()
+                return
+            }
+            self.scheduleHoverPanelHide(
+                from: NSEvent.mouseLocation,
+                toward: statusFrame
+            )
+        }
+        hoverPanel.onClick = { [weak self] in
+            self?.hideHoverPanel()
+            actions.openDetachedWindow()
+        }
 
         statusItem.isVisible = true
         animationPlayer.onFrame = { [weak self] image in
@@ -92,10 +118,25 @@ final class StatusBarController: NSObject {
             view.autoresizingMask = [.width, .height]
             view.onClick = { [weak self] in
                 guard let self, let button = self.statusItem.button else { return }
-                self.togglePopover(button)
+                switch self.settings.statusBarClickBehavior {
+                case .detachedWindow:
+                    self.hideHoverPanel()
+                    self.actions.openDetachedWindow()
+                case .popover:
+                    self.togglePopover(button)
+                }
             }
             view.onMouseEntered = { [weak self] in self?.scheduleHoverPanel() }
-            view.onMouseExited = { [weak self] in self?.hideHoverPanel() }
+            view.onMouseExited = { [weak self] in
+                guard let self, self.hoverPanel.isVisible else {
+                    self?.scheduleHoverPanelHide()
+                    return
+                }
+                self.scheduleHoverPanelHide(
+                    from: NSEvent.mouseLocation,
+                    toward: self.hoverPanel.interactionFrame
+                )
+            }
             button.addSubview(view)
             capsuleView = view
         }
@@ -112,30 +153,47 @@ final class StatusBarController: NSObject {
         let snapshot = store.snapshot
         let quotaText: String = if store.isLoggedIn {
             snapshot.hasShortWindow
-                ? "5h \(snapshot.primaryWindow.percentText) · 周 \(snapshot.weekly.percentText)"
-                : "周 \(snapshot.weekly.percentText)"
+                ? "5h \(snapshot.primaryWindow.percentText)·周\(snapshot.weekly.percentText)"
+                : "周\(snapshot.weekly.percentText)"
         } else {
             "未登录"
         }
 
         let activityState = activityStore.snapshot.state
         let background = settings.petBackgroundColor.resolved(for: activityState)
+        let showsWave = settings.statusBarWaveEnabled
+            && activityState != .idle
+            && activityState != .unavailable
+        let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
         let compactText = activityState.statusBarText.map {
-            "\($0)\u{2009}·\u{2009}\(quotaText)"
+            "\($0)·\(quotaText)"
         } ?? quotaText
 
-        if settings.petsEnabled, let pet = settings.selectedPet {
+        // The selected Pet also powers the hover card. Keep its animation
+        // running even when the compact status-bar Pet is turned off.
+        if let pet = settings.selectedPet {
             animationPlayer.setPet(pet)
             animationPlayer.setState(activityState.petAnimationState)
+        } else {
+            animationPlayer.setPet(nil)
+            currentPetFrame = nil
+            hoverPanel.updatePetFrame(nil)
+        }
+
+        if settings.petsEnabled, settings.selectedPet != nil {
             capsuleView?.update(
                 background: background,
                 text: compactText,
                 foregroundColor: background.foregroundColor,
                 showsPet: true,
-                healthColor: nil
+                healthColor: nil,
+                showsWave: showsWave,
+                cornerRatio: cornerRatio
             )
+            capsuleView?.petImage = currentPetFrame.map {
+                StatusPetBadgeRenderer.render($0, cornerRatio: cornerRatio)
+            }
         } else {
-            animationPlayer.setPet(nil)
             let health = QuotaHealthLevel.from(
                 window: snapshot.primaryWindow,
                 isLoggedIn: store.isLoggedIn
@@ -146,7 +204,9 @@ final class StatusBarController: NSObject {
                 text: compactText,
                 foregroundColor: background.foregroundColor,
                 showsPet: false,
-                healthColor: health.nsColor
+                healthColor: health.nsColor,
+                showsWave: showsWave,
+                cornerRatio: cornerRatio
             )
         }
         if let capsuleView {
@@ -161,14 +221,31 @@ final class StatusBarController: NSObject {
     }
 
     private func applyPetFrame(_ image: NSImage?) {
-        guard settings.petsEnabled, settings.selectedPet != nil,
-              statusItem.button != nil else { return }
+        guard settings.selectedPet != nil, statusItem.button != nil else { return }
+        currentPetFrame = image
         image?.isTemplate = false
-        capsuleView?.petImage = image.map(StatusPetBadgeRenderer.render)
+        if settings.petsEnabled {
+            let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
+            capsuleView?.petImage = image.map {
+                StatusPetBadgeRenderer.render($0, cornerRatio: cornerRatio)
+            }
+        } else {
+            capsuleView?.petImage = nil
+        }
         hoverPanel.updatePetFrame(image)
     }
 
     private func updateHoverContent(button: NSStatusBarButton) {
+        guard store.isLoggedIn else {
+            hoverPanel.update(
+                title: "登录以查看 Codex 用量",
+                detail: "连接 ChatGPT 账号后，即可查看额度与任务状态",
+                meta: "点击打开窗口并登录"
+            )
+            button.toolTip = nil
+            return
+        }
+
         let activity = activityStore.snapshot
         let countText = activity.activeTaskCount > 0
             ? "\(activity.activeTaskCount) 个活跃任务"
@@ -184,6 +261,7 @@ final class StatusBarController: NSObject {
 
     private func scheduleHoverPanel() {
         pendingHoverWorkItem?.cancel()
+        cancelHoverPanelHide()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, let button = self.statusItem.button, !self.popover.isShown else { return }
             self.hoverPanel.show(relativeTo: button)
@@ -195,7 +273,92 @@ final class StatusBarController: NSObject {
     private func hideHoverPanel() {
         pendingHoverWorkItem?.cancel()
         pendingHoverWorkItem = nil
+        cancelHoverPanelHide()
         hoverPanel.hide()
+    }
+
+    private func scheduleHoverPanelHide(
+        from departurePoint: NSPoint? = nil,
+        toward targetFrame: NSRect? = nil
+    ) {
+        if let departurePoint, let targetFrame, hoverPanel.isVisible {
+            beginSafeTriangleTracking(from: departurePoint, toward: targetFrame)
+            return
+        }
+
+        pendingHoverWorkItem?.cancel()
+        pendingHoverWorkItem = nil
+        pendingHoverHideWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingHoverHideWorkItem = nil
+            guard !self.pointerIsInsidePersistentHoverRegion() else { return }
+            self.hoverPanel.hide()
+        }
+        pendingHoverHideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
+    }
+
+    private func cancelHoverPanelHide() {
+        pendingHoverHideWorkItem?.cancel()
+        pendingHoverHideWorkItem = nil
+        hoverSafeTriangleTimer?.invalidate()
+        hoverSafeTriangleTimer = nil
+        hoverSafeTriangle = nil
+        hoverSafeTriangleDeadline = nil
+    }
+
+    private func beginSafeTriangleTracking(from departurePoint: NSPoint, toward targetFrame: NSRect) {
+        cancelHoverPanelHide()
+        hoverSafeTriangle = HoverSafeTriangle(
+            origin: departurePoint,
+            targetFrame: targetFrame,
+            buffer: 8
+        )
+        // Avoid keeping the card alive forever if the pointer stops in the gap.
+        hoverSafeTriangleDeadline = Date().addingTimeInterval(2)
+        let timer = Timer(
+            timeInterval: 1.0 / 60.0,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evaluateSafeTrianglePointer()
+            }
+        }
+        hoverSafeTriangleTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func evaluateSafeTrianglePointer() {
+        let pointer = NSEvent.mouseLocation
+        if pointerIsInsidePersistentHoverRegion(pointer) {
+            return
+        }
+
+        if let hoverSafeTriangle,
+           let hoverSafeTriangleDeadline,
+           Date() < hoverSafeTriangleDeadline,
+           hoverSafeTriangle.contains(pointer) {
+            return
+        }
+
+        hideHoverPanel()
+    }
+
+    private func pointerIsInsidePersistentHoverRegion(
+        _ pointer: NSPoint = NSEvent.mouseLocation
+    ) -> Bool {
+        if hoverPanel.isVisible, hoverPanel.interactionFrame.contains(pointer) {
+            return true
+        }
+
+        return statusCapsuleScreenFrame?.contains(pointer) == true
+    }
+
+    private var statusCapsuleScreenFrame: NSRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        let rectInWindow = button.convert(button.bounds, to: nil)
+        return window.convertToScreen(rectInWindow)
     }
 
     @objc private func togglePopover(_ sender: NSStatusBarButton) {
@@ -272,16 +435,71 @@ enum PopoverMetrics {
     }
 }
 
-enum StatusPetBadgeRenderer {
-    static let size = NSSize(width: 23, height: 23)
+struct HoverSafeTriangle {
+    private let corners: [CGPoint]
+    private let expandedTarget: CGRect
 
-    static func render(_ petImage: NSImage) -> NSImage {
+    init(origin: CGPoint, targetFrame: CGRect, buffer: CGFloat = 0) {
+        let expandedTarget = targetFrame.insetBy(dx: -buffer, dy: -buffer)
+        self.expandedTarget = expandedTarget
+
+        if targetFrame.midY < origin.y {
+            // Target is below: create a buffered trapezoid to its upper edge.
+            corners = [
+                CGPoint(x: origin.x - buffer, y: origin.y + buffer),
+                CGPoint(x: origin.x + buffer, y: origin.y + buffer),
+                CGPoint(x: expandedTarget.maxX, y: expandedTarget.maxY),
+                CGPoint(x: expandedTarget.minX, y: expandedTarget.maxY)
+            ]
+        } else {
+            // Target is above: mirror the same buffered corridor upward.
+            corners = [
+                CGPoint(x: origin.x - buffer, y: origin.y - buffer),
+                CGPoint(x: expandedTarget.minX, y: expandedTarget.minY),
+                CGPoint(x: expandedTarget.maxX, y: expandedTarget.minY),
+                CGPoint(x: origin.x + buffer, y: origin.y - buffer)
+            ]
+        }
+    }
+
+    func contains(_ point: CGPoint) -> Bool {
+        if expandedTarget.contains(point) { return true }
+
+        var hasNegative = false
+        var hasPositive = false
+        for index in corners.indices {
+            let first = corners[index]
+            let second = corners[(index + 1) % corners.count]
+            let area = signedArea(point, first, second)
+            hasNegative = hasNegative || area < 0
+            hasPositive = hasPositive || area > 0
+            if hasNegative && hasPositive { return false }
+        }
+        return true
+    }
+
+    private func signedArea(_ point: CGPoint, _ first: CGPoint, _ second: CGPoint) -> CGFloat {
+        (point.x - second.x) * (first.y - second.y)
+            - (first.x - second.x) * (point.y - second.y)
+    }
+}
+
+enum StatusPetBadgeRenderer {
+    // Match the 22pt macOS status bar for a zero-inset comparison.
+    static let size = NSSize(width: 22, height: 22)
+
+    static func render(_ petImage: NSImage, cornerRatio: CGFloat = 0.5) -> NSImage {
         let result = NSImage(size: size)
         result.lockFocus()
         defer { result.unlockFocus() }
 
-        let badgeRect = NSRect(x: 1.5, y: 1.5, width: 20, height: 20)
-        let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 7, yRadius: 7)
+        let resolvedCornerRatio = min(max(cornerRatio, 0.2), 0.5)
+        let badgeRect = NSRect(origin: .zero, size: size).insetBy(dx: 0.25, dy: 0.25)
+        let badgePath = NSBezierPath(
+            roundedRect: badgeRect,
+            xRadius: badgeRect.height * resolvedCornerRatio,
+            yRadius: badgeRect.height * resolvedCornerRatio
+        )
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.08)
@@ -297,7 +515,7 @@ enum StatusPetBadgeRenderer {
         badgePath.stroke()
 
         NSGraphicsContext.current?.imageInterpolation = .none
-        let maxPetSize = NSSize(width: 18, height: 17)
+        let maxPetSize = NSSize(width: 16, height: 15)
         let scale = min(
             maxPetSize.width / max(petImage.size.width, 1),
             maxPetSize.height / max(petImage.size.height, 1)
@@ -306,22 +524,35 @@ enum StatusPetBadgeRenderer {
             width: petImage.size.width * scale,
             height: petImage.size.height * scale
         )
-        let petRect = NSRect(
-            x: (size.width - petSize.width) / 2,
-            y: (size.height - petSize.height) / 2,
-            width: petSize.width,
-            height: petSize.height
+        // Center the complete source frame without compensating for transparent
+        // pixels inside an individual Pet asset.
+        let petRect = centeredRect(
+            contentSize: petSize,
+            in: NSRect(origin: .zero, size: size)
         )
+        NSBezierPath(
+            roundedRect: petRect,
+            xRadius: min(petRect.width, petRect.height) * resolvedCornerRatio,
+            yRadius: min(petRect.width, petRect.height) * resolvedCornerRatio
+        ).addClip()
         petImage.draw(in: petRect, from: .zero, operation: .sourceOver, fraction: 1)
         result.isTemplate = false
         return result
     }
+
+    static func centeredRect(contentSize: NSSize, in container: NSRect) -> NSRect {
+        NSRect(
+            x: container.midX - contentSize.width / 2,
+            y: container.midY - contentSize.height / 2,
+            width: contentSize.width,
+            height: contentSize.height
+        )
+    }
 }
 
 final class StatusCapsuleView: NSView {
-    private static let leadingPadding: CGFloat = 0.5
-    private static let trailingPadding: CGFloat = 5
-    private static let contentGap: CGFloat = 3
+    private static let edgeContentGap: CGFloat = 10
+    private static let inlineContentGap: CGFloat = 4
     private static let dotSize: CGFloat = 9
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
 
@@ -337,17 +568,23 @@ final class StatusCapsuleView: NSView {
     private var foregroundColor = NSColor.labelColor
     private var showsPet = true
     private var healthColor: NSColor?
+    private var showsWave = false
+    private var cornerRatio: CGFloat = 0.5
     private var isPressed = false
+    private var isTrackingPress = false
+    private var lastClickTimestamp: TimeInterval = -.infinity
     private var trackingAreaReference: NSTrackingArea?
+    private var waveTimer: Timer?
+    private var waveStartTime = ProcessInfo.processInfo.systemUptime
 
     var preferredWidth: CGFloat {
         let textWidth = ceil(attributedText.size().width)
         let indicatorWidth = showsPet ? StatusPetBadgeRenderer.size.width : Self.dotSize
-        return Self.leadingPadding
+        return indicatorPadding
             + indicatorWidth
-            + Self.contentGap
+            + Self.edgeContentGap
             + textWidth
-            + Self.trailingPadding
+            + Self.edgeContentGap
     }
 
     override init(frame frameRect: NSRect) {
@@ -366,13 +603,21 @@ final class StatusCapsuleView: NSView {
         text: String,
         foregroundColor: NSColor,
         showsPet: Bool,
-        healthColor: NSColor?
+        healthColor: NSColor?,
+        showsWave: Bool,
+        cornerRatio: CGFloat
     ) {
         self.background = background
         self.text = text
         self.foregroundColor = foregroundColor
         self.showsPet = showsPet
         self.healthColor = healthColor
+        let waveVisibilityChanged = self.showsWave != showsWave
+        self.showsWave = showsWave
+        self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
+        if waveVisibilityChanged {
+            updateWaveAnimation()
+        }
         setAccessibilityLabel("Codex \(text)")
         needsDisplay = true
     }
@@ -381,23 +626,43 @@ final class StatusCapsuleView: NSView {
         super.draw(dirtyRect)
 
         let outerRect = bounds.insetBy(dx: 0.25, dy: 0.25)
-        let outerPath = NSBezierPath(roundedRect: outerRect, xRadius: 7, yRadius: 7)
+        let outerPath = NSBezierPath(
+            roundedRect: outerRect,
+            xRadius: outerRect.height * cornerRatio,
+            yRadius: outerRect.height * cornerRatio
+        )
         background.nsColor.setFill()
         outerPath.fill()
-        NSColor.white.withAlphaComponent(background == .neutral ? 0.14 : 0.30).setStroke()
-        outerPath.lineWidth = background == .neutral ? 0.45 : 0.55
-        outerPath.stroke()
+        drawWave(clippedTo: outerPath)
         if isPressed {
-            NSColor.white.withAlphaComponent(0.16).setFill()
+            NSColor.black.withAlphaComponent(background == .neutral ? 0.13 : 0.17).setFill()
             outerPath.fill()
+        }
+        let borderColor = isPressed
+            ? NSColor.black.withAlphaComponent(0.20)
+            : NSColor.white.withAlphaComponent(background == .neutral ? 0.14 : 0.30)
+        borderColor.setStroke()
+        outerPath.lineWidth = isPressed ? 0.9 : (background == .neutral ? 0.45 : 0.55)
+        outerPath.stroke()
+
+        if isPressed {
+            let insetRect = outerRect.insetBy(dx: 0.75, dy: 0.75)
+            let insetPath = NSBezierPath(
+                roundedRect: insetRect,
+                xRadius: insetRect.height * cornerRatio,
+                yRadius: insetRect.height * cornerRatio
+            )
+            NSColor.black.withAlphaComponent(0.08).setStroke()
+            insetPath.lineWidth = 0.7
+            insetPath.stroke()
         }
 
         let indicatorWidth: CGFloat
         if showsPet, let petImage {
             indicatorWidth = StatusPetBadgeRenderer.size.width
             let imageRect = NSRect(
-                x: Self.leadingPadding,
-                y: (bounds.height - StatusPetBadgeRenderer.size.height) / 2,
+                x: indicatorPadding,
+                y: bounds.midY - StatusPetBadgeRenderer.size.height / 2,
                 width: StatusPetBadgeRenderer.size.width,
                 height: StatusPetBadgeRenderer.size.height
             )
@@ -405,7 +670,7 @@ final class StatusCapsuleView: NSView {
         } else {
             indicatorWidth = Self.dotSize
             let dotRect = NSRect(
-                x: Self.leadingPadding,
+                x: indicatorPadding,
                 y: (bounds.height - Self.dotSize) / 2,
                 width: Self.dotSize,
                 height: Self.dotSize
@@ -420,12 +685,21 @@ final class StatusCapsuleView: NSView {
         var descent: CGFloat = 0
         var leading: CGFloat = 0
         CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
-        let baselineY = round(bounds.midY - (ascent - descent) / 2)
         if let context = NSGraphicsContext.current?.cgContext {
+            let imageBounds = CTLineGetImageBounds(line, context)
+            let visualMidY = imageBounds.isNull || imageBounds.height <= 0
+                ? (ascent - descent) / 2
+                : imageBounds.midY
+            let unsnappedBaselineY = bounds.midY - visualMidY
+            let backingScale = window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 2
+            let baselineY = (unsnappedBaselineY * backingScale).rounded() / backingScale
+
             context.saveGState()
             context.textMatrix = .identity
             context.textPosition = CGPoint(
-                x: Self.leadingPadding + indicatorWidth + Self.contentGap,
+                x: indicatorPadding + indicatorWidth + Self.edgeContentGap,
                 y: baselineY
             )
             CTLineDraw(line, context)
@@ -434,13 +708,122 @@ final class StatusCapsuleView: NSView {
     }
 
     private var attributedText: NSAttributedString {
-        NSAttributedString(
+        let result = NSMutableAttributedString(
             string: text,
             attributes: [
                 .foregroundColor: foregroundColor,
                 .font: Self.font
             ]
         )
+        let weeklyMarker = (text as NSString).range(of: "周", options: .backwards)
+        if weeklyMarker.location != NSNotFound {
+            result.addAttribute(.kern, value: Self.inlineContentGap, range: weeklyMarker)
+        }
+
+        let source = text as NSString
+        var searchRange = NSRange(location: 0, length: source.length)
+        while searchRange.length > 0 {
+            let separator = source.range(of: "·", options: [], range: searchRange)
+            guard separator.location != NSNotFound else { break }
+
+            if separator.location > 0 {
+                let precedingCharacter = source.rangeOfComposedCharacterSequence(
+                    at: separator.location - 1
+                )
+                result.addAttribute(.kern, value: Self.inlineContentGap, range: precedingCharacter)
+            }
+            result.addAttribute(.kern, value: Self.inlineContentGap, range: separator)
+
+            let nextLocation = NSMaxRange(separator)
+            searchRange = NSRange(location: nextLocation, length: source.length - nextLocation)
+        }
+        return result
+    }
+
+    private var indicatorPadding: CGFloat {
+        if showsPet {
+            // Match the leading inset to the centered top and bottom insets.
+            return max(0, (bounds.height - StatusPetBadgeRenderer.size.height) / 2)
+        }
+        return max(0, (bounds.height - Self.dotSize) / 2)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWaveAnimation()
+    }
+
+    private func updateWaveAnimation() {
+        waveTimer?.invalidate()
+        waveTimer = nil
+        waveStartTime = ProcessInfo.processInfo.systemUptime
+
+        guard showsWave, window != nil else {
+            needsDisplay = true
+            return
+        }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            needsDisplay = true
+            return
+        }
+
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.needsDisplay = true
+            }
+        }
+        waveTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func drawWave(clippedTo outerPath: NSBezierPath) {
+        guard showsWave else { return }
+
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let progress: CGFloat
+        if reducedMotion {
+            progress = 0.5
+        } else {
+            let elapsed = ProcessInfo.processInfo.systemUptime - waveStartTime
+            progress = CGFloat(elapsed.truncatingRemainder(dividingBy: 1.8) / 1.8)
+        }
+
+        let waveWidth: CGFloat = 48
+        let travelWidth = bounds.width + waveWidth * 2
+        let centerX = bounds.minX - waveWidth + travelWidth * progress
+
+        NSGraphicsContext.saveGraphicsState()
+        outerPath.addClip()
+
+        let waveRect = NSRect(
+            x: centerX - waveWidth / 2,
+            y: bounds.minY + 2,
+            width: waveWidth,
+            height: max(1, bounds.height - 4)
+        )
+        let wavePath = NSBezierPath(
+            roundedRect: waveRect,
+            xRadius: waveRect.height * cornerRatio,
+            yRadius: waveRect.height * cornerRatio
+        )
+        wavePath.addClip()
+
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.white.withAlphaComponent(0.08)
+        shadow.shadowBlurRadius = 4
+        shadow.shadowOffset = .zero
+        shadow.set()
+        let gradient = NSGradient(colorsAndLocations:
+            (NSColor.white.withAlphaComponent(0), 0),
+            (NSColor.white.withAlphaComponent(0.04), 0.30),
+            (NSColor.white.withAlphaComponent(0.17), 0.66),
+            (NSColor.white.withAlphaComponent(0.08), 1)
+        )
+        gradient?.draw(
+            in: waveRect,
+            angle: 0
+        )
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     override func updateTrackingAreas() {
@@ -469,13 +852,29 @@ final class StatusCapsuleView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        isTrackingPress = true
         isPressed = true
         needsDisplay = true
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        guard isTrackingPress else { return }
+        let pointerIsInside = bounds.contains(convert(event.locationInWindow, from: nil))
+        guard isPressed != pointerIsInside else { return }
+        isPressed = pointerIsInside
+        needsDisplay = true
+    }
+
     override func mouseUp(with event: NSEvent) {
+        let shouldTriggerClick = isTrackingPress && bounds.contains(
+            convert(event.locationInWindow, from: nil)
+        )
+        isTrackingPress = false
         isPressed = false
         needsDisplay = true
+        if shouldTriggerClick {
+            triggerClick(timestamp: event.timestamp)
+        }
     }
 
     override func accessibilityPerformPress() -> Bool {
@@ -485,36 +884,89 @@ final class StatusCapsuleView: NSView {
 
     @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
         guard recognizer.state == .ended else { return }
+        triggerClick(
+            timestamp: NSApp.currentEvent?.timestamp
+                ?? ProcessInfo.processInfo.systemUptime
+        )
+    }
+
+    private func triggerClick(timestamp: TimeInterval) {
+        // mouseUp is the primary button path; the gesture recognizer is retained
+        // as a fallback. Both can observe the same physical click, so deduplicate.
+        guard timestamp - lastClickTimestamp > 0.08 else { return }
+        lastClickTimestamp = timestamp
         onClick?()
+    }
+}
+
+private final class PetHoverPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        // AppKit normally keeps the complete panel inside visibleFrame. This
+        // panel includes a transparent shadow canvas, so that behavior creates
+        // a shadowInset-sized gap below the menu bar. Preserve AppKit's
+        // horizontal constraint but allow the transparent top inset to overlap
+        // the menu-bar window.
+        let constrained = super.constrainFrameRect(frameRect, to: screen)
+        return NSRect(
+            x: constrained.origin.x,
+            y: frameRect.origin.y,
+            width: frameRect.width,
+            height: frameRect.height
+        )
     }
 }
 
 @MainActor
 private final class PetHoverPanelController {
     private static let cardSize = NSSize(width: 340, height: 112)
-    private static let shadowInset: CGFloat = 10
+    private static let shadowInset: CGFloat = 20
+    private static let cardGapFromMenuBar: CGFloat = 4
     private let panel: NSPanel
     private let model = PetHoverViewModel()
+
+    var onMouseEntered: (() -> Void)? {
+        get { model.onMouseEntered }
+        set { model.onMouseEntered = newValue }
+    }
+
+    var onMouseExited: (() -> Void)? {
+        get { model.onMouseExited }
+        set { model.onMouseExited = newValue }
+    }
+
+    var onClick: (() -> Void)? {
+        get { model.onClick }
+        set { model.onClick = newValue }
+    }
+
+    var isVisible: Bool { panel.isVisible }
+
+    var interactionFrame: NSRect {
+        panel.frame.insetBy(dx: Self.shadowInset, dy: Self.shadowInset)
+    }
 
     init() {
         let panelSize = NSSize(
             width: Self.cardSize.width + Self.shadowInset * 2,
             height: Self.cardSize.height + Self.shadowInset * 2
         )
-        panel = NSPanel(
+        panel = PetHoverPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
         )
-        panel.level = .statusBar
+        // Keep the hover card above normal windows but below the menu bar.
+        // Its transparent shadow region can overlap the status item; using the
+        // status-bar level would intermittently intercept capsule clicks.
+        panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // The system shadow follows the rectangular panel bounds and leaves dark,
         // square corners around a rounded visual-effect view. Draw one controlled
         // shadow around the rounded card instead.
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.transient, .canJoinAllSpaces, .fullScreenAuxiliary]
 
@@ -548,12 +1000,20 @@ private final class PetHoverPanelController {
         let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
         var x = anchor.midX - size.width / 2
         x = min(max(x, screenFrame.minX + 8), screenFrame.maxX - size.width - 8)
-        let y = anchor.minY - size.height + Self.shadowInset - 7
+        // Anchor the visible card—not its transparent shadow canvas—to the
+        // actual menu-bar edge. The status button's local vertical bounds can
+        // vary by OS version and previously produced a much larger visual gap.
+        let menuBarBottom = window.frame.minY
+        let y = menuBarBottom
+            - Self.cardGapFromMenuBar
+            - Self.cardSize.height
+            - Self.shadowInset
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         panel.orderFrontRegardless()
     }
 
     func hide() {
+        NSCursor.arrow.set()
         panel.orderOut(nil)
     }
 }
@@ -565,6 +1025,9 @@ private final class PetHoverViewModel {
     var detail = ""
     var meta = ""
     var petFrame: NSImage?
+    @ObservationIgnored var onMouseEntered: (() -> Void)?
+    @ObservationIgnored var onMouseExited: (() -> Void)?
+    @ObservationIgnored var onClick: (() -> Void)?
 }
 
 private struct PetHoverContentView: View {
@@ -574,6 +1037,21 @@ private struct PetHoverContentView: View {
 
     var body: some View {
         glassSurface
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .onHover { isHovered in
+                if isHovered {
+                    NSCursor.pointingHand.set()
+                    model.onMouseEntered?()
+                } else {
+                    NSCursor.arrow.set()
+                    model.onMouseExited?()
+                }
+            }
+            .onTapGesture {
+                model.onClick?()
+            }
+            .shadow(color: Color.black.opacity(0.12), radius: 12, x: 0, y: 0)
+            .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 0)
             .padding(shadowInset)
             .frame(
                 width: cardSize.width + shadowInset * 2,
@@ -594,7 +1072,6 @@ private struct PetHoverContentView: View {
                 .overlay {
                     shape.stroke(Color.white.opacity(0.42), lineWidth: 0.8)
                 }
-                .shadow(color: Color.black.opacity(0.08), radius: 9, x: 0, y: 3)
         }
     }
 

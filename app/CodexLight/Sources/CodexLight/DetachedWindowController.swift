@@ -73,11 +73,15 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.contentViewController = hostingController
         window.delegate = self
         window.isReleasedWhenClosed = false
+        // The status-bar capsule is a direct action. Avoid AppKit's default
+        // document-window reveal animation so the result follows mouse-up.
+        window.animationBehavior = .none
         window.center()
     }
 
     func show() {
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     func refreshThemeAppearance() {
@@ -118,7 +122,11 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        // The detached window contains sliders and other drag-driven controls.
+        // Background window dragging competes with SwiftUI's Slider gesture and
+        // makes the whole window move instead of the thumb. Keep dragging on
+        // the standard title-bar region and let content own its pointer input.
+        window.isMovableByWindowBackground = false
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
         window.hasShadow = true

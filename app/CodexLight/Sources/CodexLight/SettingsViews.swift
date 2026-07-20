@@ -212,12 +212,51 @@ struct SettingsView: View {
                 }
 
                 SettingsInlineRow(
+                    title: "点击胶囊",
+                    subtitle: "选择点击状态栏胶囊后打开的窗口类型"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.statusBarClickBehavior,
+                        options: StatusBarClickBehavior.allCases,
+                        title: \.title,
+                        symbol: \.symbolName
+                    )
+                }
+
+                SettingsInlineRow(
                     title: "显示动画 Pet",
                     subtitle: "开启显示动画 Pet，关闭显示原来的额度健康圆灯"
                 ) {
                     Toggle("", isOn: $settings.petsEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                }
+
+                SettingsInlineRow(
+                    title: "活动状态流光",
+                    subtitle: "非空闲时，在状态栏胶囊内显示从左向右的流光"
+                ) {
+                    Toggle("", isOn: $settings.statusBarWaveEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+
+                SettingsInlineRow(
+                    title: "状态栏圆角",
+                    subtitle: "同步调整胶囊与 Pet 区域圆角，范围 20%–50%"
+                ) {
+                    HStack(spacing: 8) {
+                        Text("\(Int(settings.statusBarCornerPercent))%")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                            .frame(width: 30, alignment: .trailing)
+                        Slider(
+                            value: $settings.statusBarCornerPercent,
+                            in: 20...50,
+                            step: 1
+                        )
+                        .frame(width: 112)
+                    }
                 }
 
                 if let pet = settings.selectedPet {

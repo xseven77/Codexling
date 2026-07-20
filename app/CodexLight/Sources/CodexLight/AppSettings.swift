@@ -79,6 +79,27 @@ enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
     }
 }
 
+enum StatusBarClickBehavior: String, CaseIterable, Identifiable {
+    case detachedWindow
+    case popover
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .detachedWindow: "打开分离窗口"
+        case .popover: "打开下拉窗口"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .detachedWindow: "rectangle.on.rectangle.angled"
+        case .popover: "menubar.arrow.down.rectangle"
+        }
+    }
+}
+
 enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
     case neutral
     case automatic
@@ -168,6 +189,9 @@ final class AppSettingsStore {
         static let petsEnabled = "codexLight.petsEnabled"
         static let selectedPetID = "codexLight.selectedPetID"
         static let petBackgroundColor = "codexLight.petBackgroundColor"
+        static let statusBarWaveEnabled = "codexLight.statusBarWaveEnabled"
+        static let statusBarCornerPercent = "codexLight.statusBarCornerPercent"
+        static let statusBarClickBehavior = "codexLight.statusBarClickBehavior"
     }
 
     private let defaults: UserDefaults
@@ -214,6 +238,30 @@ final class AppSettingsStore {
         }
     }
 
+    var statusBarWaveEnabled: Bool {
+        didSet {
+            guard statusBarWaveEnabled != oldValue else { return }
+            defaults.set(statusBarWaveEnabled, forKey: Keys.statusBarWaveEnabled)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var statusBarCornerPercent: Double {
+        didSet {
+            guard statusBarCornerPercent != oldValue else { return }
+            defaults.set(statusBarCornerPercent, forKey: Keys.statusBarCornerPercent)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var statusBarClickBehavior: StatusBarClickBehavior {
+        didSet {
+            guard statusBarClickBehavior != oldValue else { return }
+            defaults.set(statusBarClickBehavior.rawValue, forKey: Keys.statusBarClickBehavior)
+            onPetSettingsChanged?()
+        }
+    }
+
     private(set) var availablePets: [CodexPet] = []
 
     var selectedPet: CodexPet? {
@@ -250,6 +298,11 @@ final class AppSettingsStore {
         selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
         petBackgroundColor = defaults.string(forKey: Keys.petBackgroundColor)
             .flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
+        statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
+        let savedCornerPercent = defaults.object(forKey: Keys.statusBarCornerPercent) as? Double ?? 50
+        statusBarCornerPercent = min(max(savedCornerPercent, 20), 50)
+        statusBarClickBehavior = defaults.string(forKey: Keys.statusBarClickBehavior)
+            .flatMap(StatusBarClickBehavior.init(rawValue:)) ?? .detachedWindow
         reloadPets(notify: false)
     }
 
