@@ -2,7 +2,7 @@ const steps = [
   {
     step: "01",
     title: "点击菜单栏图标",
-    description: "启动 Codex Light，状态栏会显示当前额度摘要或登录提示。",
+    description: "启动 Codexling，状态栏会显示当前额度摘要或登录提示。",
   },
   {
     step: "02",

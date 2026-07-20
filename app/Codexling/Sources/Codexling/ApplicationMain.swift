@@ -1,7 +1,7 @@
 import AppKit
 
 @main
-enum CodexLightMain {
+enum CodexlingMain {
     // NSApplication.delegate is weak; keep a strong reference for app lifetime.
     @MainActor
     private static var appDelegate: AppDelegate?

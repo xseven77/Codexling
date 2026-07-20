@@ -2,7 +2,7 @@ import type { GitHubRepo } from "@/lib/github";
 import { formatRelative } from "@/lib/github";
 
 const tree = [
-  { name: "app/CodexLight", type: "dir" },
+  { name: "app/Codexling", type: "dir" },
   { name: "docs", type: "dir" },
   { name: "README.md", type: "file" },
   { name: "PROJECT.md", type: "file" },
@@ -111,16 +111,16 @@ export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
             </div>
 
             <div className="mt-5 rounded-xl border border-[var(--github-border)] bg-[#161b22] p-5 text-sm leading-7 text-[var(--github-text)]">
-              <h3 className="text-lg font-semibold text-white">Codex Light</h3>
+              <h3 className="text-lg font-semibold text-white">Codexling</h3>
               <p className="mt-3 text-[var(--github-muted)]">
                 Show Codex short-window and weekly usage in the macOS menu bar. Click to
                 open a detail panel with credits, reset coupons, expiration times, and
                 refresh status.
               </p>
               <pre className="mt-4 overflow-x-auto rounded-lg bg-[#0d1117] p-4 text-xs text-[#7ee787]">
-{`cd app/CodexLight
+{`cd app/Codexling
 ./package_app.sh
-open "dist/Codex Light.app"`}
+open "dist/Codexling.app"`}
               </pre>
             </div>
           </div>

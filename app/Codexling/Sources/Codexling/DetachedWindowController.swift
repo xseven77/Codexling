@@ -63,7 +63,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
         super.init()
 
-        window.title = "Codex Light"
+        window.title = "Codexling"
         applyWindowChrome()
         applyContentSizeLimits(to: window)
         hostingController.sizingOptions = [.minSize, .maxSize]

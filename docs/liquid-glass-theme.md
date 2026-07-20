@@ -1,4 +1,4 @@
-# Codex Light 流体玻璃主题
+# Codexling 流体玻璃主题
 
 状态栏下拉窗口与 Pet hover 卡片共用同一种根玻璃：macOS 26 直接使用无 tint、无实色底的系统 `.glassEffect(in:)`，让系统负责折射、高光和动态材质；旧系统统一回退为 `ultraThinMaterial`、白色细描边和轻阴影。整块窗口不按额度健康色染色或生成彩色渐变，余额颜色仅用于额度数字和进度条。
 

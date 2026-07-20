@@ -1,11 +1,11 @@
-# Codex Light 发布脚本说明
+# Codexling 发布脚本说明
 
 本文档说明如何使用 `release_app.sh` 交互式完成 macOS App 打包和 GitHub Release 发布。
 
 ## 脚本位置
 
 ```bash
-app/CodexLight/release_app.sh
+app/Codexling/release_app.sh
 ```
 
 ## 发布顺序
@@ -20,7 +20,7 @@ app/CodexLight/release_app.sh
 6. 提示输入 build number。
 7. 写入 `Resources/Info.plist` 的版本号。
 8. 执行 `package_app.sh`，重新生成 `.app`、`.zip` 和 `.dmg`。
-9. 挂载 DMG，验证其中包含 `Codex Light.app` 和 `Applications` 快捷方式。
+9. 挂载 DMG，验证其中包含 `Codexling.app` 和 `Applications` 快捷方式。
 10. 如版本文件有变化，自动提交 `Release <version>`。
 11. 推送当前分支。
 12. 创建并推送 `v<version>` tag。
@@ -34,14 +34,14 @@ app/CodexLight/release_app.sh
 在仓库根目录运行：
 
 ```bash
-cd app/CodexLight
+cd app/Codexling
 ./release_app.sh
 ```
 
 或者从任意目录运行：
 
 ```bash
-cd app/CodexLight
+cd app/Codexling
 ./release_app.sh
 ```
 
@@ -115,13 +115,13 @@ build number 必须是整数。默认值会在当前 build number 基础上加 1
 脚本会重新运行 `package_app.sh`，并生成：
 
 ```text
-app/CodexLight/dist/Codex Light-<version>.dmg
-app/CodexLight/dist/Codex Light-<version>.zip
+app/Codexling/dist/Codexling-<version>.dmg
+app/Codexling/dist/Codexling-<version>.zip
 ```
 
 DMG 内容包括：
 
-- `Codex Light.app`
+- `Codexling.app`
 - `Applications` 快捷方式
 
 ## GitHub Release 行为

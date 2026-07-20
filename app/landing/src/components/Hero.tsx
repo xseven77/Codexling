@@ -26,7 +26,7 @@ export function Hero() {
           </h1>
 
           <p className="mt-5 max-w-xl text-base leading-7 text-muted sm:mt-6 sm:text-lg sm:leading-8">
-            Codex Light 是一款轻量 macOS 状态栏应用。通过 OpenAI 官方授权登录，实时展示
+            Codexling 是一款轻量 macOS 状态栏应用。通过 OpenAI 官方授权登录，实时展示
             5 小时额度、周额度、credits 与重置券，不保存密码，不绕过 MFA。
           </p>
 
@@ -41,7 +41,7 @@ export function Hero() {
               <span aria-hidden>↗</span>
             </a>
             <a
-              href="https://github.com/xseven77/codex-light"
+              href="https://github.com/xseven77/Codexling"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center justify-center gap-2 rounded-full border border-border px-6 py-3 text-sm transition-colors hover:bg-foreground/5 active:bg-foreground/10"
@@ -54,7 +54,7 @@ export function Hero() {
             <div className="flex items-center gap-2">
               <Image
                 src="/logo.svg"
-                alt="Codex Light logo"
+                alt="Codexling logo"
                 width={18}
                 height={18}
                 className="shrink-0 rounded-[4px]"

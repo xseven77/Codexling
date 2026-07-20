@@ -183,15 +183,20 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class AppSettingsStore {
+    private enum Legacy {
+        static let domain = "com.qiizo.codex-light"
+        static let keyPrefix = "codexLight."
+    }
+
     private enum Keys {
-        static let theme = "codexLight.theme"
-        static let autoRefreshInterval = "codexLight.autoRefreshInterval"
-        static let petsEnabled = "codexLight.petsEnabled"
-        static let selectedPetID = "codexLight.selectedPetID"
-        static let petBackgroundColor = "codexLight.petBackgroundColor"
-        static let statusBarWaveEnabled = "codexLight.statusBarWaveEnabled"
-        static let statusBarCornerPercent = "codexLight.statusBarCornerPercent"
-        static let statusBarClickBehavior = "codexLight.statusBarClickBehavior"
+        static let theme = "codexling.theme"
+        static let autoRefreshInterval = "codexling.autoRefreshInterval"
+        static let petsEnabled = "codexling.petsEnabled"
+        static let selectedPetID = "codexling.selectedPetID"
+        static let petBackgroundColor = "codexling.petBackgroundColor"
+        static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
+        static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
+        static let statusBarClickBehavior = "codexling.statusBarClickBehavior"
     }
 
     private let defaults: UserDefaults
@@ -277,6 +282,9 @@ final class AppSettingsStore {
     var onPetSettingsChanged: (() -> Void)?
 
     init(defaults: UserDefaults = .standard) {
+        if defaults === UserDefaults.standard {
+            Self.migrateLegacyDefaultsIfNeeded(into: defaults)
+        }
         self.defaults = defaults
         systemColorScheme = Self.currentSystemColorScheme()
 
@@ -304,6 +312,26 @@ final class AppSettingsStore {
         statusBarClickBehavior = defaults.string(forKey: Keys.statusBarClickBehavior)
             .flatMap(StatusBarClickBehavior.init(rawValue:)) ?? .detachedWindow
         reloadPets(notify: false)
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded(into defaults: UserDefaults) {
+        guard let legacyDefaults = UserDefaults(suiteName: Legacy.domain) else { return }
+
+        let keys = [
+            Keys.theme,
+            Keys.autoRefreshInterval,
+            Keys.petsEnabled,
+            Keys.selectedPetID,
+            Keys.petBackgroundColor,
+            Keys.statusBarWaveEnabled,
+            Keys.statusBarCornerPercent,
+            Keys.statusBarClickBehavior
+        ]
+        for key in keys where defaults.object(forKey: key) == nil {
+            let suffix = key.replacingOccurrences(of: "codexling.", with: "")
+            guard let value = legacyDefaults.object(forKey: Legacy.keyPrefix + suffix) else { continue }
+            defaults.set(value, forKey: key)
+        }
     }
 
     func applyAppearance() {

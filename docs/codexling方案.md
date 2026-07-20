@@ -1,4 +1,4 @@
-# Codex Light 方案
+# Codexling 方案
 
 ## 1. 背景
 
@@ -51,7 +51,7 @@ Codex 受限
 点击状态栏后显示详情弹窗：
 
 ```text
-Codex Light
+Codexling
 
 账号：name@example.com
 工作区：Personal
@@ -94,7 +94,7 @@ Credits
 整体结构：
 
 ```text
-CodexLightApp
+CodexlingApp
   -> AuthController
      -> 生成 OAuth PKCE state / verifier / challenge
      -> 打开官方 OpenAI 授权页
@@ -103,7 +103,7 @@ CodexLightApp
   -> CodexUsageService
      -> 调用 /backend-api/wham/usage
      -> 调用 /backend-api/wham/rate-limit-reset-credits
-  -> CodexLightParser
+  -> CodexlingParser
      -> 解析 usage.limits 和 rate_limit primary/secondary window
   -> UsageStore
      -> 缓存最后一次成功结果
@@ -229,7 +229,7 @@ UsageAdapter
 本地只缓存展示所需的最近一次快照：
 
 ```text
-~/Library/Application Support/CodexLight/latest_snapshot.json
+~/Library/Application Support/Codexling/latest_snapshot.json
 ```
 
 缓存内容：
@@ -290,14 +290,14 @@ UsageAdapter
 ## 12. 项目目录建议
 
 ```text
-codex-light/
+Codexling/
   README.md
   PROJECT.md
   docs/
-    codex-light方案.md
+    codexling方案.md
   app/
-    CodexLight/
-      CodexLightApp.swift
+    Codexling/
+      CodexlingApp.swift
       MenuBar/
       DetailPopover/
       Auth/

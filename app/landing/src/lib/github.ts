@@ -1,7 +1,7 @@
-const REPO = "xseven77/codex-light";
+const REPO = "xseven77/Codexling";
 const GITHUB_API = "https://api.github.com";
 
-export const GITHUB_REPO_URL = "https://github.com/xseven77/codex-light";
+export const GITHUB_REPO_URL = "https://github.com/xseven77/Codexling";
 export const GITHUB_RELEASES_URL = `${GITHUB_REPO_URL}/releases`;
 
 export type GitHubRepo = {
@@ -36,8 +36,8 @@ export type GitHubRelease = {
 
 const FALLBACK_REPO: GitHubRepo = {
   owner: "xseven77",
-  name: "codex-light",
-  fullName: "xseven77/codex-light",
+  name: "Codexling",
+  fullName: "xseven77/Codexling",
   description:
     "macOS status bar app for viewing Codex usage limits through the official OpenAI login flow.",
   stars: 0,
@@ -45,49 +45,10 @@ const FALLBACK_REPO: GitHubRepo = {
   language: "Swift",
   updatedAt: "2026-07-09T08:56:06Z",
   defaultBranch: "main",
-  url: "https://github.com/xseven77/codex-light",
+  url: "https://github.com/xseven77/Codexling",
 };
 
-const FALLBACK_RELEASES: GitHubRelease[] = [
-  {
-    tagName: "v0.1.2",
-    name: "Codex Light 0.1.2",
-    publishedAt: "2026-07-09T08:56:12Z",
-    body: "Latest macOS release with menu bar usage summary and OAuth login.",
-    isLatest: true,
-    url: "https://github.com/xseven77/codex-light/releases/tag/v0.1.2",
-    assets: [
-      {
-        name: "Codex.Light-0.1.2.dmg",
-        size: 1006968,
-        downloadCount: 1,
-        url: "https://github.com/xseven77/codex-light/releases/download/v0.1.2/Codex.Light-0.1.2.dmg",
-      },
-      {
-        name: "Codex.Light-0.1.2.zip",
-        size: 959819,
-        downloadCount: 0,
-        url: "https://github.com/xseven77/codex-light/releases/download/v0.1.2/Codex.Light-0.1.2.zip",
-      },
-    ],
-  },
-  {
-    tagName: "v0.1.0",
-    name: "Codex Light 0.1.0",
-    publishedAt: "2026-07-09T08:35:16Z",
-    body: "Initial macOS release.",
-    isLatest: false,
-    url: "https://github.com/xseven77/codex-light/releases/tag/v0.1.0",
-    assets: [
-      {
-        name: "Codex.Light-0.1.0.dmg",
-        size: 1006945,
-        downloadCount: 0,
-        url: "https://github.com/xseven77/codex-light/releases/download/v0.1.0/Codex.Light-0.1.0.dmg",
-      },
-    ],
-  },
-];
+const FALLBACK_RELEASES: GitHubRelease[] = [];
 
 async function fetchJson<T>(url: string): Promise<T | null> {
   try {

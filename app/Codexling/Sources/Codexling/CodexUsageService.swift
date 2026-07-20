@@ -199,7 +199,7 @@ actor CodexUsageService {
         let accountID = readJWTClaim(token.accessToken, namespace: "https://api.openai.com/auth", claim: "chatgpt_account_id")
         let usagePayload = try await fetchJSON(url: usageURL, token: token.accessToken, accountID: accountID)
         let resetPayload = try? await fetchJSON(url: resetCreditsURL, token: token.accessToken, accountID: accountID)
-        let quota = CodexLightParser().parse(
+        let quota = CodexlingParser().parse(
             usagePayload: usagePayload,
             resetCreditsPayload: resetPayload,
             email: token.email,
@@ -218,7 +218,7 @@ actor CodexUsageService {
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("CodexLight/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("Codexling/0.1", forHTTPHeaderField: "User-Agent")
         request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
         request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
         if let accountID {
@@ -234,7 +234,7 @@ actor CodexUsageService {
     }
 }
 
-struct CodexLightParser {
+struct CodexlingParser {
     func parse(usagePayload: Any, resetCreditsPayload: Any?, email: String?, accountName: String?) -> CodexUsageSnapshot {
         let root = usagePayload as? [String: Any] ?? [:]
         let usage = root["usage"] as? [String: Any] ?? root
@@ -483,23 +483,34 @@ private struct TokenResponse: Decodable {
 }
 
 struct CodexOAuthTokenStore: Sendable {
-    private var fileURL: URL {
-        let supportDirectory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0]
+    private var supportDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
 
+    private var fileURL: URL {
         return supportDirectory
+            .appendingPathComponent("Codexling", isDirectory: true)
+            .appendingPathComponent("oauth_token.json")
+    }
+
+    private var legacyFileURL: URL {
+        supportDirectory
             .appendingPathComponent("CodexLight", isDirectory: true)
             .appendingPathComponent("oauth_token.json")
     }
 
     func hasStoredToken() -> Bool {
         FileManager.default.fileExists(atPath: fileURL.path)
+            || FileManager.default.fileExists(atPath: legacyFileURL.path)
     }
 
     func load() -> CodexOAuthToken? {
         if let token = loadFromFile() {
+            return token
+        }
+
+        if let token = loadFromFile(at: legacyFileURL) {
+            save(token)
             return token
         }
 
@@ -533,11 +544,16 @@ struct CodexOAuthTokenStore: Sendable {
 
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: legacyFileURL)
         CodexOAuthLegacyKeychain().clear()
     }
 
     private func loadFromFile() -> CodexOAuthToken? {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        loadFromFile(at: fileURL)
+    }
+
+    private func loadFromFile(at url: URL) -> CodexOAuthToken? {
+        guard let data = try? Data(contentsOf: url) else {
             return nil
         }
 
@@ -717,7 +733,7 @@ private enum OAuthCallbackHTML {
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>连接成功 · Codex Light</title>
+      <title>连接成功 · Codexling</title>
       <style>
         :root {
           color-scheme: light;
@@ -803,7 +819,7 @@ private enum OAuthCallbackHTML {
           <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
         </div>
         <h1>连接成功</h1>
-        <p class="subtitle">Codex Light 已连接你的 OpenAI 账号。</p>
+        <p class="subtitle">Codexling 已连接你的 OpenAI 账号。</p>
         <p class="hint">你可以关闭此页面，返回菜单栏查看 5 小时额度、周额度和重置券。</p>
         <button type="button" onclick="window.close()">关闭页面</button>
       </main>
@@ -818,7 +834,7 @@ private enum OAuthCallbackHTML {
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>连接失败 · Codex Light</title>
+          <title>连接失败 · Codexling</title>
           <style>
             :root {
               color-scheme: light;
@@ -881,7 +897,7 @@ private enum OAuthCallbackHTML {
           <main class="card">
             <div class="error-badge" aria-hidden="true">!</div>
             <h1>连接失败</h1>
-            <p>请返回 Codex Light 重新尝试登录。</p>
+            <p>请返回 Codexling 重新尝试登录。</p>
             <p class="message">\(message)</p>
           </main>
         </body>

@@ -1,9 +1,9 @@
 import Foundation
 import SwiftUI
 import XCTest
-@testable import CodexLight
+@testable import Codexling
 
-final class CodexLightTests: XCTestCase {
+final class CodexlingTests: XCTestCase {
     @MainActor
     func testThemePreferencesMapToLightDarkAndSystemColorSchemes() {
         XCTAssertNil(AppThemePreference.system.preferredColorScheme)
@@ -17,10 +17,10 @@ final class CodexLightTests: XCTestCase {
 
     @MainActor
     func testFollowSystemRefreshesWhenEffectiveAppearanceChanges() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(AppThemePreference.system.rawValue, forKey: "codexLight.theme")
+        defaults.set(AppThemePreference.system.rawValue, forKey: "codexling.theme")
 
         let settings = AppSettingsStore(defaults: defaults)
         let nextScheme: ColorScheme = settings.systemColorScheme == .light ? .dark : .light
@@ -61,7 +61,7 @@ final class CodexLightTests: XCTestCase {
 
     @MainActor
     func testPetBackgroundDefaultsToNeutralAndListsItFirst() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -194,7 +194,7 @@ final class CodexLightTests: XCTestCase {
 
     @MainActor
     func testPetBackgroundSelectionPersists() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -207,7 +207,7 @@ final class CodexLightTests: XCTestCase {
 
     @MainActor
     func testStatusBarWaveDefaultsOnAndPersists() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -221,7 +221,7 @@ final class CodexLightTests: XCTestCase {
 
     @MainActor
     func testStatusBarCornerPercentDefaultsPersistsAndClamps() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -231,13 +231,13 @@ final class CodexLightTests: XCTestCase {
         settings.statusBarCornerPercent = 32
         XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarCornerPercent, 32)
 
-        defaults.set(90.0, forKey: "codexLight.statusBarCornerPercent")
+        defaults.set(90.0, forKey: "codexling.statusBarCornerPercent")
         XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarCornerPercent, 50)
     }
 
     @MainActor
     func testStatusBarClickBehaviorDefaultsToDetachedWindowAndPersists() throws {
-        let suiteName = "CodexLightTests.\(UUID().uuidString)"
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 

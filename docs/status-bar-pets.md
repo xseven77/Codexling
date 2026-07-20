@@ -1,8 +1,8 @@
-# Codex Light 状态栏 Pets 方案与实现
+# Codexling 状态栏 Pets 方案与实现
 
 ## 1. 目标
 
-Codex Light 在原有额度摘要之外，直接在 macOS 状态栏展示与 Codex 相同格式的动画 Pet，并通过 Pet 动画、状态文字和悬停浮层表达当前 Codex 执行情况。
+Codexling 在原有额度摘要之外，直接在 macOS 状态栏展示与 Codex 相同格式的动画 Pet，并通过 Pet 动画、状态文字和悬停浮层表达当前 Codex 执行情况。
 
 本功能包含：
 
@@ -61,10 +61,10 @@ CFBundleIdentifier = com.openai.codex
 | `stacky` | Stacky |
 | `bsod` | BSOD |
 
-Codex Light 不修改 Codex/ChatGPT 安装包。启动时只读取 ASAR 目录索引，将命中的 WebP 条目原样提取到：
+Codexling 不修改 Codex/ChatGPT 安装包。启动时只读取 ASAR 目录索引，将命中的 WebP 条目原样提取到：
 
 ```text
-~/Library/Application Support/CodexLight/Pets/<Codex 版本>/
+~/Library/Application Support/Codexling/Pets/<Codex 版本>/
 ```
 
 缓存按 Codex 版本隔离。Codex 升级后会读取新版本目录，不复用旧图集。
@@ -128,7 +128,7 @@ spriteVersionNumber：2
 | 8 | `review` | 0–5 | 150 ms，末帧 280 ms |
 | 9–10 | 16 个注视方向 | 0–7 | 22.5° 步进 |
 
-Codex Light 的播放器与 Codex 当前播放器保持一致：
+Codexling 的播放器与 Codex 当前播放器保持一致：
 
 - 非空闲状态动画连续播放三遍，然后进入慢速 idle 循环。
 - idle 每帧时长放大 6 倍，减少菜单栏视觉干扰。
@@ -158,7 +158,7 @@ Codex Light 的播放器与 Codex 当前播放器保持一致：
 
 ### 4.1 状态归并
 
-| 本地事件 | Codex Light 状态 | Pet 动画 |
+| 本地事件 | Codexling 状态 | Pet 动画 |
 |---|---|---|
 | 无活动 | 空闲 | `idle` |
 | `task_started` / reasoning | 思考中 | `running` |
@@ -225,14 +225,14 @@ Codex 正在工作
 持久化键：
 
 ```text
-codexLight.petsEnabled
-codexLight.selectedPetID
+codexling.petsEnabled
+codexling.selectedPetID
 ```
 
 ## 7. 代码结构
 
 ```text
-Sources/CodexLight/
+Sources/Codexling/
 ├── PetModels.swift
 │   ├── CodexPetCatalog
 │   ├── AsarArchive
@@ -263,7 +263,7 @@ SQLite 表名和 rollout 事件可能变化，因此所有读取都集中在 `Co
 
 ### 版权与分发
 
-Codex Light 不把 Codex 内置 Pet 放入自身安装包，也不上传或重新发布这些资产。只有用户本机已经安装 Codex/ChatGPT 时，才从本机安装包只读提取到个人缓存供本机显示。
+Codexling 不把 Codex 内置 Pet 放入自身安装包，也不上传或重新发布这些资产。只有用户本机已经安装 Codex/ChatGPT 时，才从本机安装包只读提取到个人缓存供本机显示。
 
 ## 9. 验证要求
 

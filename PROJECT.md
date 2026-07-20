@@ -1,4 +1,4 @@
-# Codex Light Project
+# Codexling Project
 
 ## Milestones
 
@@ -14,11 +14,11 @@
 ## Initial Folder Layout
 
 ```text
-codex-light/
+Codexling/
   README.md
   PROJECT.md
   docs/
-    codex-light方案.md
+    codexling方案.md
   app/
     # SwiftUI app source will live here
   adapters/

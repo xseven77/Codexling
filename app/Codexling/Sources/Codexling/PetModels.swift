@@ -71,9 +71,21 @@ struct CodexPetCatalog: Sendable {
             self.cacheRoot = cacheRoot
         } else {
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.cacheRoot = support
+            let nextCacheRoot = support
+                .appendingPathComponent("Codexling", isDirectory: true)
+                .appendingPathComponent("Pets", isDirectory: true)
+            let legacyCacheRoot = support
                 .appendingPathComponent("CodexLight", isDirectory: true)
                 .appendingPathComponent("Pets", isDirectory: true)
+            if !FileManager.default.fileExists(atPath: nextCacheRoot.path),
+               FileManager.default.fileExists(atPath: legacyCacheRoot.path) {
+                try? FileManager.default.createDirectory(
+                    at: nextCacheRoot.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try? FileManager.default.copyItem(at: legacyCacheRoot, to: nextCacheRoot)
+            }
+            self.cacheRoot = nextCacheRoot
         }
 
         self.applicationURLs = applicationURLs ?? Self.defaultCodexApplicationURLs()

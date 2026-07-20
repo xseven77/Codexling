@@ -1,28 +1,28 @@
-# Codex Light
+# Codexling
 
 macOS status bar app concept for viewing Codex usage limits through the official Codex/ChatGPT login flow.
 
 ## Documents
 
-- [方案文档](docs/codex-light方案.md)
+- [方案文档](docs/codexling方案.md)
 - [实现待办](PROJECT.md)
 
 ## Build
 
 ```bash
-cd app/CodexLight
+cd app/Codexling
 ./package_app.sh
-open "dist/Codex Light.app"
+open "dist/Codexling.app"
 ```
 
 Release packaging and GitHub publishing are handled by the interactive script:
 
 ```bash
-cd app/CodexLight
+cd app/Codexling
 ./release_app.sh
 ```
 
-See [发布脚本说明](app/CodexLight/RELEASE.zh-CN.md).
+See [发布脚本说明](app/Codexling/RELEASE.zh-CN.md).
 
 状态栏动画 Pets、Codex 内置 Pet 发现与活动状态映射见 [状态栏 Pets 方案](docs/status-bar-pets.md)。
 

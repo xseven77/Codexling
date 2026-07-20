@@ -36,7 +36,7 @@ struct AppReleaseInfo: Equatable {
 @Observable
 final class AppUpdateController {
     private enum Constants {
-        static let repo = "xseven77/codex-light"
+        static let repo = "xseven77/Codexling"
         static let latestReleaseURL = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
         static let releasesPageURL = URL(string: "https://github.com/\(repo)/releases")!
     }
@@ -120,7 +120,7 @@ final class AppUpdateController {
             do {
                 let dmgURL = try await self.downloadDMG(from: release)
                 self.phase = .installing
-                try await self.installFromDMG(at: dmgURL, expectedAppName: "Codex Light.app")
+                try await self.installFromDMG(at: dmgURL, expectedAppName: "Codexling.app")
                 self.relaunchAfterInstall()
             } catch {
                 self.phase = .failed(error.localizedDescription)
@@ -171,7 +171,7 @@ final class AppUpdateController {
 
     private func downloadDMG(from release: AppReleaseInfo) async throws -> URL {
         let downloads = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexLightUpdates", isDirectory: true)
+            .appendingPathComponent("CodexlingUpdates", isDirectory: true)
         try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
 
         let destination = downloads.appendingPathComponent(release.assetName)
@@ -199,7 +199,7 @@ final class AppUpdateController {
 
     private func installFromDMG(at dmgURL: URL, expectedAppName: String) async throws {
         let mountPoint = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexLightMount-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("CodexlingMount-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
 
         defer {
@@ -224,11 +224,11 @@ final class AppUpdateController {
         if currentAppURL.pathExtension == "app" {
             installTarget = currentAppURL
         } else {
-            installTarget = URL(fileURLWithPath: "/Applications/Codex Light.app")
+            installTarget = URL(fileURLWithPath: "/Applications/Codexling.app")
         }
 
         let staging = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Codex Light-update.app", isDirectory: true)
+            .appendingPathComponent("Codexling-update.app", isDirectory: true)
         if FileManager.default.fileExists(atPath: staging.path) {
             try FileManager.default.removeItem(at: staging)
         }
@@ -247,7 +247,7 @@ final class AppUpdateController {
         """
 
         let scriptURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codex-light-install-\(UUID().uuidString).sh")
+            .appendingPathComponent("codexling-install-\(UUID().uuidString).sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
@@ -323,7 +323,7 @@ enum AppUpdateError: LocalizedError {
         case .missingDMG:
             "最新 Release 中未找到 DMG 安装包"
         case .missingAppInDMG:
-            "DMG 中未找到 Codex Light.app"
+            "DMG 中未找到 Codexling.app"
         case .shellFailed(let detail):
             "安装失败：\(detail)"
         }
@@ -401,7 +401,7 @@ private final class DownloadProgressSession: NSObject, URLSessionDownloadDelegat
     ) {
         do {
             let temp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("codex-light-dl-\(UUID().uuidString).dmg")
+                .appendingPathComponent("codexling-dl-\(UUID().uuidString).dmg")
             if FileManager.default.fileExists(atPath: temp.path) {
                 try FileManager.default.removeItem(at: temp)
             }

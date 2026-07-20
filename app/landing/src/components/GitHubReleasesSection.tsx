@@ -37,7 +37,7 @@ export function GitHubReleasesSection({ releases }: { releases: GitHubRelease[] 
             <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
             <span className="h-3 w-3 rounded-full bg-[#28c840]" />
             <span className="ml-3 truncate text-xs text-[var(--github-muted)]">
-              github.com/xseven77/codex-light/releases
+              github.com/xseven77/Codexling/releases
             </span>
           </div>
 

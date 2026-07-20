@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Codex Light"
-BINARY_NAME="CodexLight"
+APP_NAME="Codexling"
+BINARY_NAME="Codexling"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
 PLIST_PATH="${ROOT_DIR}/Resources/Info.plist"
@@ -210,13 +210,13 @@ verify_dmg() {
 }
 
 commit_version_if_needed() {
-  if git -C "${REPO_ROOT}" diff --quiet -- app/CodexLight/Resources/Info.plist; then
+  if git -C "${REPO_ROOT}" diff --quiet -- app/Codexling/Resources/Info.plist; then
     info "版本文件没有变化，无需提交版本号"
     return
   fi
 
   info "提交版本号变更"
-  git -C "${REPO_ROOT}" add app/CodexLight/Resources/Info.plist
+  git -C "${REPO_ROOT}" add app/Codexling/Resources/Info.plist
   git -C "${REPO_ROOT}" commit -m "Release ${RELEASE_VERSION}"
 }
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Codex Light"
-BINARY_NAME="CodexLight"
+APP_NAME="Codexling"
+BINARY_NAME="Codexling"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 

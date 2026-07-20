@@ -24,7 +24,7 @@ export function DownloadCTA() {
               前往 GitHub Releases
             </a>
             <a
-              href="https://github.com/xseven77/codex-light/blob/main/README.md"
+              href="https://github.com/xseven77/Codexling/blob/main/README.md"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm text-white/90"

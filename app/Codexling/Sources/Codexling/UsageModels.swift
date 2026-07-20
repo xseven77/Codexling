@@ -103,19 +103,35 @@ final class UsageSnapshotStore {
 }
 
 struct UsageSnapshotCache {
-    private var fileURL: URL {
-        let supportDirectory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0]
+    private var supportDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
 
+    private var fileURL: URL {
         return supportDirectory
+            .appendingPathComponent("Codexling", isDirectory: true)
+            .appendingPathComponent("latest_snapshot.json")
+    }
+
+    private var legacyFileURL: URL {
+        supportDirectory
             .appendingPathComponent("CodexLight", isDirectory: true)
             .appendingPathComponent("latest_snapshot.json")
     }
 
     func load() -> CodexUsageSnapshot? {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        if let snapshot = load(from: fileURL) {
+            return snapshot
+        }
+        if let snapshot = load(from: legacyFileURL) {
+            save(snapshot)
+            return snapshot
+        }
+        return nil
+    }
+
+    private func load(from url: URL) -> CodexUsageSnapshot? {
+        guard let data = try? Data(contentsOf: url) else {
             return nil
         }
 

@@ -37,7 +37,7 @@ export function JsonLd({ latestVersion }: JsonLdProps) {
       "本地快照缓存",
     ],
     isAccessibleForFree: true,
-    license: "https://github.com/xseven77/codex-light",
+    license: "https://github.com/xseven77/Codexling",
   };
 
   const webSite = {

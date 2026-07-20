@@ -52,12 +52,12 @@ export function Header() {
         <Link href="/" className="flex min-w-0 items-center gap-2.5 sm:gap-3">
           <Image
             src="/logo.svg"
-            alt="Codex Light"
+            alt="Codexling"
             width={32}
             height={32}
             className="shrink-0 rounded-[8px]"
           />
-          <span className="truncate text-sm font-semibold tracking-tight">Codex Light</span>
+          <span className="truncate text-sm font-semibold tracking-tight">Codexling</span>
         </Link>
 
         <nav className="hidden items-center gap-8 md:flex" aria-label="主导航">
@@ -75,7 +75,7 @@ export function Header() {
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           <ThemeToggle />
           <a
-            href="https://github.com/xseven77/codex-light"
+            href="https://github.com/xseven77/Codexling"
             target="_blank"
             rel="noopener noreferrer"
             className="hidden rounded-full border border-border px-4 py-2 text-sm transition-colors hover:bg-foreground/5 sm:inline-flex"
@@ -121,7 +121,7 @@ export function Header() {
             ))}
             <div className="mt-2 flex flex-col gap-2 border-t border-border/70 pt-3">
               <a
-                href="https://github.com/xseven77/codex-light"
+                href="https://github.com/xseven77/Codexling"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="rounded-xl border border-border px-4 py-3 text-center text-sm transition-colors active:bg-foreground/5"

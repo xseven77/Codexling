@@ -147,7 +147,7 @@ struct UsagePanel: View {
         }
 
         let account = snapshot.accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !account.isEmpty, account != "OpenAI 账号" else { return "Codex Light" }
+        guard !account.isEmpty, account != "OpenAI 账号" else { return "Codexling" }
         return account.split(separator: "@", maxSplits: 1).first.map(String.init) ?? account
     }
 
@@ -276,7 +276,7 @@ struct UsagePanel: View {
     private var loginHeader: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Codex Light")
+                Text("Codexling")
                     .font(.system(size: 15, weight: .semibold))
                     .padding(.leading, accountTitleLeadingPadding)
                     .offset(y: accountTitleVerticalOffset)

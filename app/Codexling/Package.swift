@@ -3,25 +3,25 @@
 import PackageDescription
 
 let package = Package(
-    name: "CodexLight",
+    name: "Codexling",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "CodexLight", targets: ["CodexLight"])
+        .executable(name: "Codexling", targets: ["Codexling"])
     ],
     targets: [
         .executableTarget(
-            name: "CodexLight",
-            path: "Sources/CodexLight",
+            name: "Codexling",
+            path: "Sources/Codexling",
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]
         ),
         .testTarget(
-            name: "CodexLightTests",
-            dependencies: ["CodexLight"],
-            path: "Tests/CodexLightTests"
+            name: "CodexlingTests",
+            dependencies: ["Codexling"],
+            path: "Tests/CodexlingTests"
         )
     ]
 )
