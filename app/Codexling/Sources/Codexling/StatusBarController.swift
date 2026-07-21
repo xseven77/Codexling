@@ -421,13 +421,24 @@ func statusBarQuotaText(snapshot: CodexUsageSnapshot, isLoggedIn: Bool) -> Strin
     guard isLoggedIn else { return "未登录" }
 
     if snapshot.hasShortWindow {
-        let primaryText = "5h \(snapshot.primaryWindow.percentText)"
+        let primaryText = "\(statusBarWindowLabel(snapshot.primaryWindow.label)) \(snapshot.primaryWindow.percentText)"
         return snapshot.hasWeeklyWindow
-            ? "\(primaryText)·周\(snapshot.weekly.percentText)"
+            ? "\(primaryText)·\(statusBarWindowLabel(snapshot.weekly.label)) \(snapshot.weekly.percentText)"
             : primaryText
     }
 
-    return "周\(snapshot.weekly.percentText)"
+    return "\(statusBarWindowLabel(snapshot.weekly.label)) \(snapshot.weekly.percentText)"
+}
+
+func statusBarWindowLabel(_ label: String) -> String {
+    switch label {
+    case "5 小时":
+        "5h"
+    case "周额度":
+        "周"
+    default:
+        label.replacingOccurrences(of: " ", with: "")
+    }
 }
 
 enum PopoverMetrics {
@@ -722,11 +733,6 @@ final class StatusCapsuleView: NSView {
                 .font: Self.font
             ]
         )
-        let weeklyMarker = (text as NSString).range(of: "周", options: .backwards)
-        if weeklyMarker.location != NSNotFound {
-            result.addAttribute(.kern, value: Self.inlineContentGap, range: weeklyMarker)
-        }
-
         let source = text as NSString
         var searchRange = NSRange(location: 0, length: source.length)
         while searchRange.length > 0 {

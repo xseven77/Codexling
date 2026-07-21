@@ -324,7 +324,7 @@ final class CodexlingTests: XCTestCase {
         )
     }
 
-    func testUsageParserReadsRateLimitInsideUsageAndUsesActualWindowLabel() throws {
+    func testUsageParserReadsRateLimitInsideUsageAndOmitsMissingSecondaryWindow() throws {
         let payload: [String: Any] = [
             "plan_type": "free",
             "usage": [
@@ -350,16 +350,24 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(primary.remaining, 74)
         XCTAssertEqual(primary.total, 100)
         XCTAssertFalse(snapshot.hasWeeklyWindow)
-        XCTAssertTrue(snapshot.isFreePlan)
     }
 
-    func testStatusBarQuotaTextOmitsWeeklyLimitForFreePlan() {
+    func testStatusBarQuotaTextOmitsZeroTotalSecondaryWindow() {
         var snapshot = CodexUsageSnapshot.preview
-        snapshot.planName = "free"
+        snapshot.planName = "plus"
         snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 71, total: 100, resetsAt: "")
         snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "")
 
         XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "5h 71%")
+    }
+
+    func testStatusBarQuotaTextUsesTheActualPrimaryWindowLabel() {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.planName = "plus"
+        snapshot.shortWindow = UsageWindow(label: "周额度", remaining: 51, total: 100, resetsAt: "")
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "")
+
+        XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "周 51%")
     }
 
     func testActivityParserDetectsWaitingForUser() {

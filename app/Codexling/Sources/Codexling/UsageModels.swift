@@ -65,11 +65,7 @@ extension CodexUsageSnapshot {
     }
 
     var hasWeeklyWindow: Bool {
-        !isFreePlan && weekly.total > 0
-    }
-
-    var isFreePlan: Bool {
-        planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "free"
+        weekly.total > 0
     }
 }
 
