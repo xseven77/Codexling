@@ -370,6 +370,16 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "周 51%")
     }
 
+    func testDetailWindowFallsBackToThePrimaryWindow() throws {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.shortWindow = UsageWindow(label: "周额度", remaining: 50, total: 100, resetsAt: "2026-07-21 15:12:08")
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "未知")
+
+        let detailWindow = try XCTUnwrap(snapshot.detailWindow)
+        XCTAssertEqual(detailWindow.label, "周额度")
+        XCTAssertEqual(detailWindow.resetsAt, "2026-07-21 15:12:08")
+    }
+
     func testActivityParserDetectsWaitingForUser() {
         let jsonl = """
         {"timestamp":"2026-07-17T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}

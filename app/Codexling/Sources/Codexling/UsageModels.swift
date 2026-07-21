@@ -67,6 +67,16 @@ extension CodexUsageSnapshot {
     var hasWeeklyWindow: Bool {
         weekly.total > 0
     }
+
+    var detailWindow: UsageWindow? {
+        if hasWeeklyWindow {
+            return weekly
+        }
+        if hasShortWindow {
+            return shortWindow
+        }
+        return nil
+    }
 }
 
 @Observable

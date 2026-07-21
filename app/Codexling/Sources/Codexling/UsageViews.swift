@@ -429,8 +429,8 @@ struct UsagePanel: View {
 
     private var details: some View {
         VStack(spacing: 9) {
-            if snapshot.hasWeeklyWindow {
-                DetailLine(title: "\(snapshot.weekly.label)重置", value: snapshot.weekly.resetsAt)
+            if let detailWindow = snapshot.detailWindow {
+                DetailLine(title: "\(detailWindow.label)重置", value: detailWindow.resetsAt)
             }
             RefreshStatusLine(date: snapshot.fetchedAt, state: snapshot.refreshState)
         }
