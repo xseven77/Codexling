@@ -396,10 +396,12 @@ struct UsagePanel: View {
                 if snapshot.hasShortWindow, let shortWindow = snapshot.shortWindow {
                     QuotaRow(window: shortWindow, tint: primaryHealth.color)
                 }
-                QuotaRow(
-                    window: snapshot.weekly,
-                    tint: snapshot.hasShortWindow ? .codexBlue : primaryHealth.color
-                )
+                if snapshot.hasWeeklyWindow {
+                    QuotaRow(
+                        window: snapshot.weekly,
+                        tint: snapshot.hasShortWindow ? .codexBlue : primaryHealth.color
+                    )
+                }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
@@ -427,7 +429,9 @@ struct UsagePanel: View {
 
     private var details: some View {
         VStack(spacing: 9) {
-            DetailLine(title: "周额度重置", value: snapshot.weekly.resetsAt)
+            if snapshot.hasWeeklyWindow {
+                DetailLine(title: "\(snapshot.weekly.label)重置", value: snapshot.weekly.resetsAt)
+            }
             RefreshStatusLine(date: snapshot.fetchedAt, state: snapshot.refreshState)
         }
         .font(.system(size: 13))
@@ -559,16 +563,17 @@ struct QuotaRow: View {
                 .foregroundStyle(Color.codexMuted)
                 .frame(width: 58, alignment: .leading)
 
-            LiquidQuotaBar(value: window.percent, tint: tint)
-                .frame(height: 6)
-                .layoutPriority(0)
+            if window.total > 0 {
+                LiquidQuotaBar(value: window.percent, tint: tint)
+                    .frame(height: 6)
+                    .layoutPriority(0)
 
-            Text(window.amountText)
-                .font(.system(size: 12, weight: .semibold))
-                .monospacedDigit()
-                // Keep both quota bars aligned while fitting values such as 100/100.
-                .frame(width: 52, alignment: .trailing)
-                .layoutPriority(1)
+                Text(window.amountText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .frame(width: 52, alignment: .trailing)
+                    .layoutPriority(1)
+            }
         }
         .frame(height: 24)
     }

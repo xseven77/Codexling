@@ -51,8 +51,8 @@ struct CodexUsageSnapshot: Codable, Equatable, Sendable {
 }
 
 extension CodexUsageSnapshot {
-    /// The five-hour limit is normally the primary signal. When it is unavailable,
-    /// all quota presentation and health indicators fall back to the weekly limit.
+    /// The primary limit is the default status signal. When unavailable, the
+    /// secondary limit is used as the fallback.
     var primaryWindow: UsageWindow {
         guard let shortWindow, shortWindow.total > 0 else { return weekly }
         return shortWindow
@@ -60,8 +60,16 @@ extension CodexUsageSnapshot {
 
     var hasShortWindow: Bool {
         // Older cached snapshots and a temporarily disabled API window can both
-        // contain a 0/0 five-hour quota. Treat either as unavailable.
+        // contain a 0/0 primary quota. Treat either as unavailable.
         (shortWindow?.total ?? 0) > 0
+    }
+
+    var hasWeeklyWindow: Bool {
+        !isFreePlan && weekly.total > 0
+    }
+
+    var isFreePlan: Bool {
+        planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "free"
     }
 }
 

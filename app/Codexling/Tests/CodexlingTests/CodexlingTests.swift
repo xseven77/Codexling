@@ -324,6 +324,44 @@ final class CodexlingTests: XCTestCase {
         )
     }
 
+    func testUsageParserReadsRateLimitInsideUsageAndUsesActualWindowLabel() throws {
+        let payload: [String: Any] = [
+            "plan_type": "free",
+            "usage": [
+                "rate_limit": [
+                    "primary_window": [
+                        "limit_window_seconds": 2_592_000,
+                        "used_percent": 26,
+                        "reset_after_seconds": 3_600
+                    ]
+                ]
+            ]
+        ]
+
+        let snapshot = CodexlingParser().parse(
+            usagePayload: payload,
+            resetCreditsPayload: nil,
+            email: nil,
+            accountName: nil
+        )
+
+        let primary = try XCTUnwrap(snapshot.shortWindow)
+        XCTAssertEqual(primary.label, "30 天")
+        XCTAssertEqual(primary.remaining, 74)
+        XCTAssertEqual(primary.total, 100)
+        XCTAssertFalse(snapshot.hasWeeklyWindow)
+        XCTAssertTrue(snapshot.isFreePlan)
+    }
+
+    func testStatusBarQuotaTextOmitsWeeklyLimitForFreePlan() {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.planName = "free"
+        snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 71, total: 100, resetsAt: "")
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "")
+
+        XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "5h 71%")
+    }
+
     func testActivityParserDetectsWaitingForUser() {
         let jsonl = """
         {"timestamp":"2026-07-17T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}

@@ -239,10 +239,11 @@ struct CodexlingParser {
         let root = usagePayload as? [String: Any] ?? [:]
         let usage = root["usage"] as? [String: Any] ?? root
         let limitWindows = (usage["limits"] as? [Any] ?? []).compactMap(readQuotaWindow)
-        let rateLimitWindows = readRateLimitWindows(root)
-        let windows = limitWindows + rateLimitWindows
-        let short = windows.first { $0.code == "5h" }
-        let weekly = windows.first { $0.code == "7d" }
+        let rateLimitWindows = readRateLimitWindows(from: root) + readRateLimitWindows(from: usage)
+        let primary = rateLimitWindows.first { $0.role == .primary }
+            ?? limitWindows.first { $0.code == "5h" }
+        let weekly = rateLimitWindows.first { $0.role == .secondary }
+            ?? limitWindows.first { $0.code == "7d" }
         let resetCards = readResetCards(from: resetCreditsPayload) ?? readResetCards(from: root) ?? []
         let planName = (root["plan_type"] as? String) ?? (root["planType"] as? String) ?? "Codex"
 
@@ -251,7 +252,7 @@ struct CodexlingParser {
             accountEmail: email ?? "OpenAI 账号",
             workspaceName: readWorkspaceName(root) ?? "ChatGPT",
             planName: planName,
-            shortWindow: short.map { toUsageWindow($0, label: "5 小时") },
+            shortWindow: primary.map(toUsageWindow),
             weekly: toUsageWindow(weekly, label: "周额度"),
             credits: CreditBalance(balance: resetCards.count, expiresAt: formatReset(resetCards.first?.expiresAt)),
             resetCoupons: resetCards.enumerated().map { index, card in
@@ -276,6 +277,8 @@ struct CodexlingParser {
 
         return ParsedQuotaWindow(
             code: code,
+            label: code == "5h" ? "5 小时" : "周额度",
+            role: nil,
             used: used,
             limit: limit,
             percentUsed: (used / limit) * 100,
@@ -284,23 +287,25 @@ struct CodexlingParser {
         )
     }
 
-    private func readRateLimitWindows(_ root: [String: Any]) -> [ParsedQuotaWindow] {
+    private func readRateLimitWindows(from root: [String: Any]) -> [ParsedQuotaWindow] {
         guard let rateLimit = root["rate_limit"] as? [String: Any] else { return [] }
 
         return [
-            readRateLimitWindow(rateLimit["primary_window"], fallbackCode: "5h"),
-            readRateLimitWindow(rateLimit["secondary_window"], fallbackCode: "7d")
+            readRateLimitWindow(rateLimit["primary_window"], role: .primary),
+            readRateLimitWindow(rateLimit["secondary_window"], role: .secondary)
         ].compactMap { $0 }
     }
 
-    private func readRateLimitWindow(_ input: Any?, fallbackCode: String) -> ParsedQuotaWindow? {
+    private func readRateLimitWindow(_ input: Any?, role: ParsedQuotaWindow.Role) -> ParsedQuotaWindow? {
         guard let object = input as? [String: Any] else { return nil }
         let seconds = number(object["limit_window_seconds"]) ?? 0
-        let code = abs(seconds - 18_000) <= 60 ? "5h" : abs(seconds - 604_800) <= 3_600 ? "7d" : fallbackCode
+        let code = role == .primary ? "primary" : "secondary"
         let usedPercent = number(object["used_percent"]) ?? 0
 
         return ParsedQuotaWindow(
             code: code,
+            label: quotaWindowLabel(seconds: seconds, role: role),
+            role: role,
             used: usedPercent,
             limit: 100,
             percentUsed: usedPercent,
@@ -364,6 +369,10 @@ struct CodexlingParser {
         return status == nil || !["redeemed", "used", "consumed", "expired", "unavailable"].contains(status!)
     }
 
+    private func toUsageWindow(_ window: ParsedQuotaWindow) -> UsageWindow {
+        toUsageWindow(window, label: window.label)
+    }
+
     private func toUsageWindow(_ window: ParsedQuotaWindow?, label: String) -> UsageWindow {
         guard let window else {
             return UsageWindow(label: label, remaining: 0, total: 0, resetsAt: "未知")
@@ -377,6 +386,26 @@ struct CodexlingParser {
             total: total,
             resetsAt: formatReset(window.resetAt)
         )
+    }
+
+    private func quotaWindowLabel(seconds: Double, role: ParsedQuotaWindow.Role) -> String {
+        guard seconds > 0 else {
+            return role == .primary ? "主额度" : "次级额度"
+        }
+
+        if abs(seconds - 18_000) <= 60 {
+            return "5 小时"
+        }
+        if abs(seconds - 604_800) <= 3_600 {
+            return "周额度"
+        }
+        if seconds.truncatingRemainder(dividingBy: 86_400) == 0 {
+            return "\(Int(seconds / 86_400)) 天"
+        }
+        if seconds.truncatingRemainder(dividingBy: 3_600) == 0 {
+            return "\(Int(seconds / 3_600)) 小时"
+        }
+        return role == .primary ? "主额度" : "次级额度"
     }
 
     private func readWorkspaceName(_ root: [String: Any]) -> String? {
@@ -446,7 +475,14 @@ struct CodexlingParser {
 }
 
 struct ParsedQuotaWindow {
+    enum Role {
+        case primary
+        case secondary
+    }
+
     let code: String
+    let label: String
+    let role: Role?
     let used: Double
     let limit: Double
     let percentUsed: Double

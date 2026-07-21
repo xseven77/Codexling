@@ -151,13 +151,7 @@ final class StatusBarController: NSObject {
         }
 
         let snapshot = store.snapshot
-        let quotaText: String = if store.isLoggedIn {
-            snapshot.hasShortWindow
-                ? "5h \(snapshot.primaryWindow.percentText)·周\(snapshot.weekly.percentText)"
-                : "周\(snapshot.weekly.percentText)"
-        } else {
-            "未登录"
-        }
+        let quotaText = statusBarQuotaText(snapshot: snapshot, isLoggedIn: store.isLoggedIn)
 
         let activityState = activityStore.snapshot.state
         let background = settings.petBackgroundColor.resolved(for: activityState)
@@ -421,6 +415,19 @@ final class StatusBarController: NSObject {
             height: targetHeight
         )
     }
+}
+
+func statusBarQuotaText(snapshot: CodexUsageSnapshot, isLoggedIn: Bool) -> String {
+    guard isLoggedIn else { return "未登录" }
+
+    if snapshot.hasShortWindow {
+        let primaryText = "5h \(snapshot.primaryWindow.percentText)"
+        return snapshot.hasWeeklyWindow
+            ? "\(primaryText)·周\(snapshot.weekly.percentText)"
+            : primaryText
+    }
+
+    return "周\(snapshot.weekly.percentText)"
 }
 
 enum PopoverMetrics {
