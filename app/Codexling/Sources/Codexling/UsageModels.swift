@@ -84,23 +84,30 @@ extension CodexUsageSnapshot {
 final class UsageSnapshotStore {
     private let cache = UsageSnapshotCache()
     private let tokenStore = CodexOAuthTokenStore()
+    private let persistsCache: Bool
     var snapshot: CodexUsageSnapshot
     var isLoggedIn: Bool
 
-    init() {
-        snapshot = cache.load() ?? CodexUsageSnapshot.preview
-        isLoggedIn = tokenStore.hasStoredToken()
+    init(
+        snapshot: CodexUsageSnapshot? = nil,
+        isLoggedIn: Bool? = nil,
+        persistsCache: Bool = true
+    ) {
+        self.persistsCache = persistsCache
+        self.snapshot = snapshot ?? cache.load() ?? CodexUsageSnapshot.preview
+        self.isLoggedIn = isLoggedIn ?? tokenStore.hasStoredToken()
     }
 
     func markRefreshing(allowsAuthorization: Bool) {
         snapshot.refreshState = allowsAuthorization ? "授权中" : "刷新中"
-        snapshot.fetchedAt = Date()
     }
 
     func apply(_ snapshot: CodexUsageSnapshot) {
         self.snapshot = snapshot
         isLoggedIn = true
-        cache.save(snapshot)
+        if persistsCache {
+            cache.save(snapshot)
+        }
     }
 
     func markDisconnected() {
@@ -110,8 +117,13 @@ final class UsageSnapshotStore {
         snapshot.refreshState = "已退出登录"
     }
 
+    func markAuthenticationExpired() {
+        isLoggedIn = false
+        tokenStore.clear()
+        snapshot.refreshState = "登录已过期，请重新授权"
+    }
+
     func markFailed(_ message: String) {
-        snapshot.fetchedAt = Date()
         snapshot.refreshState = message
     }
 }
@@ -191,6 +203,20 @@ enum UsageDateFormat {
         let parts = value.split(separator: " ")
         guard let time = parts.last else { return value }
         return String(time)
+    }
+
+    static func dateAndTime(_ value: String, now: Date = Date()) -> String {
+        let input = DateFormatter()
+        input.locale = Locale(identifier: "en_US_POSIX")
+        input.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        guard let date = input.date(from: value) else { return value }
+
+        let calendar = Calendar.current
+        let includesYear = calendar.component(.year, from: date) != calendar.component(.year, from: now)
+        let output = DateFormatter()
+        output.locale = Locale(identifier: "zh_CN")
+        output.dateFormat = includesYear ? "yyyy年M月d日 HH:mm" : "M月d日 HH:mm"
+        return output.string(from: date)
     }
 }
 

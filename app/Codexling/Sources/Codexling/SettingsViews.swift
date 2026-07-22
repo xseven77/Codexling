@@ -1,19 +1,14 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
+    let onLogout: () -> Void
     let onClose: () -> Void
     @State private var showsCodexlingPetInstallToast = false
-
-    private var titleLeadingPadding: CGFloat {
-        layout == .window ? 62 : 0
-    }
-
-    private var titleVerticalOffset: CGFloat {
-        layout == .window ? -10 : 0
-    }
+    @State private var showsLogoutConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,98 +39,138 @@ struct SettingsView: View {
                     .accessibilityLabel("Codexling Pet 安装成功")
             }
         }
+        .alert("确认退出登录？", isPresented: $showsLogoutConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("退出登录", role: .destructive, action: onLogout)
+        } message: {
+            Text("退出后需要重新授权才能查看用量。")
+        }
     }
 
     private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
+            accountCard
             updateSection
-            themeSection
-            refreshSection
-            statusBarDivider
             petSection
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 22)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
+    private var accountCard: some View {
+        HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("设置")
-                    .font(.system(size: 15, weight: .semibold))
-                    .padding(.leading, titleLeadingPadding)
-                    .offset(y: titleVerticalOffset)
-                Text("更新、主题、状态与 Pets、自动刷新")
-                    .font(.system(size: 12))
+                HStack(spacing: 5) {
+                    Text(store.isLoggedIn && store.snapshot.accountName?.isEmpty == false
+                         ? store.snapshot.accountName!
+                         : "OpenAI 账号")
+                        .font(.system(size: 13, weight: .semibold))
+                    if store.isLoggedIn {
+                        Text(store.snapshot.planName)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.codexGreen.opacity(0.10), in: Capsule())
+                    }
+                }
+                Text(store.isLoggedIn
+                     ? "\(store.snapshot.accountEmail) · \(store.snapshot.workspaceName)"
+                     : "尚未连接 ChatGPT / Codex")
+                    .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
             }
-
-            Spacer(minLength: 8)
-
-            IconButton(systemName: "xmark", title: "关闭设置", action: onClose)
+            Spacer()
+            if store.isLoggedIn {
+                Button("退出登录") { showsLogoutConfirmation = true }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexRed)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Color.codexRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.codexRed.opacity(0.18), lineWidth: 0.7))
+            } else {
+                Text("未登录")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.codexMuted.opacity(0.10), in: Capsule())
+            }
         }
-        .padding(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 13)
+        .frame(minHeight: 54)
+        .settingsGroupSurface()
+    }
+
+    private var header: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 34, height: 34)
+            Spacer()
+            Text("设置")
+                .font(.system(size: 16, weight: .semibold))
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("关闭设置")
+            .accessibilityLabel("关闭设置")
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .frame(height: DetachedWindowMetrics.chromeHeaderHeight)
         .background(CodexChromeBackground(intensity: .header))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.codexLine.opacity(0.74))
-                .frame(height: 1)
-        }
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private var updateSection: some View {
-        SettingsSection(title: "软件更新", subtitle: "从 GitHub Releases 检查并安装最新版本") {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("当前版本 \(updater.currentVersion)（\(updater.currentBuild)）")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(updater.statusText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(statusColor)
-                        .fixedSize(horizontal: false, vertical: true)
+        SettingsSection(title: "应用") {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Codexling \(updater.currentVersion)（\(updater.currentBuild)）")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(updateStatusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(statusColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    HStack(spacing: 7) {
+                        IconButton(
+                            systemName: "arrow.up.right",
+                            title: "打开 GitHub Releases",
+                            action: updater.openReleasesPage
+                        )
+                        Button(primaryUpdateTitle, action: primaryUpdateAction)
+                            .buttonStyle(CodexlingPetInstallButtonStyle())
+                            .disabled(updater.phase.isBusy)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .frame(minHeight: 66)
 
                 if case .downloading = updater.phase {
                     ProgressView(value: updater.downloadProgress)
                         .progressViewStyle(.linear)
                         .tint(Color.codexPrimary)
                 }
-
-                if case .available = updater.phase, let release = updater.latestRelease {
-                    Text(release.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.codexMuted)
-                    if !release.releaseNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(release.releaseNotes)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.codexMuted)
-                            .lineLimit(4)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Button(action: primaryUpdateAction) {
-                        Text(primaryUpdateTitle)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(updater.phase.isBusy)
-
-                    Button(action: updater.openReleasesPage) {
-                        Image(systemName: "safari")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(width: 36, height: 36)
-                    }
-                    .buttonStyle(IconButtonStyle())
-                    .help("打开 Releases 页面")
-                    .accessibilityLabel("打开 Releases 页面")
-                }
+                SettingsRowDivider()
+                themeSection
+                SettingsRowDivider()
+                refreshSection
             }
-            .padding(14)
+            .settingsGroupSurface()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.04)
         }
     }
 
@@ -149,6 +184,15 @@ struct SettingsView: View {
             .codexGreen
         default:
             .codexMuted
+        }
+    }
+
+    private var updateStatusText: String {
+        switch updater.phase {
+        case .idle, .upToDate:
+            "通过 GitHub Releases 检查新版本"
+        default:
+            updater.statusText
         }
     }
 
@@ -200,90 +244,44 @@ struct SettingsView: View {
         }
     }
 
-    private var statusBarDivider: some View {
-        Rectangle()
-            .fill(Color.codexLine.opacity(0.74))
-            .frame(height: 1)
-            .frame(maxWidth: .infinity)
-    }
-
     private var petSection: some View {
-        SettingsSection(
-            title: "状态与 Pets",
-            subtitle: "配置状态栏任务状态、胶囊颜色与 Codex 动画角色"
-        ) {
-            VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsSection(
+                title: "状态栏与 Pet",
+                subtitle: "颜色与任务状态同步，或固定一种颜色。"
+            ) {
+                VStack(spacing: 0) {
                 SettingsInlineRow(
-                    title: "胶囊背景色",
-                    subtitle: "自动模式按任务状态变色，也可以固定一种颜色"
+                    title: "胶囊提醒色",
+                    subtitle: "按额度余量切换：充足绿、偏低黄、紧张红、未知灰"
                 ) {
-                    SettingsMenuPicker(
-                        selection: $settings.petBackgroundColor,
-                        options: StatusBarPetBackgroundColor.allCases,
-                        title: \.title,
-                        symbol: \.symbolName
-                    )
+                    HStack(spacing: 8) {
+                        petBackgroundPreview
+                        SettingsMenuPicker(
+                            selection: $settings.petBackgroundColor,
+                            options: StatusBarPetBackgroundColor.allCases,
+                            title: \.title,
+                            symbol: \.symbolName
+                        )
+                    }
                 }
-
-                SettingsInlineRow(
-                    title: "点击胶囊",
-                    subtitle: "选择点击状态栏胶囊后打开的窗口类型"
-                ) {
-                    SettingsMenuPicker(
-                        selection: $settings.statusBarClickBehavior,
-                        options: StatusBarClickBehavior.allCases,
-                        title: \.title,
-                        symbol: \.symbolName
-                    )
-                }
-
-                SettingsInlineRow(
-                    title: "显示动画 Pet",
-                    subtitle: "开启显示动画 Pet，关闭显示原来的额度健康圆灯"
-                ) {
-                    Toggle("", isOn: $settings.petsEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
+                SettingsRowDivider()
 
                 SettingsInlineRow(
                     title: "活动状态流光",
                     subtitle: "非空闲时，在状态栏胶囊内显示从左向右的流光"
                 ) {
-                    Toggle("", isOn: $settings.statusBarWaveEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
+                    SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
                 }
-
-                SettingsInlineRow(
-                    title: "状态栏圆角",
-                    subtitle: "同步调整胶囊与 Pet 区域圆角，范围 20%–50%"
-                ) {
-                    HStack(spacing: 8) {
-                        Text("\(Int(settings.statusBarCornerPercent))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Color.codexMuted)
-                            .frame(width: 30, alignment: .trailing)
-                        Slider(
-                            value: $settings.statusBarCornerPercent,
-                            in: 20...50,
-                            step: 1
-                        )
-                        .frame(width: 112)
-                    }
                 }
+                .settingsGroupSurface()
+            }
 
-                if !settings.isCodexlingPetInstalled {
-                    codexlingPetInstallationCard
-                }
-
-                if let installationError = settings.codexlingPetInstallationError {
-                    Text("Codexling Pet 安装失败：\(installationError)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.codexRed)
-                        .padding(.horizontal, 4)
-                }
-
+            SettingsSection(
+                title: "当前 Pet",
+                subtitle: "规则：仅当未安装 Codexling Pet 时展示；安装后重扫并自动选中。"
+            ) {
+                VStack(spacing: 10) {
                 if let pet = settings.selectedPet {
                     HStack(spacing: 12) {
                         PetSettingsThumbnail(pet: pet)
@@ -300,23 +298,15 @@ struct SettingsView: View {
                         Spacer(minLength: 8)
                         petPicker
                     }
-                    .padding(12)
-                    .liquidGlassSurface(
-                        cornerRadius: 12,
-                        tint: Color.codexGlassTint,
-                        shadowOpacity: 0.04
-                    )
+                    .padding(16)
+                    .settingsGroupSurface()
                 } else {
                     Text("没有发现可用 Pet。请安装 Codex，或把自定义 Pet 放入 ~/.codex/pets。")
                         .font(.system(size: 12))
                         .foregroundStyle(Color.codexAmber)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .liquidGlassSurface(
-                            cornerRadius: 12,
-                            tint: Color.codexGlassTint,
-                            shadowOpacity: 0.04
-                        )
+                        .settingsGroupSurface()
                 }
 
                 HStack {
@@ -334,6 +324,18 @@ struct SettingsView: View {
                     .foregroundStyle(Color.codexPrimary)
                 }
                 .padding(.horizontal, 4)
+
+                if !settings.isCodexlingPetInstalled {
+                    codexlingPetInstallationCard
+                }
+
+                if let installationError = settings.codexlingPetInstallationError {
+                    Text("Codexling Pet 安装失败：\(installationError)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.codexRed)
+                        .padding(.horizontal, 4)
+                }
+                }
             }
         }
     }
@@ -344,7 +346,7 @@ struct SettingsView: View {
                 .frame(width: 58, height: 58)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Codexling Pet")
+                Text("安装 Codexling Pet")
                     .font(.system(size: 14, weight: .semibold))
                 Text("Codexling 的专属小精灵 · v2 · 11 行动画")
                     .font(.system(size: 12))
@@ -362,8 +364,9 @@ struct SettingsView: View {
             .buttonStyle(CodexlingPetInstallButtonStyle())
             .fixedSize()
         }
-        .padding(12)
-        .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.04)
+        .padding(16)
+        .background(Color.codexGreen.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.codexGreen.opacity(0.20), lineWidth: 0.8))
     }
 
     private func showCodexlingPetInstallToastIfNeeded() {
@@ -400,21 +403,28 @@ struct SettingsView: View {
         } label: {
             HStack(spacing: 6) {
                 Text("选择")
-                Image(systemName: "chevron.up.chevron.down")
+                Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
             }
             .font(.system(size: 12, weight: .medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .liquidGlassSurface(
-                cornerRadius: 8,
-                tint: Color.codexGlassTint,
-                shadowOpacity: 0.03,
-                interactive: true
-            )
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    @ViewBuilder
+    private var petBackgroundPreview: some View {
+        if settings.petBackgroundColor == .automatic {
+            HStack(spacing: 5) {
+                SettingsColorDot(color: .codexGreen)
+                SettingsColorDot(color: .codexAmber)
+                SettingsColorDot(color: .codexRed)
+                SettingsColorDot(color: .codexMuted)
+            }
+        } else {
+            SettingsColorDot(color: Color(nsColor: settings.petBackgroundColor.nsColor))
+        }
     }
 
     private func petPickerButton(_ pet: CodexPet) -> some View {
@@ -509,15 +519,37 @@ private struct BundledCodexlingPetThumbnail: View {
 }
 
 private struct CodexlingPetInstallButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeBody(configuration: Configuration) -> some View {
+        let isDark = colorScheme == .dark
+        let backgroundColor: Color = if isDark {
+            configuration.isPressed ? Color.white.opacity(0.18) : Color.white.opacity(0.11)
+        } else {
+            configuration.isPressed ? Color.codexPrimary.opacity(0.78) : Color.codexPrimary
+        }
+        let foregroundColor: Color = if isDark {
+            Color.white.opacity(isEnabled ? 0.96 : 0.42)
+        } else {
+            Color.white.opacity(isEnabled ? 1 : 0.58)
+        }
+
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(foregroundColor)
             .padding(.horizontal, 12)
             .frame(height: 34)
             .background(
-                Capsule(style: .continuous)
-                    .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.78) : Color.codexPrimary)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(backgroundColor.opacity(isEnabled ? 1 : 0.60))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        isDark ? Color.white.opacity(isEnabled ? 0.16 : 0.08) : Color.black.opacity(0.08),
+                        lineWidth: 0.8
+                    )
             )
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -526,17 +558,19 @@ private struct CodexlingPetInstallButtonStyle: ButtonStyle {
 
 private struct SettingsSection<Content: View>: View {
     let title: String
-    let subtitle: String
+    var subtitle: String? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.codexMuted)
+                    .font(.system(size: 14, weight: .semibold))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                }
             }
 
             content
@@ -564,9 +598,8 @@ private struct SettingsInlineRow<Content: View>: View {
 
             content
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.04)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
     }
 }
 
@@ -595,21 +628,78 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
             HStack(spacing: 6) {
                 Label(title(selection), systemImage: symbol(selection))
                     .labelStyle(.titleOnly)
-                Image(systemName: "chevron.up.chevron.down")
+                Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.codexMuted)
             }
             .font(.system(size: 13, weight: .medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .liquidGlassSurface(
-                cornerRadius: 8,
-                tint: Color.codexGlassTint,
-                shadowOpacity: 0.03,
-                interactive: true
-            )
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct SettingsColorDot: View {
+    let color: Color
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 11, height: 11)
+            .overlay(Circle().stroke(Color.codexLine.opacity(0.72), lineWidth: 0.6))
+    }
+}
+
+private struct SettingsSwitch: View {
+    @Binding var isOn: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.16)) {
+                isOn.toggle()
+            }
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? Color.accentColor : inactiveTrack)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 18, height: 18)
+                    .padding(3)
+                    .shadow(color: Color.black.opacity(0.16), radius: 1.5, y: 1)
+            }
+            .frame(width: 42, height: 24)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("活动状态流光")
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var inactiveTrack: Color {
+        colorScheme == .dark
+            ? Color(red: 0.30, green: 0.31, blue: 0.32)
+            : Color(red: 0.78, green: 0.79, blue: 0.80)
+    }
+}
+
+private struct SettingsRowDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.codexLine.opacity(0.82))
+            .frame(height: 0.7)
+    }
+}
+
+private extension View {
+    func settingsGroupSurface() -> some View {
+        background(Color.codexCard.opacity(0.76), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.88), lineWidth: 0.8)
+            )
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import SwiftUI
 import XCTest
 @testable import Codexling
@@ -46,28 +47,24 @@ final class CodexlingTests: XCTestCase {
         XCTAssertNil(waiting.loopStartIndex)
     }
 
-    func testAutomaticPetBackgroundMapsEveryActivityState() {
+    func testAutomaticPetBackgroundMapsQuotaHealth() {
         let automatic = StatusBarPetBackgroundColor.automatic
-        XCTAssertEqual(automatic.resolved(for: .unavailable), .neutral)
-        XCTAssertEqual(automatic.resolved(for: .idle), .neutral)
-        XCTAssertEqual(automatic.resolved(for: .thinking), .purple)
-        XCTAssertEqual(automatic.resolved(for: .executing), .blue)
-        XCTAssertEqual(automatic.resolved(for: .reviewing), .cyan)
-        XCTAssertEqual(automatic.resolved(for: .waitingForUser), .amber)
-        XCTAssertEqual(automatic.resolved(for: .completed), .green)
-        XCTAssertEqual(automatic.resolved(for: .interrupted), .red)
-        XCTAssertEqual(StatusBarPetBackgroundColor.green.resolved(for: .interrupted), .green)
+        XCTAssertEqual(automatic.resolved(for: .gray), .gray)
+        XCTAssertEqual(automatic.resolved(for: .green), .green)
+        XCTAssertEqual(automatic.resolved(for: .yellow), .yellow)
+        XCTAssertEqual(automatic.resolved(for: .red), .red)
+        XCTAssertEqual(StatusBarPetBackgroundColor.neutral.resolved(for: .red), .neutral)
     }
 
     @MainActor
-    func testPetBackgroundDefaultsToNeutralAndListsItFirst() throws {
+    func testPetBackgroundDefaultsToFollowQuotaAndListsItFirst() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let settings = AppSettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.petBackgroundColor, .neutral)
-        XCTAssertEqual(StatusBarPetBackgroundColor.allCases.first, .neutral)
+        XCTAssertEqual(settings.petBackgroundColor, .automatic)
+        XCTAssertEqual(StatusBarPetBackgroundColor.allCases.first, .automatic)
     }
 
     func testStatusPetBadgeKeepsPetVisibleOnWhiteBackdrop() {
@@ -149,7 +146,7 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusCapsulePressInvokesPopoverAction() {
+    func testStatusCapsulePressInvokesClickAction() {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
         var clickCount = 0
         view.onClick = { clickCount += 1 }
@@ -199,10 +196,10 @@ final class CodexlingTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let settings = AppSettingsStore(defaults: defaults)
-        settings.petBackgroundColor = .cyan
+        settings.petBackgroundColor = .yellow
 
         let restored = AppSettingsStore(defaults: defaults)
-        XCTAssertEqual(restored.petBackgroundColor, .cyan)
+        XCTAssertEqual(restored.petBackgroundColor, .yellow)
     }
 
     @MainActor
@@ -236,20 +233,6 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusBarClickBehaviorDefaultsToDetachedWindowAndPersists() throws {
-        let suiteName = "CodexlingTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.statusBarClickBehavior, .detachedWindow)
-
-        settings.statusBarClickBehavior = .popover
-        let restored = AppSettingsStore(defaults: defaults)
-        XCTAssertEqual(restored.statusBarClickBehavior, .popover)
-    }
-
-    @MainActor
     func testDetachedWindowHeightNeverExceedsVisibleViewport() {
         let maximum = DetachedWindowMetrics.maximumContentHeight(for: NSScreen.main)
         if let visibleHeight = NSScreen.main?.visibleFrame.height {
@@ -261,36 +244,6 @@ final class CodexlingTests: XCTestCase {
             screen: NSScreen.main
         )
         XCTAssertLessThanOrEqual(clamped.height, maximum)
-    }
-
-    func testPopoverHeightFollowsContentAndNeverExceedsViewport() {
-        XCTAssertEqual(
-            PopoverMetrics.targetHeight(
-                contentHeight: 620,
-                visibleHeight: 900,
-                margin: 28,
-                minimumHeight: 760
-            ),
-            760
-        )
-        XCTAssertEqual(
-            PopoverMetrics.targetHeight(
-                contentHeight: 1_200,
-                visibleHeight: 900,
-                margin: 28,
-                minimumHeight: 760
-            ),
-            872
-        )
-        XCTAssertEqual(
-            PopoverMetrics.targetHeight(
-                contentHeight: 620,
-                visibleHeight: 700,
-                margin: 28,
-                minimumHeight: 760
-            ),
-            672
-        )
     }
 
     func testQuotaHealthColorThresholdsDriveRootGradient() {
@@ -352,6 +305,53 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(snapshot.hasWeeklyWindow)
     }
 
+    func testUsageParserKeepsAvailableResetCouponsSortedByExpiration() {
+        let formatter = ISO8601DateFormatter()
+        let soon = formatter.string(from: Date().addingTimeInterval(3_600))
+        let later = formatter.string(from: Date().addingTimeInterval(7_200))
+        let expired = formatter.string(from: Date().addingTimeInterval(-3_600))
+        let resetPayload: [String: Any] = [
+            "credits": [
+                ["id": "later", "expires_at": later, "status": "available"],
+                ["id": "expired", "expires_at": expired, "status": "available"],
+                ["id": "soon", "expires_at": soon, "status": "available"]
+            ]
+        ]
+
+        let snapshot = CodexlingParser().parse(
+            usagePayload: [String: Any](),
+            resetCreditsPayload: resetPayload,
+            email: nil,
+            accountName: nil
+        )
+
+        XCTAssertEqual(snapshot.resetCoupons.count, 2)
+        XCTAssertEqual(snapshot.resetCoupons.reduce(0) { $0 + $1.count }, 2)
+        XCTAssertLessThan(snapshot.resetCoupons[0].expiresAt, snapshot.resetCoupons[1].expiresAt)
+    }
+
+    @MainActor
+    func testRefreshStateKeepsLastSuccessfulFetchTimeUntilApply() {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.fetchedAt = Date(timeIntervalSince1970: 123)
+        let store = UsageSnapshotStore(
+            snapshot: snapshot,
+            isLoggedIn: true,
+            persistsCache: false
+        )
+
+        store.markRefreshing(allowsAuthorization: false)
+        XCTAssertEqual(store.snapshot.fetchedAt, snapshot.fetchedAt)
+
+        store.markFailed("网络不可用")
+        XCTAssertEqual(store.snapshot.fetchedAt, snapshot.fetchedAt)
+
+        var refreshed = snapshot
+        refreshed.fetchedAt = Date(timeIntervalSince1970: 456)
+        store.apply(refreshed)
+        XCTAssertEqual(store.snapshot.fetchedAt, refreshed.fetchedAt)
+    }
+
     func testStatusBarQuotaTextOmitsZeroTotalSecondaryWindow() {
         var snapshot = CodexUsageSnapshot.preview
         snapshot.planName = "plus"
@@ -368,6 +368,15 @@ final class CodexlingTests: XCTestCase {
         snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "")
 
         XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "周 51%")
+    }
+
+    func testStatusBarQuotaTextHandlesNoValidQuota() {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.shortWindow = nil
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "未知")
+
+        XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "无额度")
+        XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: false), "未登录")
     }
 
     func testDetailWindowFallsBackToThePrimaryWindow() throws {
@@ -395,6 +404,61 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(result.state, .waitingForUser)
         XCTAssertTrue(result.isActive)
         XCTAssertEqual(result.detail, "需要你的确认后才能继续")
+    }
+
+    func testActivityParserPreservesStableThreadID() {
+        let jsonl = """
+        {"timestamp":"2026-07-17T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}
+        """
+        let result = CodexActivityEventParser().parse(
+            data: Data(jsonl.utf8),
+            id: "thread-stable-id",
+            title: "测试任务"
+        )
+
+        XCTAssertEqual(result.id, "thread-stable-id")
+    }
+
+    @MainActor
+    func testCompanionStatsAccumulateOnlyActiveIntervalsAndPersist() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("companion-stats-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-22T08:00:00Z"))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let store = CompanionStatsStore(fileURL: fileURL, now: start, calendar: calendar)
+
+        store.setActivityState(.executing, now: start)
+        store.tick(now: start.addingTimeInterval(60))
+        store.setActivityState(.idle, now: start.addingTimeInterval(120))
+        store.tick(now: start.addingTimeInterval(300))
+
+        XCTAssertEqual(store.todayMinutes, 2)
+        let restored = CompanionStatsStore(
+            fileURL: fileURL,
+            now: start.addingTimeInterval(300),
+            calendar: calendar
+        )
+        XCTAssertEqual(restored.todayMinutes, 2)
+    }
+
+    @MainActor
+    func testCompanionStatsCapSleepIntervalsAndResetAcrossDay() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("companion-stats-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-22T22:00:00Z"))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let store = CompanionStatsStore(fileURL: fileURL, now: start, calendar: calendar)
+
+        store.setActivityState(.thinking, now: start)
+        store.tick(now: start.addingTimeInterval(600))
+        XCTAssertEqual(store.todaySeconds, 90, accuracy: 0.001)
+
+        store.tick(now: start.addingTimeInterval(7_200))
+        XCTAssertEqual(store.todaySeconds, 0, accuracy: 0.001)
     }
 
     func testActivityParserKeepsRecentCompletionThenReturnsIdle() {
@@ -441,6 +505,102 @@ final class CodexlingTests: XCTestCase {
 
         XCTAssertEqual(parsed.state, .executing)
         XCTAssertTrue(parsed.isActive)
+    }
+
+    func testActivityServiceReturnsAllActiveTasksWithStableIDsAndPriority() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-activity-db-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executingURL = directory.appendingPathComponent("executing.jsonl")
+        let waitingURL = directory.appendingPathComponent("waiting.jsonl")
+        try Data("""
+        {"timestamp":"2026-07-22T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}
+        {"timestamp":"2026-07-22T08:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"exec_command","arguments":"{}"}}
+        """.utf8).write(to: executingURL)
+        try Data("""
+        {"timestamp":"2026-07-22T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}
+        {"timestamp":"2026-07-22T08:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"call-2","name":"request_user_input","arguments":"{}"}}
+        """.utf8).write(to: waitingURL)
+
+        let databaseURL = directory.appendingPathComponent("state.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            archived INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        """, nil, nil, nil), SQLITE_OK)
+        let insert = """
+        INSERT INTO threads VALUES
+        ('thread-executing', '\(executingURL.path)', '执行任务', 0, 1),
+        ('thread-waiting', '\(waitingURL.path)', '等待任务', 0, 2);
+        """
+        XCTAssertEqual(sqlite3_exec(database, insert, nil, nil, nil), SQLITE_OK)
+
+        let snapshot = CodexActivityService(databaseURLs: [databaseURL]).loadSnapshot(
+            now: ISO8601DateFormatter().date(from: "2026-07-22T08:00:03Z")!
+        )
+
+        XCTAssertEqual(snapshot.activeTaskCount, 1)
+        XCTAssertEqual(snapshot.activeTasks.map(\.id), ["thread-waiting"])
+        XCTAssertEqual(snapshot.activeTasks.map(\.state), [.waitingForUser])
+        XCTAssertEqual(snapshot.state, .waitingForUser)
+    }
+
+    func testActivityServiceCountsOnlyConcurrentUserThreads() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-concurrent-db-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func writeActivity(_ name: String, tool: String) throws -> URL {
+            let url = directory.appendingPathComponent("\(name).jsonl")
+            try Data("""
+            {"timestamp":"2026-07-22T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}
+            {"timestamp":"2026-07-22T08:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"\(name)","name":"\(tool)","arguments":"{}"}}
+            """.utf8).write(to: url)
+            return url
+        }
+
+        let firstURL = try writeActivity("first", tool: "exec_command")
+        let secondURL = try writeActivity("second", tool: "view_image")
+        let subagentURL = try writeActivity("guardian", tool: "exec_command")
+        let databaseURL = directory.appendingPathComponent("state.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            archived INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            thread_source TEXT
+        );
+        """, nil, nil, nil), SQLITE_OK)
+        let insert = """
+        INSERT INTO threads VALUES
+        ('thread-first', '\(firstURL.path)', '任务一', 0, 3, 'user'),
+        ('thread-second', '\(secondURL.path)', '任务二', 0, 2, 'user'),
+        ('thread-guardian', '\(subagentURL.path)', '守护进程', 0, 1, 'subagent');
+        """
+        XCTAssertEqual(sqlite3_exec(database, insert, nil, nil, nil), SQLITE_OK)
+
+        let snapshot = CodexActivityService(databaseURLs: [databaseURL]).loadSnapshot(
+            now: ISO8601DateFormatter().date(from: "2026-07-22T08:00:03Z")!
+        )
+
+        XCTAssertEqual(snapshot.activeTaskCount, 2)
+        XCTAssertEqual(Set(snapshot.activeTasks.map(\.id)), ["thread-first", "thread-second"])
+        XCTAssertFalse(snapshot.activeTasks.contains { $0.id == "thread-guardian" })
     }
 
     func testHoverContentUsesThreadTitleAndVisibleExecutionSummary() {
@@ -517,6 +677,16 @@ final class CodexlingTests: XCTestCase {
         let snapshot = CodexActivityService(databaseURLs: [database]).loadSnapshot()
         XCTAssertNotEqual(snapshot.state, .unavailable)
         XCTAssertFalse(snapshot.hoverSubtitle.isEmpty)
+    }
+
+    @MainActor
+    func testLegacyTaskColorPreferenceMigratesToFollowQuota() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("cyan", forKey: "codexling.petBackgroundColor")
+
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).petBackgroundColor, .automatic)
     }
 
     private func littleEndian(_ value: UInt32) -> Data {

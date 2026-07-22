@@ -4,18 +4,14 @@ import SwiftUI
 
 @MainActor
 final class StatusBarController: NSObject {
-    private let popoverWidth: CGFloat = 414
-    private let popoverViewportMargin: CGFloat = 28
     private let statusItem: NSStatusItem
-    private let popover: NSPopover
-    private var hostingController: NSHostingController<UsagePopoverView>!
     private let store: UsageSnapshotStore
     private let settings: AppSettingsStore
     private let activityStore: CodexActivityStore
+    private let frameStore: PetFrameStore
+    private let companionStatsStore: CompanionStatsStore
     private let actions: UsageActions
-    private let animationPlayer = PetAnimationPlayer()
     private let hoverPanel = PetHoverPanelController()
-    private var currentPetFrame: NSImage?
     private var capsuleView: StatusCapsuleView?
     private var pendingHoverWorkItem: DispatchWorkItem?
     private var pendingHoverHideWorkItem: DispatchWorkItem?
@@ -27,35 +23,18 @@ final class StatusBarController: NSObject {
         store: UsageSnapshotStore,
         settings: AppSettingsStore,
         activityStore: CodexActivityStore,
-        updater: AppUpdateController,
+        frameStore: PetFrameStore,
+        companionStatsStore: CompanionStatsStore,
         actions: UsageActions
     ) {
         self.store = store
         self.settings = settings
         self.activityStore = activityStore
+        self.frameStore = frameStore
+        self.companionStatsStore = companionStatsStore
         self.actions = actions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        popover = NSPopover()
         super.init()
-
-        hostingController = NSHostingController(
-            rootView: UsagePopoverView(
-                store: store,
-                settings: settings,
-                updater: updater,
-                actions: actions,
-                onLayoutChanged: { [weak self] in self?.schedulePopoverSizeUpdate() }
-            )
-        )
-
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: popoverWidth, height: 1)
-        hostingController.sizingOptions = [.intrinsicContentSize]
-        hostingController.view.wantsLayer = true
-        hostingController.view.layer?.isOpaque = false
-        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
-        popover.contentViewController = hostingController
 
         hoverPanel.onMouseEntered = { [weak self] in
             self?.cancelHoverPanelHide()
@@ -77,15 +56,14 @@ final class StatusBarController: NSObject {
         }
 
         statusItem.isVisible = true
-        animationPlayer.onFrame = { [weak self] image in
-            self?.applyPetFrame(image)
+        frameStore.onFrameChanged = { [weak self] in
+            self?.refreshPetFrame()
         }
         configureStatusButton()
         refreshStatusTitle()
     }
 
     func refreshThemeAppearance() {
-        applyPopoverWindowAppearance()
         refreshStatusTitle()
     }
 
@@ -117,14 +95,9 @@ final class StatusBarController: NSObject {
             let view = StatusCapsuleView(frame: button.bounds)
             view.autoresizingMask = [.width, .height]
             view.onClick = { [weak self] in
-                guard let self, let button = self.statusItem.button else { return }
-                switch self.settings.statusBarClickBehavior {
-                case .detachedWindow:
-                    self.hideHoverPanel()
-                    self.actions.openDetachedWindow()
-                case .popover:
-                    self.togglePopover(button)
-                }
+                guard let self else { return }
+                self.hideHoverPanel()
+                self.actions.openDetachedWindow()
             }
             view.onMouseEntered = { [weak self] in self?.scheduleHoverPanel() }
             view.onMouseExited = { [weak self] in
@@ -154,7 +127,11 @@ final class StatusBarController: NSObject {
         let quotaText = statusBarQuotaText(snapshot: snapshot, isLoggedIn: store.isLoggedIn)
 
         let activityState = activityStore.snapshot.state
-        let background = settings.petBackgroundColor.resolved(for: activityState)
+        let health = QuotaHealthLevel.from(
+            window: snapshot.primaryWindow,
+            isLoggedIn: store.isLoggedIn
+        )
+        let background = settings.petBackgroundColor.resolved(for: health)
         let showsWave = settings.statusBarWaveEnabled
             && activityState != .idle
             && activityState != .unavailable
@@ -163,69 +140,31 @@ final class StatusBarController: NSObject {
             "\($0)·\(quotaText)"
         } ?? quotaText
 
-        // The selected Pet also powers the hover card. Keep its animation
-        // running even when the compact status-bar Pet is turned off.
-        if let pet = settings.selectedPet {
-            animationPlayer.setPet(pet)
-            animationPlayer.setState(activityState.petAnimationState)
-        } else {
-            animationPlayer.setPet(nil)
-            currentPetFrame = nil
-            hoverPanel.updatePetFrame(nil)
-        }
-
-        if settings.petsEnabled, settings.selectedPet != nil {
-            capsuleView?.update(
-                background: background,
-                text: compactText,
-                foregroundColor: background.foregroundColor,
-                showsPet: true,
-                healthColor: nil,
-                showsWave: showsWave,
-                cornerRatio: cornerRatio
-            )
-            capsuleView?.petImage = currentPetFrame.map {
-                StatusPetBadgeRenderer.render($0, cornerRatio: cornerRatio)
-            }
-        } else {
-            let health = QuotaHealthLevel.from(
-                window: snapshot.primaryWindow,
-                isLoggedIn: store.isLoggedIn
-            )
-            capsuleView?.petImage = nil
-            capsuleView?.update(
-                background: background,
-                text: compactText,
-                foregroundColor: background.foregroundColor,
-                showsPet: false,
-                healthColor: health.nsColor,
-                showsWave: showsWave,
-                cornerRatio: cornerRatio
-            )
-        }
+        // The final design reserves the leading dot for task state. Pet
+        // animation remains available in the main window and hover card.
+        capsuleView?.petImage = nil
+        capsuleView?.update(
+            background: background,
+            text: compactText,
+            foregroundColor: background.foregroundColor,
+            showsPet: false,
+            indicatorColor: activityState.statusNSColor,
+            showsWave: showsWave,
+            cornerRatio: cornerRatio
+        )
         if let capsuleView {
             statusItem.length = capsuleView.preferredWidth
         }
 
         updateHoverContent(button: button)
 
-        if popover.isShown {
-            schedulePopoverSizeUpdate()
-        }
     }
 
-    private func applyPetFrame(_ image: NSImage?) {
-        guard settings.selectedPet != nil, statusItem.button != nil else { return }
-        currentPetFrame = image
+    private func refreshPetFrame() {
+        // Hover always shows the selected Pet. The retired visibility toggle
+        // must not leave existing users with the placeholder icon.
+        let image = frameStore.currentFrame
         image?.isTemplate = false
-        if settings.petsEnabled {
-            let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
-            capsuleView?.petImage = image.map {
-                StatusPetBadgeRenderer.render($0, cornerRatio: cornerRatio)
-            }
-        } else {
-            capsuleView?.petImage = nil
-        }
         hoverPanel.updatePetFrame(image)
     }
 
@@ -257,7 +196,7 @@ final class StatusBarController: NSObject {
         pendingHoverWorkItem?.cancel()
         cancelHoverPanelHide()
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self, let button = self.statusItem.button, !self.popover.isShown else { return }
+            guard let self, let button = self.statusItem.button else { return }
             self.hoverPanel.show(relativeTo: button)
         }
         pendingHoverWorkItem = workItem
@@ -355,70 +294,12 @@ final class StatusBarController: NSObject {
         return window.convertToScreen(rectInWindow)
     }
 
-    @objc private func togglePopover(_ sender: NSStatusBarButton) {
-        hideHoverPanel()
-        sender.highlight(false)
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            updatePopoverSize(relativeTo: sender)
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-            DispatchQueue.main.async { [weak self] in
-                sender.highlight(false)
-                self?.applyPopoverWindowAppearance()
-                self?.popover.contentViewController?.view.window?.makeKey()
-            }
-        }
-    }
-
-    private func applyPopoverWindowAppearance() {
-        guard let window = popover.contentViewController?.view.window else { return }
-
-        window.appearance = settings.theme.nsAppearance
-        window.isOpaque = false
-        // Dynamic NSColor follows system appearance; avoid freezing a resolved CGColor on the layer.
-        window.backgroundColor = .clear
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.isOpaque = false
-        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
-        hostingController.view.wantsLayer = true
-        hostingController.view.layer?.isOpaque = false
-        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
-    }
-
-    private func schedulePopoverSizeUpdate() {
-        // Wait one run loop so SwiftUI finishes layout after snapshot changes.
-        DispatchQueue.main.async { [weak self] in
-            self?.updatePopoverSize(relativeTo: self?.statusItem.button)
-        }
-    }
-
-    private func updatePopoverSize(relativeTo button: NSStatusBarButton? = nil) {
-        let screenHeight = button?.window?.screen?.visibleFrame.height
-            ?? NSScreen.main?.visibleFrame.height
-            ?? 720
-        hostingController.view.invalidateIntrinsicContentSize()
-        hostingController.view.layoutSubtreeIfNeeded()
-        let intrinsicHeight = hostingController.view.intrinsicContentSize.height
-        let measuredHeight = intrinsicHeight > 0 && intrinsicHeight.isFinite
-            ? intrinsicHeight
-            : DetachedWindowMetrics.minHeight
-        let targetHeight = PopoverMetrics.targetHeight(
-            contentHeight: measuredHeight,
-            visibleHeight: screenHeight,
-            margin: popoverViewportMargin,
-            minimumHeight: DetachedWindowMetrics.minHeight
-        )
-
-        popover.contentSize = NSSize(
-            width: popoverWidth,
-            height: targetHeight
-        )
-    }
 }
 
 func statusBarQuotaText(snapshot: CodexUsageSnapshot, isLoggedIn: Bool) -> String {
     guard isLoggedIn else { return "未登录" }
+
+    guard snapshot.hasShortWindow || snapshot.hasWeeklyWindow else { return "无额度" }
 
     if snapshot.hasShortWindow {
         let primaryText = "\(statusBarWindowLabel(snapshot.primaryWindow.label)) \(snapshot.primaryWindow.percentText)"
@@ -438,18 +319,6 @@ func statusBarWindowLabel(_ label: String) -> String {
         "周"
     default:
         label.replacingOccurrences(of: " ", with: "")
-    }
-}
-
-enum PopoverMetrics {
-    static func targetHeight(
-        contentHeight: CGFloat,
-        visibleHeight: CGFloat,
-        margin: CGFloat,
-        minimumHeight: CGFloat
-    ) -> CGFloat {
-        let viewportHeight = max(1, visibleHeight - margin)
-        return min(max(contentHeight, minimumHeight), viewportHeight)
     }
 }
 
@@ -569,9 +438,12 @@ enum StatusPetBadgeRenderer {
 }
 
 final class StatusCapsuleView: NSView {
-    private static let edgeContentGap: CGFloat = 10
+    private static let leadingPadding: CGFloat = 7.5
+    private static let indicatorTextGap: CGFloat = 8
+    private static let trailingPadding: CGFloat = 10
     private static let inlineContentGap: CGFloat = 4
-    private static let dotSize: CGFloat = 9
+    private static let dotSize: CGFloat = 8
+    private static let capsuleHeight: CGFloat = 24
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
 
     var onClick: (() -> Void)?
@@ -585,7 +457,7 @@ final class StatusCapsuleView: NSView {
     private var text = ""
     private var foregroundColor = NSColor.labelColor
     private var showsPet = true
-    private var healthColor: NSColor?
+    private var indicatorColor: NSColor?
     private var showsWave = false
     private var cornerRatio: CGFloat = 0.5
     private var isPressed = false
@@ -600,9 +472,9 @@ final class StatusCapsuleView: NSView {
         let indicatorWidth = showsPet ? StatusPetBadgeRenderer.size.width : Self.dotSize
         return indicatorPadding
             + indicatorWidth
-            + Self.edgeContentGap
+            + Self.indicatorTextGap
             + textWidth
-            + Self.edgeContentGap
+            + Self.trailingPadding
     }
 
     override init(frame frameRect: NSRect) {
@@ -621,7 +493,7 @@ final class StatusCapsuleView: NSView {
         text: String,
         foregroundColor: NSColor,
         showsPet: Bool,
-        healthColor: NSColor?,
+        indicatorColor: NSColor?,
         showsWave: Bool,
         cornerRatio: CGFloat
     ) {
@@ -629,7 +501,7 @@ final class StatusCapsuleView: NSView {
         self.text = text
         self.foregroundColor = foregroundColor
         self.showsPet = showsPet
-        self.healthColor = healthColor
+        self.indicatorColor = indicatorColor
         let waveVisibilityChanged = self.showsWave != showsWave
         self.showsWave = showsWave
         self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
@@ -643,7 +515,12 @@ final class StatusCapsuleView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let outerRect = bounds.insetBy(dx: 0.25, dy: 0.25)
+        let outerRect = NSRect(
+            x: 0.25,
+            y: bounds.midY - Self.capsuleHeight / 2 + 0.25,
+            width: max(0, bounds.width - 0.5),
+            height: Self.capsuleHeight - 0.5
+        )
         let outerPath = NSBezierPath(
             roundedRect: outerRect,
             xRadius: outerRect.height * cornerRatio,
@@ -693,8 +570,24 @@ final class StatusCapsuleView: NSView {
                 width: Self.dotSize,
                 height: Self.dotSize
             )
-            (healthColor ?? NSColor.secondaryLabelColor).setFill()
-            NSBezierPath(ovalIn: dotRect).fill()
+            let haloPath = NSBezierPath(ovalIn: dotRect.insetBy(dx: -1.2, dy: -1.2))
+            NSColor.white.withAlphaComponent(0.58).setFill()
+            haloPath.fill()
+
+            NSGraphicsContext.saveGraphicsState()
+            let glow = NSShadow()
+            glow.shadowColor = NSColor.white.withAlphaComponent(0.72)
+            glow.shadowBlurRadius = 2.2
+            glow.shadowOffset = .zero
+            glow.set()
+            (indicatorColor ?? NSColor.secondaryLabelColor).setFill()
+            let dotPath = NSBezierPath(ovalIn: dotRect)
+            dotPath.fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            NSColor.white.withAlphaComponent(0.88).setStroke()
+            dotPath.lineWidth = 0.7
+            dotPath.stroke()
         }
 
         let title = attributedText
@@ -717,7 +610,7 @@ final class StatusCapsuleView: NSView {
             context.saveGState()
             context.textMatrix = .identity
             context.textPosition = CGPoint(
-                x: indicatorPadding + indicatorWidth + Self.edgeContentGap,
+                x: indicatorPadding + indicatorWidth + Self.indicatorTextGap,
                 y: baselineY
             )
             CTLineDraw(line, context)
@@ -758,7 +651,7 @@ final class StatusCapsuleView: NSView {
             // Match the leading inset to the centered top and bottom insets.
             return max(0, (bounds.height - StatusPetBadgeRenderer.size.height) / 2)
         }
-        return max(0, (bounds.height - Self.dotSize) / 2)
+        return Self.leadingPadding
     }
 
     override func viewDidMoveToWindow() {

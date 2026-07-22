@@ -1,75 +1,52 @@
+import AppKit
 import SwiftUI
-
-struct UsagePopoverView: View {
-    @Bindable var store: UsageSnapshotStore
-    @Bindable var settings: AppSettingsStore
-    @Bindable var updater: AppUpdateController
-    let actions: UsageActions
-    let onLayoutChanged: () -> Void
-    @State private var showsSettings = false
-
-    private var viewportAwareMinimumHeight: CGFloat {
-        let visibleHeight = NSScreen.main?.visibleFrame.height ?? DetachedWindowMetrics.minHeight
-        return min(DetachedWindowMetrics.minHeight, max(1, visibleHeight - 28))
-    }
-
-    var body: some View {
-        Group {
-            if showsSettings {
-                SettingsView(settings: settings, updater: updater, layout: .compact) {
-                    showsSettings = false
-                    notifyLayoutChanged()
-                }
-            } else {
-                UsagePanel(
-                    snapshot: store.snapshot,
-                    isLoggedIn: store.isLoggedIn,
-                    actions: actions,
-                    layout: .compact,
-                    showsDetachedButton: true,
-                    onOpenSettings: {
-                        showsSettings = true
-                        notifyLayoutChanged()
-                    }
-                )
-            }
-        }
-        .frame(width: 414)
-        .frame(minHeight: viewportAwareMinimumHeight, alignment: .top)
-        .preferredColorScheme(settings.resolvedColorScheme)
-        .rootLiquidGlass(
-            cornerRadius: 18,
-            health: QuotaHealthLevel.from(window: store.snapshot.primaryWindow, isLoggedIn: store.isLoggedIn),
-            topChromeHeight: 96
-        )
-    }
-
-    private func notifyLayoutChanged() {
-        onLayoutChanged()
-    }
-}
 
 struct DetachedUsageWindowView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
+    @Bindable var activityStore: CodexActivityStore
+    @Bindable var frameStore: PetFrameStore
+    @Bindable var companionStatsStore: CompanionStatsStore
     @Bindable var updater: AppUpdateController
     let actions: UsageActions
+    let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var showsSettings = false
+
+    private var dashboardPreferredHeight: CGFloat {
+        min(DetachedWindowMetrics.maxHeight, store.isLoggedIn ? 570 : 440)
+    }
 
     var body: some View {
         Group {
             if showsSettings {
-                SettingsView(settings: settings, updater: updater, layout: .window) {
+                SettingsView(
+                    store: store,
+                    settings: settings,
+                    updater: updater,
+                    layout: .window,
+                    onLogout: {
+                        actions.disconnect()
+                        showsSettings = false
+                        onPreferredHeightChanged(440)
+                    }
+                ) {
                     showsSettings = false
+                    onPreferredHeightChanged(dashboardPreferredHeight)
                 }
             } else {
-                UsagePanel(
-                    snapshot: store.snapshot,
-                    isLoggedIn: store.isLoggedIn,
+                CompanionDashboardView(
+                    store: store,
+                    settings: settings,
+                    activityStore: activityStore,
+                    frameStore: frameStore,
+                    companionStatsStore: companionStatsStore,
                     actions: actions,
                     layout: .window,
                     showsDetachedButton: false,
-                    onOpenSettings: { showsSettings = true }
+                    onOpenSettings: {
+                        showsSettings = true
+                        onPreferredHeightChanged(DetachedWindowMetrics.settingsHeight)
+                    }
                 )
             }
         }
@@ -83,6 +60,17 @@ struct DetachedUsageWindowView: View {
         .preferredColorScheme(settings.resolvedColorScheme)
         .background(Color.codexBackground)
         .ignoresSafeArea(.container, edges: .top)
+        .onAppear {
+            onPreferredHeightChanged(dashboardPreferredHeight)
+        }
+        .onChange(of: store.snapshot.resetCoupons) { _, _ in
+            guard !showsSettings else { return }
+            onPreferredHeightChanged(dashboardPreferredHeight)
+        }
+        .onChange(of: store.isLoggedIn) { _, _ in
+            guard !showsSettings else { return }
+            onPreferredHeightChanged(dashboardPreferredHeight)
+        }
     }
 }
 
@@ -149,6 +137,10 @@ struct UsagePanel: View {
         let account = snapshot.accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !account.isEmpty, account != "OpenAI 账号" else { return "Codexling" }
         return account.split(separator: "@", maxSplits: 1).first.map(String.init) ?? account
+    }
+
+    private var planBadgeText: String {
+        snapshot.planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     var body: some View {
@@ -231,13 +223,15 @@ struct UsagePanel: View {
                         .font(.system(size: 15, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(snapshot.sourceURL == "preview" ? "PREVIEW" : "API")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(primaryHealth.color)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(primaryHealth.color.opacity(0.10))
-                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    if snapshot.sourceURL == "preview" || !planBadgeText.isEmpty {
+                        Text(snapshot.sourceURL == "preview" ? "preview" : planBadgeText)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(primaryHealth.color)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(primaryHealth.color.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
                 }
                 .padding(.leading, accountTitleLeadingPadding)
                 .offset(y: accountTitleVerticalOffset)
@@ -385,7 +379,7 @@ struct UsagePanel: View {
                     .font(.system(size: 40, weight: .bold, design: .default))
                     .monospacedDigit()
                     .foregroundStyle(primaryHealth.color)
-                Text("\(snapshot.primaryWindow.label)\n\(UsageDateFormat.timeOnly(snapshot.primaryWindow.resetsAt)) 重置")
+                Text("\(snapshot.primaryWindow.label)\n\(UsageDateFormat.dateAndTime(snapshot.primaryWindow.resetsAt)) 重置")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
                     .lineSpacing(2)
@@ -739,45 +733,23 @@ struct IconButtonStyle: ButtonStyle {
 
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
-        let isDark = colorScheme == .dark
-
-        Group {
-            if #available(macOS 26.0, *) {
-                configuration.label
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.codexInk)
-                    .frame(height: 36)
-                    .opacity(isEnabled ? 1 : 0.45)
-                    .scaleEffect(configuration.isPressed ? 0.985 : 1)
-                    .glassEffect(
-                        .regular
-                            .tint(Color.codexPrimary.opacity(isDark ? 0.18 : 0.12))
-                            .interactive(),
-                        in: .rect(cornerRadius: 9)
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .frame(height: 40)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(
+                        configuration.isPressed
+                            ? Color(red: 0.070, green: 0.078, blue: 0.088)
+                            : Color(red: 0.096, green: 0.105, blue: 0.118)
                     )
-            } else {
-                configuration.label
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.codexOnPrimary)
-                    .frame(height: 36)
-                    .background(
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.86) : Color.codexPrimary)
-                                .opacity(isEnabled ? 1 : 0.45)
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .stroke(
-                                    isDark ? Color.black.opacity(0.18) : Color.white.opacity(0.16),
-                                    lineWidth: 0.8
-                                )
-                        }
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
-        }
+            )
+            .opacity(isEnabled ? 1 : 0.58)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -987,7 +959,7 @@ extension NSColor {
 }
 
 extension Color {
-    private static func codexDynamic(
+    static func codexDynamic(
         light: (CGFloat, CGFloat, CGFloat),
         dark: (CGFloat, CGFloat, CGFloat)
     ) -> Color {

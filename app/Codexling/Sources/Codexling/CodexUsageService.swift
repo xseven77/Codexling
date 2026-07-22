@@ -133,6 +133,7 @@ actor CodexUsageService {
     private func exchangeCodeForToken(code: String, verifier: String) async throws -> CodexOAuthToken {
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = formBody([
             "grant_type": "authorization_code",
@@ -168,6 +169,7 @@ actor CodexUsageService {
     private func refreshToken(_ token: CodexOAuthToken) async throws -> CodexOAuthToken {
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = formBody([
             "grant_type": "refresh_token",
@@ -216,6 +218,7 @@ actor CodexUsageService {
     private func fetchJSON(url: URL, token: String, accountID: String?) async throws -> Any {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Codexling/0.1", forHTTPHeaderField: "User-Agent")

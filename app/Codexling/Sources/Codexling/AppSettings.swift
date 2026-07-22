@@ -79,49 +79,24 @@ enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
     }
 }
 
-enum StatusBarClickBehavior: String, CaseIterable, Identifiable {
-    case detachedWindow
-    case popover
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .detachedWindow: "打开分离窗口"
-        case .popover: "打开下拉窗口"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .detachedWindow: "rectangle.on.rectangle.angled"
-        case .popover: "menubar.arrow.down.rectangle"
-        }
-    }
-}
-
 enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
-    case neutral
     case automatic
-    case blue
-    case purple
-    case cyan
-    case amber
+    case neutral
     case green
+    case yellow
     case red
+    case gray
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .automatic: "跟随状态"
+        case .automatic: "跟随额度"
         case .neutral: "中性"
-        case .blue: "蓝色"
-        case .purple: "紫色"
-        case .cyan: "青色"
-        case .amber: "橙色"
         case .green: "绿色"
+        case .yellow: "黄色"
         case .red: "红色"
+        case .gray: "灰色"
         }
     }
 
@@ -129,25 +104,17 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
         switch self {
         case .automatic: "wand.and.stars"
         case .neutral: "circle.lefthalf.filled"
-        case .blue: "circle.fill"
-        case .purple: "circle.fill"
-        case .cyan: "circle.fill"
-        case .amber: "circle.fill"
-        case .green: "circle.fill"
-        case .red: "circle.fill"
+        case .green, .yellow, .red, .gray: "circle.fill"
         }
     }
 
-    func resolved(for state: CodexActivityState) -> Self {
+    func resolved(for health: QuotaHealthLevel) -> Self {
         guard self == .automatic else { return self }
-        return switch state {
-        case .unavailable, .idle: .neutral
-        case .thinking: .purple
-        case .executing: .blue
-        case .reviewing: .cyan
-        case .waitingForUser: .amber
-        case .completed: .green
-        case .interrupted: .red
+        return switch health {
+        case .gray: .gray
+        case .green: .green
+        case .yellow: .yellow
+        case .red: .red
         }
     }
 
@@ -155,19 +122,14 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
         switch self {
         case .automatic, .neutral:
             NSColor.white.withAlphaComponent(0.50)
-        case .blue:
-            NSColor(red: 0.18, green: 0.42, blue: 1.00, alpha: 0.88)
-        case .purple:
-            NSColor(red: 0.48, green: 0.26, blue: 0.96, alpha: 0.88)
-        case .cyan:
-            NSColor(red: 0.02, green: 0.63, blue: 0.80, alpha: 0.88)
-        case .amber:
-            NSColor(red: 0.95, green: 0.46, blue: 0.08, alpha: 0.90)
         case .green:
-            // Matches the green cushion held by the Codexling mascot (#04A05C).
-            NSColor(red: 0.016, green: 0.627, blue: 0.361, alpha: 0.88)
+            NSColor(red: 0.016, green: 0.627, blue: 0.361, alpha: 1)
+        case .yellow:
+            NSColor(red: 0.851, green: 0.608, blue: 0.000, alpha: 1)
         case .red:
-            NSColor(red: 0.93, green: 0.22, blue: 0.30, alpha: 0.88)
+            NSColor(red: 0.867, green: 0.271, blue: 0.341, alpha: 1)
+        case .gray:
+            NSColor(red: 0.475, green: 0.510, blue: 0.498, alpha: 1)
         }
     }
 
@@ -175,7 +137,7 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
         switch self {
         case .automatic, .neutral:
             .labelColor
-        case .blue, .purple, .cyan, .amber, .green, .red:
+        case .green, .yellow, .red, .gray:
             .white
         }
     }
@@ -197,7 +159,6 @@ final class AppSettingsStore {
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
-        static let statusBarClickBehavior = "codexling.statusBarClickBehavior"
     }
 
     private let defaults: UserDefaults
@@ -260,14 +221,6 @@ final class AppSettingsStore {
         }
     }
 
-    var statusBarClickBehavior: StatusBarClickBehavior {
-        didSet {
-            guard statusBarClickBehavior != oldValue else { return }
-            defaults.set(statusBarClickBehavior.rawValue, forKey: Keys.statusBarClickBehavior)
-            onPetSettingsChanged?()
-        }
-    }
-
     private(set) var availablePets: [CodexPet] = []
     private(set) var isCodexlingPetInstalled = false
     private(set) var codexlingPetInstallationError: String?
@@ -307,13 +260,15 @@ final class AppSettingsStore {
 
         petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
         selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
-        petBackgroundColor = defaults.string(forKey: Keys.petBackgroundColor)
-            .flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
+        let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
+        petBackgroundColor = backgroundRaw.flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .automatic
         statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
         let savedCornerPercent = defaults.object(forKey: Keys.statusBarCornerPercent) as? Double ?? 50
         statusBarCornerPercent = min(max(savedCornerPercent, 20), 50)
-        statusBarClickBehavior = defaults.string(forKey: Keys.statusBarClickBehavior)
-            .flatMap(StatusBarClickBehavior.init(rawValue:)) ?? .detachedWindow
+        // The status capsule now has one behavior: open the detached window.
+        // Remove the retired popover preference so older installations cannot
+        // retain an unreachable mode.
+        defaults.removeObject(forKey: "codexling.statusBarClickBehavior")
         reloadPets(notify: false)
     }
 
@@ -327,8 +282,7 @@ final class AppSettingsStore {
             Keys.selectedPetID,
             Keys.petBackgroundColor,
             Keys.statusBarWaveEnabled,
-            Keys.statusBarCornerPercent,
-            Keys.statusBarClickBehavior
+            Keys.statusBarCornerPercent
         ]
         for key in keys where defaults.object(forKey: key) == nil {
             let suffix = key.replacingOccurrences(of: "codexling.", with: "")

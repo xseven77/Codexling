@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapshotStore = UsageSnapshotStore()
     private let settingsStore = AppSettingsStore()
     private let activityStore = CodexActivityStore()
+    private let frameStore = PetFrameStore()
+    private let companionStatsStore = CompanionStatsStore()
     private let updateController = AppUpdateController()
     private let usageService = CodexUsageService()
     private var actions: UsageActions?
@@ -24,15 +26,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.windowController?.refreshThemeAppearance()
         }
         settingsStore.onPetSettingsChanged = { [weak self] in
+            self?.syncCompanionState()
             self?.statusController?.refreshStatusTitle()
         }
-        activityStore.onSnapshotChanged = { [weak self] _ in
+        activityStore.onSnapshotChanged = { [weak self] snapshot in
+            self?.frameStore.update(
+                pet: self?.settingsStore.selectedPet,
+                activityState: snapshot.state
+            )
+            self?.companionStatsStore.setActivityState(snapshot.state)
             self?.statusController?.refreshStatusTitle()
         }
 
         let actions = UsageActions(
             refresh: { [weak self] in
-                self?.loginAndFetchUsage()
+                guard let self else { return }
+                if self.snapshotStore.isLoggedIn {
+                    self.autoRefreshUsage()
+                } else {
+                    self.loginAndFetchUsage()
+                }
             },
             openUsagePage: {
                 if let url = URL(string: "https://chatgpt.com/codex/settings/usage") {
@@ -58,17 +71,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store: snapshotStore,
             settings: settingsStore,
             activityStore: activityStore,
-            updater: updateController,
+            frameStore: frameStore,
+            companionStatsStore: companionStatsStore,
             actions: actions
         )
         startAutoRefreshTimer()
         activityStore.start()
+        companionStatsStore.start()
+        syncCompanionState()
         migrateLegacyTokenIfNeeded()
         openDetachedWindow()
+        if snapshotStore.isLoggedIn {
+            autoRefreshUsage()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         activityStore.stop()
+        companionStatsStore.stop()
+        frameStore.stop()
     }
 
     func applicationDidUpdate(_ notification: Notification) {
@@ -121,6 +142,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     self.isRefreshing = false
                     if !allowOAuthLogin, let codexError = error as? CodexUsageError, codexError == .noStoredToken {
+                        self.snapshotStore.markAuthenticationExpired()
+                        self.statusController?.refreshStatusTitle()
+                        return
+                    }
+                    if !allowOAuthLogin,
+                       let codexError = error as? CodexUsageError,
+                       codexError == .invalidTokenResponse {
+                        self.snapshotStore.markAuthenticationExpired()
+                        self.statusController?.refreshStatusTitle()
                         return
                     }
                     self.snapshotStore.markFailed(error.localizedDescription)
@@ -131,14 +161,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func disconnect() {
+        snapshotStore.markDisconnected()
+        statusController?.refreshStatusTitle()
+
         Task { [weak self] in
             guard let self else { return }
 
             await self.usageService.disconnect()
-            await MainActor.run {
-                self.snapshotStore.markDisconnected()
-                self.statusController?.refreshStatusTitle()
-            }
         }
     }
 
@@ -149,6 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowController = DetachedWindowController(
                 store: snapshotStore,
                 settings: settingsStore,
+                activityStore: activityStore,
+                frameStore: frameStore,
+                companionStatsStore: companionStatsStore,
                 updater: updateController,
                 actions: actions,
                 onClose: { [weak self] in
@@ -172,7 +204,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func syncCompanionState() {
+        frameStore.update(
+            pet: settingsStore.selectedPet,
+            activityState: activityStore.snapshot.state
+        )
+    }
+
     private func handleDetachedWindowClosed() {
+        // A closed window starts a fresh navigation session next time it is
+        // opened. Releasing the controller resets transient SwiftUI state such
+        // as `showsSettings`, so reopening always lands on the dashboard.
+        windowController = nil
         // Return to menu-bar-only mode after the window is closed.
         NSApp.setActivationPolicy(.accessory)
     }

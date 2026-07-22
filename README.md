@@ -5,6 +5,7 @@ macOS status bar app concept for viewing Codex usage limits through the official
 ## Documents
 
 - [方案文档](docs/codexling方案.md)
+- [最新 UI 全量升级实施方案](docs/ui-refresh-implementation-plan.md)
 - [实现待办](PROJECT.md)
 
 ## Build
@@ -24,7 +25,7 @@ cd app/Codexling
 
 See [发布脚本说明](app/Codexling/RELEASE.zh-CN.md).
 
-状态栏动画 Pets、Codex 内置 Pet 发现与活动状态映射见 [状态栏 Pets 方案](docs/status-bar-pets.md)。
+状态栏任务圆灯、额度背景、Codex 内置 Pet 发现与活动状态映射见 [状态栏与 Pets 方案](docs/status-bar-pets.md)。
 
 主弹窗、设置页与分离窗口的浅色/暗色玻璃实现见 [流体玻璃主题](docs/liquid-glass-theme.md)。
 

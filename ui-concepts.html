@@ -61,6 +61,32 @@
     /* 多任务牌堆：点击前牌后循环到下一张。 */
     .main-task-stack{position:relative;height:133px;margin-top:15px;cursor:pointer;outline:none}.main-task-stack:focus-visible{border-radius:12px;box-shadow:0 0 0 2px rgba(46,107,255,.28)}.main-task-stack .task-card{position:absolute;top:0;left:0;width:calc(100% - 8px);min-height:116px;margin:0;transition:transform .24s ease,opacity .2s ease,background .2s ease,box-shadow .2s ease;user-select:none}.main-task-stack .task-card:first-child{z-index:2;background:#fff;box-shadow:0 8px 17px rgba(35,54,45,.10)}.main-task-stack .task-card:nth-child(2){z-index:1;transform:translate(8px,9px);background:#f6f8f7;box-shadow:0 4px 10px rgba(35,54,45,.06)}.main-task-stack.show-second .task-card:first-child{z-index:1;transform:translate(8px,9px);background:#f6f8f7;box-shadow:0 4px 10px rgba(35,54,45,.06)}.main-task-stack.show-second .task-card:nth-child(2){z-index:2;transform:translate(0,0);background:#fff;box-shadow:0 8px 17px rgba(35,54,45,.10)}.task-page{display:inline-flex;align-items:center;gap:4px;color:#707a77;font-size:8px}.task-page:after{content:"↻";font-size:10px}.main-task-stack .task-card:not(:first-child) .state{color:#087e9e}.main-task-stack .task-card:not(:first-child) .state i{background:#05a1cc}.stack-action{position:absolute;z-index:4;right:10px;bottom:7px;padding:2px 5px;border:0;border-radius:99px;background:rgba(238,243,240,.94);color:#68736f;font-size:7px;pointer-events:none}
   </style>
+  <style>
+    /* 最新状态栏规范：任务圆灯为 7px。 */
+    .color-spec .combo-pill > i,
+    .desktop .statusbar-pill .tiny-pet,
+    .anatomy-pill > i {
+      width: 7px;
+      height: 7px;
+      flex-basis: 7px;
+    }
+    .settings-account-title-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .settings-account-title-row strong { display: inline; }
+    .settings-account-title-row b { font-size: 9px; }
+    .settings-account-action {
+      border: 1px solid rgba(221, 69, 87, .18);
+      border-radius: 7px;
+      padding: 6px 9px;
+      background: rgba(221, 69, 87, .08);
+      color: #dd4557;
+      font-size: 9px;
+      font-weight: 650;
+    }
+  </style>
 </head>
 <body>
   <main class="page">
@@ -71,7 +97,7 @@
       <section class="concept running"><aside class="concept-label"><b>02 · 主窗口</b><h2>任务执行中</h2><p>任务状态决定胶囊色、Pet 动画和当前步骤摘要；额度仍作为次要信息。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span class="statusbar-pill"><i class="tiny-pet"></i>工作中 · 周 77%</span><span>17:57</span></div></div><div class="screen-stage"><section class="window"><header class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="account"><i class="avatar">Q</i>Qiizo <span class="plan">Plus</span></div><button class="gear">⚙</button></header><div class="app-body"><aside class="pet-panel"><i class="glow"></i><img class="pet" src="assets/Codexling.png" alt="当前选择的 Pet：Codexling"/><span class="pet-tag"><i></i>Codexling · 正在工作</span><span class="companion-time">今天一起工作 42 分钟</span></aside><main class="main"><div class="heading"><div><h3>正在处理 1 个任务</h3><p>设计宠物精灵陪伴主窗口</p></div><span class="sync">刚刚更新</span></div><article class="task-card"><div class="task-top"><span class="state"><i></i>正在工作</span><span>1 个活跃任务</span></div><h4>正在生成新的 UI 概念稿</h4><p>正在编辑 ui-concepts.html，Pet 会继续保持工作动画。</p><div class="task-foot">执行工具 · 最近更新于刚刚</div></article><div class="usage-title"><strong>额度</strong><span>下次自动刷新：17:59</span></div><div class="usage"><div class="usage-row"><span>5 小时</span><div class="bar dark"><i style="width:42%"></i></div><b>42%</b></div><div class="usage-row"><span>本周</span><div class="bar"><i style="width:77%"></i></div><b>77%</b></div></div><footer class="footer-row"><span>上次同步：今天 17:57</span><button class="refresh">立即刷新</button></footer></main></div></section></div></div></section>
       <section class="concept waiting"><aside class="concept-label"><b>03 · 主窗口</b><h2>等待确认</h2><p>优先级最高，明确提示用户处理确认；对应 waiting 动画与橙色胶囊。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span class="statusbar-pill"><i class="tiny-pet"></i>等待确认 · 周 77%</span><span>17:57</span></div></div><div class="screen-stage"><section class="window"><header class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="account"><i class="avatar">Q</i>Qiizo <span class="plan">Plus</span></div><button class="gear">⚙</button></header><div class="app-body"><aside class="pet-panel"><i class="glow"></i><img class="pet" src="assets/Codexling.png" alt="当前选择的 Pet：Codexling"/><span class="pet-tag"><i></i>Codexling · 等待确认</span><span class="companion-time">今天一起工作 42 分钟</span></aside><main class="main"><div class="heading"><div><h3>Codex 等待你确认</h3><p>任务需要你的下一步操作</p></div><span class="sync">刚刚更新</span></div><article class="task-card"><div class="task-top"><span class="state"><i></i>等待确认</span><span>1 个活跃任务</span></div><h4>需要批准一项操作</h4><p>请回到 Codex 完成确认。Codexling 不在这里替代原始确认流程。</p><div class="task-foot">等待用户 · 任务会在确认后继续</div></article><div class="usage-title"><strong>额度</strong><span>下次自动刷新：17:59</span></div><div class="usage"><div class="usage-row"><span>5 小时</span><div class="bar dark"><i style="width:42%"></i></div><b>42%</b></div><div class="usage-row"><span>本周</span><div class="bar"><i style="width:77%"></i></div><b>77%</b></div></div><footer class="footer-row"><span>上次同步：今天 17:57</span><button class="refresh">立即刷新</button></footer></main></div></section></div></div></section>
       <section class="concept"><aside class="concept-label"><b>04 · 账户</b><h2>未登录</h2><p>不显示过期额度与任务数据；把登录和数据安全边界讲清楚。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span>17:57</span></div></div><div class="screen-stage"><section class="login-window"><div><img class="login-logo" src="app/landing/public/brand/codexling-logo.webp" alt="Codexling"/><h3>登录后查看你的 Codex</h3><p>查看当前任务、精灵状态和额度。<br>授权会在官方 ChatGPT / Codex 页面完成。</p><button class="login-btn">登录并同步额度</button><small>登录信息仅保存在本机 Keychain</small></div></section></div></div></section>
-      <section class="concept"><aside class="concept-label"><b>05 · 设置</b><h2>状态与 Pet</h2><p>已有 App 能力的整理页。颜色选项严格复用状态栏自动映射。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span class="statusbar-pill"><i class="tiny-pet"></i>周 77%</span><span>17:57</span></div></div><div class="screen-stage"><section class="settings-window"><header class="settings-head"><div class="traffic"><i></i><i></i><i></i></div><div class="settings-title">设置</div><button class="gear">×</button></header><main class="settings-content"><section class="settings-section"><h3>应用</h3><div class="setting-group"><div class="setting-row"><div class="setting-copy"><strong>Codexling 0.2.4 (14)</strong><span>通过 GitHub Releases 检查新版本</span></div><button class="refresh">检查更新</button></div><div class="setting-row"><div class="setting-copy"><strong>主题</strong><span>跟随系统，或固定浅色 / 深色</span></div><span class="select">跟随系统</span></div><div class="setting-row"><div class="setting-copy"><strong>自动刷新</strong><span>登录后按设定间隔拉取额度</span></div><span class="select">1 分钟</span></div></div></section><section class="settings-section"><h3>状态栏与 Pet</h3><p>颜色与任务状态同步，或固定一种颜色。</p><div class="setting-group"><div class="setting-row"><div class="setting-copy"><strong>胶囊背景色</strong><span>当前为“跟随状态”：空闲中性、思考紫、执行蓝、检查青、等待橙、完成绿、中止红</span></div><div class="color-options"><i style="--dot:#aeb5b3"></i><i style="--dot:#7a42f5"></i><i style="--dot:#2e6bff"></i><i style="--dot:#05a1cc"></i><i style="--dot:#f27314"></i><i style="--dot:#04a05c;--ring:#bde6ca"></i><i style="--dot:#ed384d"></i></div><span class="select">跟随状态</span></div><div class="setting-row"><div class="setting-copy"><strong>点击胶囊</strong><span>选择点击状态栏胶囊后打开的窗口类型</span></div><span class="select">分离窗口</span></div><div class="setting-row"><div class="setting-copy"><strong>显示动画 Pet</strong><span>关闭后显示原有额度健康圆灯</span></div><button class="toggle" aria-label="显示动画 Pet"></button></div><div class="setting-row"><div class="setting-copy"><strong>活动状态流光</strong><span>非空闲时，在状态栏胶囊内显示流光</span></div><button class="toggle" aria-label="活动状态流光"></button></div></div></section><section class="settings-section"><h3>当前 Pet</h3><div class="setting-group"><div class="setting-row"><div class="pet-choice"><img src="assets/Codexling.png" alt="Codexling 精灵"/><div><strong>Codexling</strong><span>自定义 · v2 · 11 行动画</span></div></div><span class="select">选择</span></div></div><div class="scan"><span>已发现 9 个内置 Pet，1 个自定义 Pet</span><b>重新扫描</b></div></section></main></section></div></div></section>
+      <section class="concept"><aside class="concept-label"><b>05 · 设置</b><h2>状态与 Pet</h2><p>已有 App 能力的整理页。圆灯任务状态与胶囊额度提醒保持独立。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span class="statusbar-pill"><i class="tiny-pet"></i>周 77%</span><span>17:57</span></div></div><div class="screen-stage"><section class="settings-window"><header class="settings-head"><div class="traffic"><i></i><i></i><i></i></div><div class="settings-title">设置</div><button class="gear">×</button></header><main class="settings-content"><section class="settings-section"><h3>应用</h3><div class="setting-group"><div class="setting-row"><div class="setting-copy"><strong>Codexling 0.2.4 (14)</strong><span>通过 GitHub Releases 检查新版本</span></div><button class="refresh">检查更新</button></div><div class="setting-row"><div class="setting-copy"><strong>主题</strong><span>跟随系统，或固定浅色 / 深色</span></div><span class="select">跟随系统</span></div><div class="setting-row"><div class="setting-copy"><strong>自动刷新</strong><span>登录后按设定间隔拉取额度</span></div><span class="select">1 分钟</span></div></div></section><section class="settings-section"><h3>状态栏与 Pet</h3><p>圆灯显示任务状态，胶囊背景显示额度余量。</p><div class="setting-group"><div class="setting-row"><div class="setting-copy"><strong>胶囊背景色</strong><span>当前为“跟随额度”：充足绿、偏低黄、紧张红、未知灰</span></div><div class="color-options"><i style="--dot:#04a05c"></i><i style="--dot:#d99b00"></i><i style="--dot:#dd4557"></i><i style="--dot:#79827f"></i></div><span class="select">跟随额度</span></div><div class="setting-row"><div class="setting-copy"><strong>点击胶囊</strong><span>选择点击状态栏胶囊后打开的窗口类型</span></div><span class="select">分离窗口</span></div><div class="setting-row"><div class="setting-copy"><strong>显示动画 Pet</strong><span>控制主窗口与悬停卡片动画；状态栏始终显示任务圆灯</span></div><button class="toggle" aria-label="显示动画 Pet"></button></div><div class="setting-row"><div class="setting-copy"><strong>活动状态流光</strong><span>非空闲时，在状态栏胶囊内显示流光</span></div><button class="toggle" aria-label="活动状态流光"></button></div></div></section><section class="settings-section"><h3>当前 Pet</h3><div class="setting-group"><div class="setting-row"><div class="pet-choice"><img src="assets/Codexling.png" alt="Codexling 精灵"/><div><strong>Codexling</strong><span>自定义 · v2 · 11 行动画</span></div></div><span class="select">选择</span></div></div><div class="scan"><span>已发现 9 个内置 Pet，1 个自定义 Pet</span><b>重新扫描</b></div></section></main></section></div></div></section>
       <section class="concept"><aside class="concept-label"><b>06 · 条件分支</b><h2>额度与安装</h2><p>额度窗口的真实显示规则，以及 Pet 安装卡出现的唯一条件。</p></aside><div class="desktop"><div class="menubar"><div><span></span><span>Finder</span><span>文件</span></div><div><span class="statusbar-pill"><i class="tiny-pet"></i>周 77%</span><span>17:57</span></div></div><div class="screen-stage"><section class="logic-window"><h3>额度的两种展示</h3><p>双计量卡用于主窗口；数据源和状态栏逻辑均复用 <code>CodexUsageSnapshot</code>。</p><div class="quota-mode"><article class="mode-card"><b>5 小时额度可用</b><p><code>hasShortWindow == true</code></p><div class="quota-cards"><div class="quota-card"><i class="quota-ring" style="--progress:42%;--quota:#30383c"></i><div><strong>42%</strong><span>5 小时</span></div></div><div class="quota-card"><i class="quota-ring" style="--progress:77%;--quota:#04a05c"></i><div><strong>77%</strong><span>本周</span></div></div></div><small>主指标为 5 小时；状态栏显示「5h 42% · 周 77%」。</small></article><article class="mode-card"><b>5 小时额度不可用</b><p><code>shortWindow == nil</code> 或 <code>total == 0</code></p><div class="quota-cards"><div class="quota-card"><i class="quota-ring" style="--progress:77%;--quota:#04a05c"></i><div><strong>77%</strong><span>本周</span></div></div></div><small>隐藏 5 小时卡；周额度自动成为主指标，状态栏仅显示「周 77%」。</small></article></div><div class="install-card"><img src="app/landing/public/brand/codexling-logo.webp" alt="Codexling Pet"/><div><strong>安装 Codexling Pet</strong><span>一键安装到 <code>~/.codex/pets/codexling</code>，之后可在“当前 Pet”选择。</span></div><button>安装</button></div><div class="logic-foot"><b>显示逻辑：</b>仅当 <code>isCodexlingPetInstalled == false</code> 时显示这张卡。安装成功后调用 <code>reloadPets()</code>，卡片消失，并把 <code>selectedPetID</code> 设为 <code>custom:codexling</code>；如果已安装，永不重复展示。</div></section></div></div></section>
     </div>
   </main>
@@ -116,7 +142,7 @@
     if (conceptList) {
       conceptList.insertAdjacentHTML('beforeend', `
         <section class="concept">
-          <aside class="concept-label"><b>07 · 状态栏规范</b><h2>胶囊与圆灯</h2><p>胶囊颜色反映任务状态；前置圆灯只表示额度健康度。两者分离，避免深浅背景下信息混淆。</p></aside>
+          <aside class="concept-label"><b>07 · 状态栏规范</b><h2>胶囊与圆灯</h2><p>前置圆灯反映任务状态；胶囊背景只表示额度健康度。两者分离，避免深浅背景下信息混淆。</p></aside>
           <div class="desktop"><div class="screen-stage"><section class="color-spec">
             <h3>状态栏颜色枚举</h3>
             <p>胶囊色取自 <code>StatusBarPetBackgroundColor.resolved(for:)</code>；圆灯取自 <code>QuotaHealthLevel</code>。当关闭动画 Pet 时，仍沿用这套圆灯逻辑。</p>
@@ -275,6 +301,35 @@
     }
     const waitingDescription = document.querySelector('.concept.waiting .concept-label p');
     if (waitingDescription) waitingDescription.textContent = '优先级最高，明确提示用户处理确认；圆灯为橙色，胶囊仍按额度健康度显示。';
+  </script>
+  <script>
+    /* 主窗口 Pet 始终播放；旧开关只保留 hover 行为。 */
+    document.querySelectorAll('.setting-copy').forEach((copy) => {
+      const title = copy.querySelector('strong');
+      const detail = copy.querySelector('span');
+      if (title?.textContent === '显示动画 Pet') {
+        title.textContent = '悬停动画 Pet';
+        if (detail) detail.textContent = '只控制 hover 卡片；主窗口 Pet 始终跟随任务状态动画';
+      }
+    });
+
+    const settingsAccount = document.querySelector('.settings-account');
+    if (settingsAccount) {
+      const identity = settingsAccount.querySelector('div');
+      const name = identity?.querySelector('strong');
+      const plan = settingsAccount.querySelector(':scope > b');
+      if (identity && name && plan) {
+        name.textContent = 'seven x';
+        const titleRow = document.createElement('div');
+        titleRow.className = 'settings-account-title-row';
+        identity.insertBefore(titleRow, identity.firstChild);
+        titleRow.append(name, plan);
+        const logout = document.createElement('button');
+        logout.className = 'settings-account-action';
+        logout.textContent = '退出登录';
+        settingsAccount.append(logout);
+      }
+    }
   </script>
 </body>
 </html>

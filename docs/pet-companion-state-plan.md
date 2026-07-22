@@ -29,9 +29,9 @@ PetAnimationPlayer.setPet(selectedPet)
 
 ### 现有 App 中的实现位置
 
-这条逻辑已经在状态栏中实际运行：`StatusBarController.refreshStatusTitle()` 读取 `settings.selectedPet`，依次调用 `animationPlayer.setPet(pet)` 与 `animationPlayer.setState(activityState.petAnimationState)`，并把输出帧同时送给状态栏胶囊和 hover 卡片。
+这条逻辑已经由共享 `PetFrameStore` 实际运行：AppDelegate 读取 `settings.selectedPet` 与活动状态，统一驱动 `PetAnimationPlayer`，并把输出帧送给主窗口和 hover 卡片。状态栏左侧固定为任务状态圆灯。
 
-分离窗口目前仍是 `DetachedUsageWindowView → UsagePanel`，只接收额度 `UsageSnapshotStore`，尚未接入活动 Store 或 Pet 帧。因此把相同展示放进主窗口是**可二次开发**，而不是现成可见功能；应复用现有播放器，而不是复制一套图集裁剪和计时逻辑。
+分离窗口已经由 `DetachedUsageWindowView → CompanionDashboardView` 接收额度、活动、共享 Pet 帧与陪伴统计 Store。主窗口和 hover 复用同一个播放器，不复制图集裁剪或计时逻辑。
 
 建议接入方式：
 
@@ -42,14 +42,14 @@ AppDelegate 持有 activityStore
   → CompanionStatusView 接收 selectedPet、当前动画帧、活动快照
 ```
 
-为避免状态栏与窗口各自计时造成不同步，可让 `PetAnimationPlayer` 或一个新的 `PetFrameStore` 作为共享帧源；窗口关闭时仅取消窗口订阅，不能停止仍服务于状态栏的播放器。
+为避免窗口与 hover 各自计时造成不同步，当前实现由 `PetFrameStore` 作为共享帧源；窗口关闭时仅取消窗口订阅，不能停止仍服务于 hover 的播放器。
 
 ### 资源与降级规则
 
 1. 设置变更 `selectedPetID` 后，主窗口立即调用 `PetAnimationPlayer.setPet`，从新图集的状态首帧重新开始播放。
 2. 任务状态变更时，只调用 `setState`，保留当前选择的 Pet，不会切回默认形象。
 3. 当选中的资源丢失或重扫后不兼容时，`AppSettingsStore.reloadPets()` 会将选择回退到第一个有效 Pet；若一个有效 Pet 都没有，则主窗口显示静态额度健康圆点和“未找到可用 Pet”。
-4. `petsEnabled = false` 时，状态栏按既有实现显示额度健康圆灯；主窗口建议仍保留任务与额度信息，并以非动画的健康圆点替代左侧 Pet 区。
+4. `petsEnabled = false` 时，状态栏仍显示任务状态圆灯；主窗口保留任务与额度信息，并显示当前 Pet 的静态首帧。
 5. 开启“减少动态效果”时，播放器只显示对应状态的首帧，状态文字和数据继续更新。
 
 ## 状态设计与切换

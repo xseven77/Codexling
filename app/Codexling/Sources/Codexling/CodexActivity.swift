@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SQLite3
@@ -68,6 +69,25 @@ enum CodexActivityState: String, Sendable {
             "Codex 任务已中止"
         }
     }
+
+    var statusNSColor: NSColor {
+        switch self {
+        case .unavailable, .idle:
+            NSColor(red: 0.682, green: 0.710, blue: 0.702, alpha: 1)
+        case .thinking:
+            NSColor(red: 0.478, green: 0.259, blue: 0.961, alpha: 1)
+        case .executing:
+            NSColor(red: 0.180, green: 0.420, blue: 1.000, alpha: 1)
+        case .reviewing:
+            NSColor(red: 0.020, green: 0.631, blue: 0.800, alpha: 1)
+        case .waitingForUser:
+            NSColor(red: 0.949, green: 0.451, blue: 0.078, alpha: 1)
+        case .completed:
+            NSColor(red: 0.122, green: 0.647, blue: 0.353, alpha: 1)
+        case .interrupted:
+            NSColor(red: 0.929, green: 0.220, blue: 0.302, alpha: 1)
+        }
+    }
 }
 
 struct CodexActivitySnapshot: Equatable, Sendable {
@@ -76,6 +96,7 @@ struct CodexActivitySnapshot: Equatable, Sendable {
     var threadTitle: String?
     var activeTaskCount: Int
     var updatedAt: Date
+    var activeTasks: [CodexTaskActivity] = []
 
     static let unavailable = CodexActivitySnapshot(
         state: .unavailable,
@@ -107,7 +128,16 @@ struct CodexActivitySnapshot: Equatable, Sendable {
     }
 }
 
+struct CodexTaskActivity: Identifiable, Equatable, Sendable {
+    let id: String
+    var state: CodexActivityState
+    var detail: String
+    var title: String
+    var updatedAt: Date
+}
+
 struct ParsedCodexThreadActivity: Equatable, Sendable {
+    var id: String
     var state: CodexActivityState
     var detail: String
     var title: String
@@ -121,10 +151,24 @@ struct ParsedCodexThreadActivity: Equatable, Sendable {
             false
         }
     }
+
+    var isConcurrentTask: Bool {
+        switch state {
+        case .thinking, .executing, .reviewing:
+            true
+        default:
+            false
+        }
+    }
 }
 
 struct CodexActivityEventParser: Sendable {
-    func parse(data: Data, title: String, now: Date = Date()) -> ParsedCodexThreadActivity {
+    func parse(
+        data: Data,
+        id: String = UUID().uuidString,
+        title: String,
+        now: Date = Date()
+    ) -> ParsedCodexThreadActivity {
         let isoFormatter = ISO8601DateFormatter()
         var isActive = false
         var state: CodexActivityState = .idle
@@ -242,6 +286,7 @@ struct CodexActivityEventParser: Sendable {
         if updatedAt == .distantPast { updatedAt = now }
 
         return ParsedCodexThreadActivity(
+            id: id,
             state: state,
             detail: detail,
             title: title,
@@ -343,18 +388,29 @@ struct CodexActivityService: Sendable {
                 of: URL(fileURLWithPath: row.rolloutPath),
                 expandForLifecycle: index == 0
             ) else { return nil }
-            return parser.parse(data: data, title: row.title, now: now)
+            return parser.parse(data: data, id: row.id, title: row.title, now: now)
         }
         guard !activities.isEmpty else { return .unavailable }
 
-        let active = activities.filter(\.isActive)
+        let engaged = activities.filter(\.isActive).sorted { lhs, rhs in
+            let lhsPriority = activityPriority(lhs.state)
+            let rhsPriority = activityPriority(rhs.state)
+            return lhsPriority == rhsPriority
+                ? lhs.updatedAt > rhs.updatedAt
+                : lhsPriority > rhsPriority
+        }
+        let concurrent = engaged.filter(\.isConcurrentTask)
+        let visibleTasks: [ParsedCodexThreadActivity]
+        if concurrent.count > 1 {
+            visibleTasks = concurrent
+        } else if let selectedEngaged = engaged.first {
+            visibleTasks = [selectedEngaged]
+        } else {
+            visibleTasks = []
+        }
         let selected: ParsedCodexThreadActivity
-        if !active.isEmpty {
-            selected = active.max { lhs, rhs in
-                activityPriority(lhs.state) == activityPriority(rhs.state)
-                    ? lhs.updatedAt < rhs.updatedAt
-                    : activityPriority(lhs.state) < activityPriority(rhs.state)
-            }!
+        if let selectedEngaged = engaged.first {
+            selected = selectedEngaged
         } else {
             selected = activities.max { $0.updatedAt < $1.updatedAt }!
         }
@@ -363,12 +419,21 @@ struct CodexActivityService: Sendable {
             state: selected.state,
             detail: selected.detail,
             threadTitle: selected.title,
-            activeTaskCount: active.count,
-            updatedAt: selected.updatedAt
+            activeTaskCount: visibleTasks.count,
+            updatedAt: selected.updatedAt,
+            activeTasks: visibleTasks.map {
+                CodexTaskActivity(
+                    id: $0.id,
+                    state: $0.state,
+                    detail: $0.detail,
+                    title: $0.title,
+                    updatedAt: $0.updatedAt
+                )
+            }
         )
     }
 
-    private func loadRecentThreads(databaseURL: URL) -> [(rolloutPath: String, title: String)] {
+    private func loadRecentThreads(databaseURL: URL) -> [(id: String, rolloutPath: String, title: String)] {
         var database: OpaquePointer?
         guard sqlite3_open_v2(
             databaseURL.path,
@@ -380,10 +445,14 @@ struct CodexActivityService: Sendable {
         }
         defer { sqlite3_close(database) }
 
+        let threadSourceFilter = tableHasColumn("thread_source", database: database)
+            ? "AND COALESCE(thread_source, 'user') <> 'subagent'"
+            : ""
         let sql = """
-        SELECT rollout_path, title
+        SELECT id, rollout_path, title
         FROM threads
         WHERE archived = 0
+        \(threadSourceFilter)
         ORDER BY updated_at DESC
         LIMIT 12
         """
@@ -394,14 +463,29 @@ struct CodexActivityService: Sendable {
         }
         defer { sqlite3_finalize(statement) }
 
-        var rows: [(String, String)] = []
+        var rows: [(String, String, String)] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            guard let pathText = sqlite3_column_text(statement, 0) else { continue }
+            guard let idText = sqlite3_column_text(statement, 0),
+                  let pathText = sqlite3_column_text(statement, 1) else { continue }
+            let id = String(cString: idText)
             let path = String(cString: pathText)
-            let title = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? "Codex 任务"
-            rows.append((path, title))
+            let title = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? "Codex 任务"
+            rows.append((id, path, title))
         }
         return rows
+    }
+
+    private func tableHasColumn(_ name: String, database: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return false }
+        defer { sqlite3_finalize(statement) }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let nameText = sqlite3_column_text(statement, 1) else { continue }
+            if String(cString: nameText) == name { return true }
+        }
+        return false
     }
 
     func readTail(
