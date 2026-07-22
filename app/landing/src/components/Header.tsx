@@ -51,7 +51,7 @@ export function Header() {
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:h-16 sm:px-6">
         <Link href="/" className="flex min-w-0 items-center gap-2.5 sm:gap-3">
           <Image
-            src="/logo.svg"
+            src="/brand/codexling-logo.webp"
             alt="Codexling"
             width={32}
             height={32}

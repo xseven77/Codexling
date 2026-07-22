@@ -53,7 +53,7 @@ export function Hero() {
           <div className="mt-8 grid gap-3 text-sm text-muted sm:mt-10 sm:flex sm:flex-wrap sm:gap-6">
             <div className="flex items-center gap-2">
               <Image
-                src="/logo.svg"
+                src="/brand/codexling-logo.webp"
                 alt="Codexling logo"
                 width={18}
                 height={18}

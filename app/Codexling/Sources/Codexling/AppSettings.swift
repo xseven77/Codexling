@@ -154,7 +154,7 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
     var nsColor: NSColor {
         switch self {
         case .automatic, .neutral:
-            NSColor.white.withAlphaComponent(0.18)
+            NSColor.white.withAlphaComponent(0.50)
         case .blue:
             NSColor(red: 0.18, green: 0.42, blue: 1.00, alpha: 0.88)
         case .purple:
@@ -164,7 +164,8 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
         case .amber:
             NSColor(red: 0.95, green: 0.46, blue: 0.08, alpha: 0.90)
         case .green:
-            NSColor(red: 0.05, green: 0.65, blue: 0.31, alpha: 0.88)
+            // Matches the green cushion held by the Codexling mascot (#04A05C).
+            NSColor(red: 0.016, green: 0.627, blue: 0.361, alpha: 0.88)
         case .red:
             NSColor(red: 0.93, green: 0.22, blue: 0.30, alpha: 0.88)
         }

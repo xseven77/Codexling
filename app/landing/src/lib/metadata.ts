@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { siteConfig } from "@/lib/site";
 
 export function createMetadata(overrides?: Partial<Metadata>): Metadata {
-  const ogImage = "/opengraph-image";
+  const ogImage = "/opengraph-image.png";
 
   return {
     metadataBase: new URL(siteConfig.url),
@@ -53,9 +53,11 @@ export function createMetadata(overrides?: Partial<Metadata>): Metadata {
         "max-snippet": -1,
       },
     },
+    manifest: "/site.webmanifest",
     icons: {
-      icon: "/logo.svg",
-      apple: "/logo.svg",
+      icon: [{ url: "/icon.png", type: "image/png", sizes: "512x512" }],
+      shortcut: ["/favicon.ico"],
+      apple: [{ url: "/apple-icon.png", type: "image/png", sizes: "180x180" }],
     },
     ...overrides,
   };

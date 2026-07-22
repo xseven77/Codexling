@@ -1,0 +1,23 @@
+{
+  "name": "Codexling",
+  "short_name": "Codexling",
+  "description": "macOS 菜单栏 Codex 额度工具",
+  "icons": [
+    {
+      "src": "/brand/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#050505",
+  "background_color": "#050505",
+  "display": "standalone",
+  "lang": "zh-CN"
+}
