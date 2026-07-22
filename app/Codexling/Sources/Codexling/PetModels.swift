@@ -35,6 +35,50 @@ private struct CustomPetManifest: Decodable {
     let spritesheetPath: String
 }
 
+enum CodexlingPetInstaller {
+    static let petID = "codexling"
+
+    static func isInstalled(in petsRoot: URL = defaultPetsRoot) -> Bool {
+        let directory = petsRoot.appendingPathComponent(petID, isDirectory: true)
+        let manifestURL = directory.appendingPathComponent("pet.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(CustomPetManifest.self, from: data),
+              manifest.id == petID else {
+            return false
+        }
+        return FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(manifest.spritesheetPath).path
+        )
+    }
+
+    static func install(into petsRoot: URL = defaultPetsRoot) throws {
+        let fileManager = FileManager.default
+        let destination = petsRoot.appendingPathComponent(petID, isDirectory: true)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        guard let source = bundledPetDirectory() else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        try fileManager.createDirectory(at: petsRoot, withIntermediateDirectories: true)
+        try fileManager.copyItem(at: source, to: destination)
+    }
+
+    static func bundledPetDirectory() -> URL? {
+        Bundle.main.url(
+            forResource: "pet",
+            withExtension: "json",
+            subdirectory: "Pets/Codexling"
+        )?.deletingLastPathComponent()
+    }
+
+    private static var defaultPetsRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/pets", isDirectory: true)
+    }
+}
+
 struct CodexPetCatalog: Sendable {
     private struct BuiltInPetSpec: Sendable {
         let id: String

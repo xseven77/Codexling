@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
     let onClose: () -> Void
+    @State private var showsCodexlingPetInstallToast = false
 
     private var titleLeadingPadding: CGFloat {
         layout == .window ? 62 : 0
@@ -30,6 +31,19 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
+        .overlay(alignment: .bottom) {
+            if showsCodexlingPetInstallToast {
+                Label("Codexling Pet 已安装到本机 Codex", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .frame(height: 38)
+                    .background(.black.opacity(0.84), in: Capsule(style: .continuous))
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityLabel("Codexling Pet 安装成功")
+            }
+        }
     }
 
     private var settingsContent: some View {
@@ -259,16 +273,27 @@ struct SettingsView: View {
                     }
                 }
 
+                if !settings.isCodexlingPetInstalled {
+                    codexlingPetInstallationCard
+                }
+
+                if let installationError = settings.codexlingPetInstallationError {
+                    Text("Codexling Pet 安装失败：\(installationError)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.codexRed)
+                        .padding(.horizontal, 4)
+                }
+
                 if let pet = settings.selectedPet {
                     HStack(spacing: 12) {
                         PetSettingsThumbnail(pet: pet)
-                            .frame(width: 48, height: 48)
+                            .frame(width: 58, height: 58)
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(pet.displayName)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                             Text("\(pet.source.title) · v\(pet.spriteVersionNumber) · \(pet.rowCount) 行动画")
-                                .font(.system(size: 11))
+                                .font(.system(size: 12))
                                 .foregroundStyle(Color.codexMuted)
                         }
 
@@ -309,6 +334,46 @@ struct SettingsView: View {
                     .foregroundStyle(Color.codexPrimary)
                 }
                 .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    private var codexlingPetInstallationCard: some View {
+        HStack(spacing: 12) {
+            BundledCodexlingPetThumbnail()
+                .frame(width: 58, height: 58)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Codexling Pet")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Codexling 的专属小精灵 · v2 · 11 行动画")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                settings.installCodexlingPet()
+                showCodexlingPetInstallToastIfNeeded()
+            } label: {
+                Label("安装", systemImage: "arrow.down.to.line")
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(CodexlingPetInstallButtonStyle())
+            .fixedSize()
+        }
+        .padding(12)
+        .liquidGlassSurface(cornerRadius: 12, tint: Color.codexGlassTint, shadowOpacity: 0.04)
+    }
+
+    private func showCodexlingPetInstallToastIfNeeded() {
+        guard settings.isCodexlingPetInstalled else { return }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+            showsCodexlingPetInstallToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            withAnimation(.easeOut(duration: 0.2)) {
+                showsCodexlingPetInstallToast = false
             }
         }
     }
@@ -391,12 +456,13 @@ private struct PetSettingsThumbnail: View {
     @State private var image: NSImage?
 
     var body: some View {
-        Group {
+        ZStack {
             if let image {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.none)
                     .scaledToFit()
+                    .padding(4)
             } else {
                 Image(systemName: "pawprint.fill")
                     .font(.system(size: 22))
@@ -407,10 +473,54 @@ private struct PetSettingsThumbnail: View {
             image = PetSpriteSheet(url: pet.spritesheetURL)?.frame(
                 row: 0,
                 column: 0,
-                displayHeight: 44
+                displayHeight: 52
             )
         }
         .accessibilityLabel(pet.displayName)
+    }
+}
+
+private struct BundledCodexlingPetThumbnail: View {
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+                    .padding(4)
+            } else {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Color.codexPrimary)
+            }
+        }
+        .task {
+            guard let directory = CodexlingPetInstaller.bundledPetDirectory() else { return }
+            image = PetSpriteSheet(url: directory.appendingPathComponent("spritesheet.webp"))?.frame(
+                row: 0,
+                column: 0,
+                displayHeight: 52
+            )
+        }
+        .accessibilityLabel("Codexling Pet 预览")
+    }
+}
+
+private struct CodexlingPetInstallButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(configuration.isPressed ? Color.codexPrimary.opacity(0.78) : Color.codexPrimary)
+            )
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

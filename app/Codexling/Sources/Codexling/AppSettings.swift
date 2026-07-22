@@ -268,6 +268,8 @@ final class AppSettingsStore {
     }
 
     private(set) var availablePets: [CodexPet] = []
+    private(set) var isCodexlingPetInstalled = false
+    private(set) var codexlingPetInstallationError: String?
 
     var selectedPet: CodexPet? {
         availablePets.first { $0.id == selectedPetID } ?? availablePets.first
@@ -359,12 +361,24 @@ final class AppSettingsStore {
     }
 
     func reloadPets(notify: Bool = true) {
+        isCodexlingPetInstalled = CodexlingPetInstaller.isInstalled()
         availablePets = CodexPetCatalog().discover()
         if !availablePets.contains(where: { $0.id == selectedPetID }),
            let fallback = availablePets.first {
             selectedPetID = fallback.id
         } else if notify {
             onPetSettingsChanged?()
+        }
+    }
+
+    func installCodexlingPet() {
+        do {
+            try CodexlingPetInstaller.install()
+            codexlingPetInstallationError = nil
+            reloadPets()
+            selectedPetID = "custom:\(CodexlingPetInstaller.petID)"
+        } catch {
+            codexlingPetInstallationError = error.localizedDescription
         }
     }
 }
