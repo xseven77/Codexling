@@ -240,8 +240,13 @@ private struct ResetCouponTicketDeck: View {
         ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (restBackLayerDepths.isEmpty ? 4 : 8)
     }
 
-    private var shuffleAnimation: Animation {
-        .spring(response: 0.38, dampingFraction: 0.86)
+    private var stackSettleAnimation: Animation {
+        .spring(response: 0.42, dampingFraction: 0.88)
+    }
+
+    /// Pull-and-toss: soft lift, then accelerate off the stub side.
+    private var tossAnimation: Animation {
+        .timingCurve(0.18, 0.72, 0.28, 1.0, duration: ResetCouponTicketMetrics.shuffleDuration)
     }
 
     var body: some View {
@@ -283,7 +288,7 @@ private struct ResetCouponTicketDeck: View {
                 .allowsHitTesting(false)
             }
         }
-        .animation(shuffleAnimation, value: displayedBackLayerDepths)
+        .animation(stackSettleAnimation, value: displayedBackLayerDepths)
         .padding(.bottom, restBackLayerDepths.isEmpty ? 6 : 8)
         .frame(height: deckHeight, alignment: .top)
         .accessibilityElement(children: .contain)
@@ -311,41 +316,93 @@ private struct ResetCouponTicketDeck: View {
         selectedIndex = (previousIndex + 1) % tickets.count
         shuffleProgress = 0
 
-        withAnimation(shuffleAnimation) {
+        withAnimation(stackSettleAnimation) {
             stackReduced = true
+        }
+        withAnimation(tossAnimation) {
             shuffleProgress = 1
         }
 
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(390))
+            try? await Task.sleep(
+                for: .milliseconds(Int(ResetCouponTicketMetrics.shuffleDuration * 1000) + 40)
+            )
             var cleanup = Transaction()
             cleanup.disablesAnimations = true
             withTransaction(cleanup) {
                 outgoingIndex = nil
                 shuffleProgress = 0
             }
-            withAnimation(shuffleAnimation) {
+            withAnimation(stackSettleAnimation) {
                 stackReduced = false
             }
         }
     }
 }
 
+/// Skeuomorphic exit: peel up from the stack, yank by the stub, then fall away.
 private struct ResetCouponShuffleOutgoing: ViewModifier {
     let progress: CGFloat
 
     func body(content: Content) -> some View {
+        let lift = liftAmount(progress)
+        let travel = travelAmount(progress)
+        let fade = fadeAmount(progress)
+
         content
-            .scaleEffect(1 - 0.024 * progress, anchor: .topLeading)
+            .compositingGroup()
+            .shadow(
+                color: Color.black.opacity(0.10 + 0.14 * Double(lift)),
+                radius: 2 + 7 * lift,
+                x: 0,
+                y: 1 + 5 * lift
+            )
+            .rotation3DEffect(
+                .degrees(Double(-10 * lift - 14 * travel)),
+                axis: (x: 0.18, y: 1, z: 0.06),
+                anchor: .trailing,
+                anchorZ: 0,
+                perspective: 0.55
+            )
             .rotationEffect(
-                .degrees(Double(ResetCouponTicketMetrics.shuffleRotation * progress)),
-                anchor: .topLeading
+                .degrees(Double(ResetCouponTicketMetrics.shuffleTwist * travel)),
+                anchor: .trailing
+            )
+            .scaleEffect(
+                1 + 0.028 * lift - 0.05 * travel,
+                anchor: .trailing
             )
             .offset(
-                x: ResetCouponTicketMetrics.shuffleSlideX * progress,
-                y: ResetCouponTicketMetrics.shuffleSlideY * progress
+                x: ResetCouponTicketMetrics.shuffleSlideX * travel,
+                y: -ResetCouponTicketMetrics.shuffleLiftY * lift
+                    + ResetCouponTicketMetrics.shuffleFallY * travel * travel
             )
-            .opacity(Double(1 - progress))
+            .opacity(Double(1 - fade))
+    }
+
+    /// Soft paper lift that peaks early, then settles as the ticket flies away.
+    private func liftAmount(_ t: CGFloat) -> CGFloat {
+        let peak: CGFloat = 0.28
+        if t <= peak {
+            let u = t / peak
+            return sin(u * .pi / 2)
+        }
+        let u = (t - peak) / max(0.001, 1 - peak)
+        return max(0, 1 - u * u)
+    }
+
+    /// Ease-in travel so the yank accelerates off the stub.
+    private func travelAmount(_ t: CGFloat) -> CGFloat {
+        let delayed = max(0, (t - 0.06) / 0.94)
+        return delayed * delayed * (3 - 2 * delayed)
+    }
+
+    /// Only dissolve once most of the ticket has left the deck.
+    private func fadeAmount(_ t: CGFloat) -> CGFloat {
+        let start: CGFloat = 0.62
+        guard t > start else { return 0 }
+        let u = (t - start) / (1 - start)
+        return u * u
     }
 }
 
@@ -380,9 +437,11 @@ private enum ResetCouponTicketMetrics {
     static let stackOffsetX: CGFloat = 2.5
     static let stackOffsetY: CGFloat = 5
     static let stackScaleStep: CGFloat = 0.016
-    static let shuffleSlideX: CGFloat = 46
-    static let shuffleSlideY: CGFloat = 11
-    static let shuffleRotation: CGFloat = 7
+    static let shuffleDuration: TimeInterval = 0.52
+    static let shuffleSlideX: CGFloat = 118
+    static let shuffleLiftY: CGFloat = 10
+    static let shuffleFallY: CGFloat = 34
+    static let shuffleTwist: CGFloat = 5.5
 }
 
 private struct ResetCouponTicketShape: Shape {
@@ -598,20 +657,28 @@ private struct ResetCouponStubSection: View {
     let source: String
     let isFront: Bool
     let isDark: Bool
-    let onSwitch: (() -> Void)?
+    let coordinateSpaceName: String
+    let onStubTap: ((CGPoint) -> Void)?
 
     var body: some View {
         ZStack {
             stubContent
+                .allowsHitTesting(false)
 
-            if total > 1, let onSwitch {
-                Button(action: onSwitch) {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
+            if total > 1, onStubTap != nil {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+                            .onEnded { value in
+                                let travel = hypot(value.translation.width, value.translation.height)
+                                guard travel < 10 else { return }
+                                onStubTap?(value.startLocation)
+                            }
+                    )
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -686,6 +753,8 @@ private struct ResetCouponTicketShadow: ViewModifier {
 }
 
 private struct ResetCouponTicketCard: View {
+    private static let ticketSpace = "resetCouponTicket"
+
     let name: String
     let source: String
     let expiresAt: String
@@ -695,6 +764,7 @@ private struct ResetCouponTicketCard: View {
     let isFront: Bool
     let onSwitch: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
+    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -761,6 +831,7 @@ private struct ResetCouponTicketCard: View {
             }
             .padding(.leading, 16)
             .padding(.trailing, 8)
+            .allowsHitTesting(false)
 
             stubSection
                 .frame(width: ResetCouponTicketMetrics.stubWidth)
@@ -793,6 +864,25 @@ private struct ResetCouponTicketCard: View {
             .allowsHitTesting(false)
         }
         .overlay { innerHighlight }
+        .overlay {
+            GeometryReader { geometry in
+                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
+                ZStack {
+                    ForEach(ripples) { ripple in
+                        CodexMaterialWave(
+                            origin: ripple.location,
+                            diameter: coverDiameter
+                        ) {
+                            ripples.removeAll { $0.id == ripple.id }
+                        }
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .allowsHitTesting(false)
+            .clipShape(ResetCouponTicketShape())
+        }
+        .coordinateSpace(name: Self.ticketSpace)
         .modifier(ResetCouponTicketShadow(isFront: isFront, isDark: isDark))
     }
 
@@ -846,8 +936,17 @@ private struct ResetCouponTicketCard: View {
             source: source,
             isFront: isFront,
             isDark: isDark,
-            onSwitch: onSwitch
+            coordinateSpaceName: Self.ticketSpace,
+            onStubTap: onSwitch == nil ? nil : { location in
+                spawnRipple(at: location)
+                onSwitch?()
+            }
         )
+    }
+
+    private func spawnRipple(at location: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     @ViewBuilder
@@ -898,11 +997,14 @@ private struct ResetCouponTicketCard: View {
 }
 
 private struct CompanionSidebar: View {
+    private static let sidebarSpace = "companionSidebar"
+
     let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
+    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var accountName: String {
         if let name = snapshot.accountName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
@@ -932,6 +1034,23 @@ private struct CompanionSidebar: View {
                 endPoint: .bottomTrailing
             )
 
+            // Wave sits on the sidebar background, beneath pet and chrome.
+            GeometryReader { geometry in
+                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
+                ZStack {
+                    ForEach(ripples) { ripple in
+                        CodexMaterialWave(
+                            origin: ripple.location,
+                            diameter: coverDiameter
+                        ) {
+                            ripples.removeAll { $0.id == ripple.id }
+                        }
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .allowsHitTesting(false)
+
             VStack(spacing: 0) {
                 accountSummary
                     .padding(.top, 45)
@@ -941,6 +1060,8 @@ private struct CompanionSidebar: View {
 
                 petView
                     .frame(width: 145, height: 218)
+                    .zIndex(1)
+                    .allowsHitTesting(false)
 
                 Spacer(minLength: 4)
 
@@ -956,14 +1077,38 @@ private struct CompanionSidebar: View {
                 .frame(height: 30)
                 .background(Color.codexCard.opacity(0.92), in: Capsule())
                 .overlay(Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.7))
+                .allowsHitTesting(false)
 
                 Text("今天一起工作 \(todayDurationText)")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
                     .padding(.top, 9)
                     .padding(.bottom, 19)
+                    .allowsHitTesting(false)
             }
+            .allowsHitTesting(false)
         }
+        .contentShape(Rectangle())
+        .coordinateSpace(name: Self.sidebarSpace)
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.sidebarSpace))
+                .onEnded { value in
+                    guard frameStore.canPlayIdleInteraction else { return }
+                    let travel = hypot(value.translation.width, value.translation.height)
+                    guard travel < 10 else { return }
+                    spawnRipple(at: value.startLocation)
+                    frameStore.playRandomIdleAction()
+                }
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(frameStore.canPlayIdleInteraction ? .isButton : [])
+        .accessibilityHint(frameStore.canPlayIdleInteraction ? "点击播放随机动作" : "")
+        .accessibilityAction(.default) {
+            guard frameStore.canPlayIdleInteraction else { return }
+            spawnRipple(at: CGPoint(x: 94, y: 220))
+            frameStore.playRandomIdleAction()
+        }
+        .clipped()
         .overlay(alignment: .trailing) {
             Rectangle().fill(Color.codexLine.opacity(0.72)).frame(width: 1)
         }
@@ -996,35 +1141,53 @@ private struct CompanionSidebar: View {
         .accessibilityLabel("当前账号 \(accountName)")
     }
 
-    @ViewBuilder
     private var petView: some View {
-        Group {
-            if let frame = frameStore.currentFrame {
-                Image(nsImage: frame)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
-                    .accessibilityLabel("\(settings.selectedPet?.displayName ?? "Pet") 动画")
-            } else if let pet = settings.selectedPet {
-                PetStaticFrameView(pet: pet)
-                    .accessibilityLabel("\(pet.displayName) 静态预览")
-            } else {
-                VStack(spacing: 9) {
-                    Circle()
-                        .fill(activity.state.statusColor.opacity(0.14))
-                        .frame(width: 76, height: 76)
-                        .overlay(Circle().fill(activity.state.statusColor).frame(width: 12, height: 12))
-                    Text("未找到可用 Pet")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.codexMuted)
-                }
+        InteractivePetStage(
+            frameStore: frameStore,
+            settings: settings,
+            activity: activity
+        )
+    }
+
+    private func spawnRipple(at location: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        ripples.append(CodexMaterialWaveToken(location: location))
+    }
+}
+
+private struct InteractivePetStage: View {
+    @Bindable var frameStore: PetFrameStore
+    @Bindable var settings: AppSettingsStore
+    let activity: CodexActivitySnapshot
+
+    var body: some View {
+        petContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var petContent: some View {
+        if let frame = frameStore.currentFrame {
+            Image(nsImage: frame)
+                .resizable()
+                .interpolation(.none)
+                .scaledToFit()
+                .accessibilityLabel("\(settings.selectedPet?.displayName ?? "Pet") 动画")
+        } else if let pet = settings.selectedPet {
+            PetStaticFrameView(pet: pet)
+                .accessibilityLabel("\(pet.displayName) 静态预览")
+        } else {
+            VStack(spacing: 9) {
+                Circle()
+                    .fill(activity.state.statusColor.opacity(0.14))
+                    .frame(width: 76, height: 76)
+                    .overlay(Circle().fill(activity.state.statusColor).frame(width: 12, height: 12))
+                Text("未找到可用 Pet")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            frameStore.playRandomIdleAction()
-        }
-        .accessibilityHint(frameStore.canPlayIdleInteraction ? "点击播放随机动作" : "")
     }
 }
 
@@ -1073,8 +1236,11 @@ private struct ActivityHeading: View {
 }
 
 private struct TaskStackView: View {
+    private static let cardSpace = "taskCard"
+
     let snapshot: CodexActivitySnapshot
     @Binding var selectedTaskID: String?
+    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var tasks: [CodexTaskActivity] { snapshot.activeTasks }
 
@@ -1091,29 +1257,58 @@ private struct TaskStackView: View {
     }
 
     var body: some View {
-        Button(action: cycleTask) {
-            ZStack(alignment: .topLeading) {
-                if tasks.count > 1 {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.codexMist)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.codexLine, lineWidth: 0.7)
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 134, maxHeight: 134)
-                        .offset(x: 8, y: 9)
-                }
-                taskCard
+        let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        ZStack(alignment: .topLeading) {
+            if tasks.count > 1 {
+                cardShape
+                    .fill(Color.codexMist)
+                    .overlay(cardShape.stroke(Color.codexLine, lineWidth: 0.7))
+                    .frame(maxWidth: .infinity, minHeight: 134, maxHeight: 134)
+                    .offset(x: 8, y: 9)
+                    .allowsHitTesting(false)
             }
-            .padding(.trailing, tasks.count > 1 ? 8 : 0)
-            .frame(height: tasks.count > 1 ? 143 : 134, alignment: .top)
+
+            taskCard
+                .contentShape(cardShape)
+                .overlay {
+                    GeometryReader { geometry in
+                        let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
+                        ZStack {
+                            ForEach(ripples) { ripple in
+                                CodexMaterialWave(
+                                    origin: ripple.location,
+                                    diameter: coverDiameter
+                                ) {
+                                    ripples.removeAll { $0.id == ripple.id }
+                                }
+                            }
+                        }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                    }
+                    .allowsHitTesting(false)
+                    .clipShape(cardShape)
+                }
+                .coordinateSpace(name: Self.cardSpace)
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cardSpace))
+                        .onEnded { value in
+                            let travel = hypot(value.translation.width, value.translation.height)
+                            guard travel < 10 else { return }
+                            spawnRipple(at: value.startLocation)
+                            cycleTask()
+                        }
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(accessibilityText)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityText)
+        .padding(.trailing, tasks.count > 1 ? 8 : 0)
+        .frame(height: tasks.count > 1 ? 143 : 134, alignment: .top)
     }
 
     private var taskCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return VStack(alignment: .leading, spacing: 7) {
             HStack {
                 HStack(spacing: 5) {
                     Circle().fill(displayState.statusColor).frame(width: 8, height: 8)
@@ -1152,8 +1347,14 @@ private struct TaskStackView: View {
         }
         .padding(13)
         .frame(maxWidth: .infinity, minHeight: 134, maxHeight: 134, alignment: .topLeading)
-        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.codexLine, lineWidth: 0.7))
+        .background(Color.codexCard, in: cardShape)
+        .overlay(cardShape.stroke(Color.codexLine, lineWidth: 0.7))
+        .contentShape(cardShape)
+    }
+
+    private func spawnRipple(at location: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     private var displayState: CodexActivityState { displayedTask?.state ?? snapshot.state }
@@ -1260,6 +1461,8 @@ private struct SyncFooterView: View {
     let showsDetachedButton: Bool
     let onOpenSettings: () -> Void
 
+    @State private var showQuitConfirmation = false
+
     private var hasRefreshError: Bool {
         !["成功", "预览数据", "刷新中", "授权中"].contains(snapshot.refreshState)
     }
@@ -1294,6 +1497,14 @@ private struct SyncFooterView: View {
                     .buttonStyle(DashboardIconButtonStyle())
                     .help("打开分离窗口")
             }
+            Button {
+                showQuitConfirmation = true
+            } label: {
+                Image(systemName: "power")
+            }
+            .buttonStyle(DashboardIconButtonStyle())
+            .help("关闭软件")
+            .accessibilityLabel("关闭软件")
             Button(action: actions.refresh) {
                 if isRefreshing {
                     ProgressView()
@@ -1311,6 +1522,12 @@ private struct SyncFooterView: View {
         .frame(height: 46, alignment: .bottom)
         .fixedSize(horizontal: false, vertical: true)
         .overlay(alignment: .top) { Rectangle().fill(Color.codexLine).frame(height: 0.7) }
+        .alert("确认关闭软件？", isPresented: $showQuitConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("关闭软件", role: .destructive, action: actions.quit)
+        } message: {
+            Text("Codexling 将完全退出，菜单栏图标也会消失。")
+        }
     }
 }
 
@@ -1377,26 +1594,38 @@ private struct CompanionLoginView: View {
     }
 }
 
-private struct DashboardIconButtonStyle: ButtonStyle {
+private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Color.codexMuted)
-            .frame(width: 32, height: 32)
-            .background(Color.codexMist.opacity(configuration.isPressed ? 1 : 0.65), in: RoundedRectangle(cornerRadius: 8))
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 8,
+            ink: .adaptiveMint
+        ) {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.codexMuted)
+                .frame(width: 32, height: 32)
+                .background(Color.codexMist.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 
-private struct DashboardRefreshButtonStyle: ButtonStyle {
+private struct DashboardRefreshButtonStyle: PrimitiveButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color.codexOnPrimary)
-            .frame(minWidth: 65, minHeight: 31)
-            .background(Color.codexPrimary.opacity(configuration.isPressed ? 0.86 : 1), in: RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.45)
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 8,
+            ink: .softLight
+        ) {
+            configuration.label
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.codexOnPrimary)
+                .frame(minWidth: 65, minHeight: 31)
+                .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8))
+                .opacity(isEnabled ? 1 : 0.45)
+        }
     }
 }
 

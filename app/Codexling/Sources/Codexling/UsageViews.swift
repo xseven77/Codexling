@@ -704,68 +704,252 @@ struct IconButton: View {
     }
 }
 
-struct IconButtonStyle: ButtonStyle {
+enum CodexMaterialWaveInk: Equatable {
+    case adaptiveMint
+    case softLight
+
+    func color(for colorScheme: ColorScheme) -> Color {
+        switch self {
+        case .adaptiveMint:
+            colorScheme == .dark
+                ? Color(red: 0.35, green: 0.92, blue: 0.62).opacity(0.28)
+                : Color(red: 0.02, green: 0.55, blue: 0.34).opacity(0.18)
+        case .softLight:
+            Color.white.opacity(colorScheme == .dark ? 0.28 : 0.34)
+        }
+    }
+}
+
+struct CodexMaterialWaveToken: Identifiable, Equatable {
+    let id = UUID()
+    let location: CGPoint
+}
+
+/// Soft Material blot: expands from the tap point, then dissolves.
+struct CodexMaterialWave: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let origin: CGPoint
+    let diameter: CGFloat
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+    let onFinished: () -> Void
+    @State private var scale: CGFloat = 0.04
+    @State private var opacity: Double = 1
+
+    var body: some View {
+        Circle()
+            .fill(ink.color(for: colorScheme))
+            .frame(width: diameter, height: diameter)
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .position(origin)
+            .allowsHitTesting(false)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.68)) {
+                    scale = 1.0
+                }
+                withAnimation(.easeIn(duration: 0.50).delay(0.18)) {
+                    opacity = 0
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.74) {
+                    onFinished()
+                }
+            }
+    }
+}
+
+/// Text / light controls: Material wave only (no scale / opacity press).
+struct CodexPressableStyle: PrimitiveButtonStyle {
+    var cornerRadius: CGFloat = 8
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+
+    func makeBody(configuration: Configuration) -> some View {
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: cornerRadius,
+            ink: ink
+        ) {
+            configuration.label
+        }
+    }
+}
+
+/// Full cards / large hit targets: Material wave clipped to the card.
+struct CodexPressableCardStyle: PrimitiveButtonStyle {
+    var cornerRadius: CGFloat = 14
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+
+    func makeBody(configuration: Configuration) -> some View {
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: cornerRadius,
+            ink: ink
+        ) {
+            configuration.label
+        }
+    }
+}
+
+struct IconButtonStyle: PrimitiveButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
-        let tint = configuration.isPressed
-            ? (isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
-            : (isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08))
+        let tint = isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08)
 
-        configuration.label
-            .foregroundStyle(Color.codexInk)
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .liquidGlassSurface(
-                cornerRadius: 9,
-                tint: tint,
-                shadowOpacity: isDark ? 0 : 0.035,
-                interactive: true
-            )
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 9,
+            ink: .adaptiveMint
+        ) {
+            configuration.label
+                .foregroundStyle(Color.codexInk)
+                .liquidGlassSurface(
+                    cornerRadius: 9,
+                    tint: tint,
+                    shadowOpacity: isDark ? 0 : 0.035,
+                    interactive: true
+                )
+        }
     }
 }
 
-struct PrimaryButtonStyle: ButtonStyle {
+struct PrimaryButtonStyle: PrimitiveButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color.white)
-            .frame(height: 40)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(
-                        configuration.isPressed
-                            ? Color(red: 0.070, green: 0.078, blue: 0.088)
-                            : Color(red: 0.096, green: 0.105, blue: 0.118)
-                    )
-            )
-            .opacity(isEnabled ? 1 : 0.58)
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 9,
+            ink: .softLight
+        ) {
+            configuration.label
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.white)
+                .frame(height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color(red: 0.096, green: 0.105, blue: 0.118))
+                )
+                .opacity(isEnabled ? 1 : 0.58)
+        }
     }
 }
 
-struct SecondaryButtonStyle: ButtonStyle {
+struct SecondaryButtonStyle: PrimitiveButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
-        let tint = configuration.isPressed
-            ? (isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
-            : (isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08))
+        let tint = isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.08)
 
-        configuration.label
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Color.codexInk)
-            .frame(height: 36)
-            .liquidGlassSurface(
-                cornerRadius: 9,
-                tint: tint,
-                shadowOpacity: isDark ? 0 : 0.035,
-                interactive: true
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 9,
+            ink: .adaptiveMint
+        ) {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.codexInk)
+                .frame(height: 36)
+                .liquidGlassSurface(
+                    cornerRadius: 9,
+                    tint: tint,
+                    shadowOpacity: isDark ? 0 : 0.035,
+                    interactive: true
+                )
+        }
+    }
+}
+
+struct CodexMaterialWaveButtonBody<Label: View>: View {
+    let action: () -> Void
+    var cornerRadius: CGFloat = 9
+    var usesCapsule: Bool = false
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+    @ViewBuilder var label: () -> Label
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var ripples: [CodexMaterialWaveToken] = []
+    @State private var boardSize: CGSize = .zero
+    @State private var didSpawnForTouch = false
+
+    var body: some View {
+        Group {
+            if usesCapsule {
+                chrome(clippedBy: Capsule())
+            } else {
+                chrome(clippedBy: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+        }
+    }
+
+    private func chrome<S: Shape>(clippedBy shape: S) -> some View {
+        label()
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { boardSize = geo.size }
+                        .onChange(of: geo.size) { _, size in
+                            boardSize = size
+                        }
+                }
+            }
+            .overlay {
+                let waveSize = resolvedBoardSize
+                ZStack {
+                    ForEach(ripples) { ripple in
+                        CodexMaterialWave(
+                            origin: ripple.location,
+                            diameter: hypot(waveSize.width, waveSize.height) * 2.05,
+                            ink: ink
+                        ) {
+                            ripples.removeAll { $0.id == ripple.id }
+                        }
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .clipShape(shape)
+            .contentShape(shape)
+            .accessibilityAction(.default) {
+                guard isEnabled else { return }
+                action()
+            }
+            // Own the press end-to-end so macOS still fires the button action
+            // while the material wave gesture can read the tap location.
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        guard isEnabled else { return }
+                        guard !didSpawnForTouch else { return }
+                        didSpawnForTouch = true
+                        spawnRipple(at: value.startLocation)
+                    }
+                    .onEnded { value in
+                        defer { didSpawnForTouch = false }
+                        guard isEnabled else { return }
+                        let size = resolvedBoardSize
+                        let hit = CGRect(origin: .zero, size: size).insetBy(dx: -6, dy: -6)
+                        if hit.contains(value.location) {
+                            action()
+                        }
+                    }
             )
+    }
+
+    private var resolvedBoardSize: CGSize {
+        boardSize == .zero ? CGSize(width: 44, height: 32) : boardSize
+    }
+
+    private func spawnRipple(at origin: CGPoint) {
+        guard !reduceMotion else { return }
+        let size = resolvedBoardSize
+        let point = boardSize == .zero
+            ? CGPoint(x: size.width / 2, y: size.height / 2)
+            : origin
+        ripples.append(CodexMaterialWaveToken(location: point))
     }
 }
 

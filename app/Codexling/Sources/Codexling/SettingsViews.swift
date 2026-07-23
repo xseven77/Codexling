@@ -85,14 +85,18 @@ struct SettingsView: View {
             }
             Spacer()
             if store.isLoggedIn {
-                Button("退出登录") { showsLogoutConfirmation = true }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.codexRed)
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(Color.codexRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.codexRed.opacity(0.18), lineWidth: 0.7))
+                Button {
+                    showsLogoutConfirmation = true
+                } label: {
+                    Text("退出登录")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.codexRed)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Color.codexRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.codexRed.opacity(0.18), lineWidth: 0.7))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
             } else {
                 Text("未登录")
                     .font(.system(size: 9, weight: .semibold))
@@ -121,7 +125,7 @@ struct SettingsView: View {
                     .frame(width: 34, height: 34)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CodexPressableStyle(cornerRadius: 10))
             .help("关闭设置")
             .accessibilityLabel("关闭设置")
         }
@@ -316,12 +320,14 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.codexMuted)
                     Spacer()
-                    Button("重新扫描") {
+                    Button {
                         settings.reloadPets()
+                    } label: {
+                        Text("重新扫描")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.codexPrimary)
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.codexPrimary)
+                    .buttonStyle(CodexPressableStyle())
                 }
                 .padding(.horizontal, 4)
 
@@ -410,6 +416,7 @@ struct SettingsView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .buttonStyle(CodexPressableStyle())
         .fixedSize()
     }
 
@@ -518,16 +525,16 @@ private struct BundledCodexlingPetThumbnail: View {
     }
 }
 
-private struct CodexlingPetInstallButtonStyle: ButtonStyle {
+private struct CodexlingPetInstallButtonStyle: PrimitiveButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
         let isDark = colorScheme == .dark
         let backgroundColor: Color = if isDark {
-            configuration.isPressed ? Color.white.opacity(0.18) : Color.white.opacity(0.11)
+            Color.white.opacity(0.11)
         } else {
-            configuration.isPressed ? Color.codexPrimary.opacity(0.78) : Color.codexPrimary
+            Color.codexPrimary
         }
         let foregroundColor: Color = if isDark {
             Color.white.opacity(isEnabled ? 0.96 : 0.42)
@@ -535,24 +542,28 @@ private struct CodexlingPetInstallButtonStyle: ButtonStyle {
             Color.white.opacity(isEnabled ? 1 : 0.58)
         }
 
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(foregroundColor)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(backgroundColor.opacity(isEnabled ? 1 : 0.60))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(
-                        isDark ? Color.white.opacity(isEnabled ? 0.16 : 0.08) : Color.black.opacity(0.08),
-                        lineWidth: 0.8
-                    )
-            )
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 8,
+            ink: .softLight
+        ) {
+            configuration.label
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(foregroundColor)
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(backgroundColor.opacity(isEnabled ? 1 : 0.60))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(
+                            isDark ? Color.white.opacity(isEnabled ? 0.16 : 0.08) : Color.black.opacity(0.08),
+                            lineWidth: 0.8
+                        )
+                )
+        }
     }
 }
 
@@ -636,6 +647,7 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .buttonStyle(CodexPressableStyle())
         .fixedSize(horizontal: true, vertical: false)
     }
 }
@@ -673,7 +685,7 @@ private struct SettingsSwitch: View {
             .frame(width: 42, height: 24)
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsSwitchButtonStyle())
         .accessibilityLabel("活动状态流光")
         .accessibilityValue(isOn ? "已开启" : "已关闭")
         .accessibilityAddTraits(.isButton)
@@ -683,6 +695,19 @@ private struct SettingsSwitch: View {
         colorScheme == .dark
             ? Color(red: 0.30, green: 0.31, blue: 0.32)
             : Color(red: 0.78, green: 0.79, blue: 0.80)
+    }
+}
+
+private struct SettingsSwitchButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            cornerRadius: 12,
+            usesCapsule: true,
+            ink: .adaptiveMint
+        ) {
+            configuration.label
+        }
     }
 }
 

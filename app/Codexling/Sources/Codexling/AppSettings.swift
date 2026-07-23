@@ -121,7 +121,7 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
     var nsColor: NSColor {
         switch self {
         case .automatic, .neutral:
-            NSColor.white.withAlphaComponent(0.50)
+            NSColor.white.withAlphaComponent(0.18)
         case .green:
             NSColor(red: 0.016, green: 0.627, blue: 0.361, alpha: 1)
         case .yellow:

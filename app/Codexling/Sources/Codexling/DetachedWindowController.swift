@@ -24,7 +24,7 @@ enum DetachedWindowMetrics {
     static let minHeight: CGFloat = 420
     static let maxHeight: CGFloat = 960
     static let loginDashboardHeight: CGFloat = 440
-    static let loggedInDashboardHeight: CGFloat = 570
+    static let loggedInDashboardHeight: CGFloat = 510
     static let settingsHeight: CGFloat = 860
     static let chromeHeaderHeight: CGFloat = 38
 

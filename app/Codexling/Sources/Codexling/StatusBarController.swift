@@ -460,12 +460,14 @@ final class StatusCapsuleView: NSView {
     private var indicatorColor: NSColor?
     private var showsWave = false
     private var cornerRatio: CGFloat = 0.5
-    private var isPressed = false
     private var isTrackingPress = false
     private var lastClickTimestamp: TimeInterval = -.infinity
     private var trackingAreaReference: NSTrackingArea?
+    private var localMouseMonitor: Any?
     private var waveTimer: Timer?
     private var waveStartTime = ProcessInfo.processInfo.systemUptime
+    private var materialRipples: [CapsuleMaterialRipple] = []
+    private var materialRippleTimer: Timer?
 
     var preferredWidth: CGFloat {
         let textWidth = ceil(attributedText.size().width)
@@ -481,7 +483,6 @@ final class StatusCapsuleView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:))))
     }
 
     required init?(coder: NSCoder) {
@@ -528,29 +529,11 @@ final class StatusCapsuleView: NSView {
         )
         background.nsColor.setFill()
         outerPath.fill()
+        drawMaterialRipples(clippedTo: outerPath)
         drawWave(clippedTo: outerPath)
-        if isPressed {
-            NSColor.black.withAlphaComponent(background == .neutral ? 0.13 : 0.17).setFill()
-            outerPath.fill()
-        }
-        let borderColor = isPressed
-            ? NSColor.black.withAlphaComponent(0.20)
-            : NSColor.white.withAlphaComponent(background == .neutral ? 0.14 : 0.30)
-        borderColor.setStroke()
-        outerPath.lineWidth = isPressed ? 0.9 : (background == .neutral ? 0.45 : 0.55)
+        NSColor.white.withAlphaComponent(background == .neutral ? 0.14 : 0.30).setStroke()
+        outerPath.lineWidth = background == .neutral ? 0.45 : 0.55
         outerPath.stroke()
-
-        if isPressed {
-            let insetRect = outerRect.insetBy(dx: 0.75, dy: 0.75)
-            let insetPath = NSBezierPath(
-                roundedRect: insetRect,
-                xRadius: insetRect.height * cornerRatio,
-                yRadius: insetRect.height * cornerRatio
-            )
-            NSColor.black.withAlphaComponent(0.08).setStroke()
-            insetPath.lineWidth = 0.7
-            insetPath.stroke()
-        }
 
         let indicatorWidth: CGFloat
         if showsPet, let petImage {
@@ -656,7 +639,18 @@ final class StatusCapsuleView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil {
+            stopMaterialRippleTimer()
+            materialRipples.removeAll()
+            removeLocalMouseMonitor()
+        } else {
+            installLocalMouseMonitor()
+        }
         updateWaveAnimation()
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     private func updateWaveAnimation() {
@@ -732,6 +726,62 @@ final class StatusCapsuleView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    private func drawMaterialRipples(clippedTo outerPath: NSBezierPath) {
+        guard !materialRipples.isEmpty else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        materialRipples.removeAll { now - $0.startTime >= CapsuleMaterialRipple.lifetime }
+        guard !materialRipples.isEmpty else {
+            stopMaterialRippleTimer()
+            return
+        }
+
+        let diameter = hypot(bounds.width, bounds.height) * 2.05
+        let ink = materialInkColor
+
+        NSGraphicsContext.saveGraphicsState()
+        outerPath.addClip()
+
+        for ripple in materialRipples {
+            let elapsed = now - ripple.startTime
+            let expandLinear = min(1, max(0, elapsed / CapsuleMaterialRipple.expandDuration))
+            let expandEased = 1 - pow(1 - expandLinear, 3)
+            let scale = 0.04 + (1.0 - 0.04) * CGFloat(expandEased)
+
+            let fadeLinear = min(
+                1,
+                max(0, (elapsed - CapsuleMaterialRipple.fadeDelay) / CapsuleMaterialRipple.fadeDuration)
+            )
+            let fadeEased = fadeLinear * fadeLinear
+            let opacity = 1.0 - fadeEased
+
+            let size = diameter * scale
+            let rect = NSRect(
+                x: ripple.origin.x - size / 2,
+                y: ripple.origin.y - size / 2,
+                width: size,
+                height: size
+            )
+            ink.withAlphaComponent(ink.alphaComponent * CGFloat(opacity)).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private var materialInkColor: NSColor {
+        switch background {
+        case .automatic, .neutral:
+            // Match the translucent white capsule fill.
+            return NSColor.white.withAlphaComponent(0.28)
+        case .green, .yellow, .red, .gray:
+            // Same hue as the capsule, lightened so the blot reads on a solid fill.
+            let base = background.nsColor
+            let ink = base.blended(withFraction: 0.42, of: .white) ?? base
+            return ink.withAlphaComponent(0.32)
+        }
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingAreaReference {
@@ -752,57 +802,148 @@ final class StatusCapsuleView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        isPressed = false
-        needsDisplay = true
         onMouseExited?()
     }
 
     override func mouseDown(with event: NSEvent) {
-        isTrackingPress = true
-        isPressed = true
-        needsDisplay = true
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard isTrackingPress else { return }
-        let pointerIsInside = bounds.contains(convert(event.locationInWindow, from: nil))
-        guard isPressed != pointerIsInside else { return }
-        isPressed = pointerIsInside
-        needsDisplay = true
+        beginPress(at: locationInView(for: event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        let shouldTriggerClick = isTrackingPress && bounds.contains(
-            convert(event.locationInWindow, from: nil)
-        )
-        isTrackingPress = false
-        isPressed = false
-        needsDisplay = true
-        if shouldTriggerClick {
-            triggerClick(timestamp: event.timestamp)
-        }
+        finishPress(shouldClick: isPointerInside(for: event), timestamp: event.timestamp)
     }
 
     override func accessibilityPerformPress() -> Bool {
-        onClick?()
+        beginPress(at: NSPoint(x: bounds.midX, y: bounds.midY))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.finishPress(
+                shouldClick: true,
+                timestamp: ProcessInfo.processInfo.systemUptime
+            )
+        }
         return true
     }
 
-    @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
-        triggerClick(
-            timestamp: NSApp.currentEvent?.timestamp
-                ?? ProcessInfo.processInfo.systemUptime
-        )
+    /// NSStatusBarButton often swallows subview mouseDown. A local monitor still
+    /// sees the press so the material wave can start on click.
+    private func installLocalMouseMonitor() {
+        guard localMouseMonitor == nil else { return }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleLocalMouseEvent(event)
+            return event
+        }
     }
 
-    private func triggerClick(timestamp: TimeInterval) {
-        // mouseUp is the primary button path; the gesture recognizer is retained
-        // as a fallback. Both can observe the same physical click, so deduplicate.
+    private func removeLocalMouseMonitor() {
+        if let localMouseMonitor {
+            NSEvent.removeMonitor(localMouseMonitor)
+            self.localMouseMonitor = nil
+        }
+    }
+
+    private func handleLocalMouseEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            guard isPointerInside(for: event) else { return }
+            beginPress(at: locationInView(for: event))
+        case .leftMouseUp:
+            guard isTrackingPress else { return }
+            finishPress(
+                shouldClick: isPointerInside(for: event),
+                timestamp: event.timestamp
+            )
+        default:
+            break
+        }
+    }
+
+    private func isPointerInside(for event: NSEvent) -> Bool {
+        bounds.contains(locationInView(for: event))
+    }
+
+    private func locationInView(for event: NSEvent) -> NSPoint {
+        let screenPoint: NSPoint
+        if let eventWindow = event.window {
+            screenPoint = eventWindow.convertPoint(toScreen: event.locationInWindow)
+        } else {
+            screenPoint = NSEvent.mouseLocation
+        }
+        guard let window else { return .zero }
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        return convert(windowPoint, from: nil)
+    }
+
+    private func beginPress(at location: NSPoint) {
+        guard !isTrackingPress else { return }
+        isTrackingPress = true
+        spawnMaterialRipple(at: location)
+    }
+
+    private func finishPress(shouldClick: Bool, timestamp: TimeInterval) {
+        guard isTrackingPress else { return }
+        isTrackingPress = false
+        if shouldClick {
+            performClick(timestamp: timestamp)
+        }
+    }
+
+    private func performClick(timestamp: TimeInterval) {
+        // mouseUp override and the local monitor can both observe one click.
         guard timestamp - lastClickTimestamp > 0.08 else { return }
         lastClickTimestamp = timestamp
         onClick?()
     }
+
+    private func spawnMaterialRipple(at location: NSPoint) {
+        materialRipples.append(
+            CapsuleMaterialRipple(
+                origin: location,
+                startTime: ProcessInfo.processInfo.systemUptime
+            )
+        )
+        startMaterialRippleTimer()
+        display()
+        CATransaction.flush()
+    }
+
+    private func startMaterialRippleTimer() {
+        guard materialRippleTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tickMaterialRipples()
+            }
+        }
+        materialRippleTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func tickMaterialRipples() {
+        let now = ProcessInfo.processInfo.systemUptime
+        materialRipples.removeAll { now - $0.startTime >= CapsuleMaterialRipple.lifetime }
+        needsDisplay = true
+        if materialRipples.isEmpty {
+            stopMaterialRippleTimer()
+            display()
+        }
+    }
+
+    private func stopMaterialRippleTimer() {
+        materialRippleTimer?.invalidate()
+        materialRippleTimer = nil
+    }
+}
+
+private struct CapsuleMaterialRipple {
+    static let expandDuration: TimeInterval = 0.68
+    static let fadeDelay: TimeInterval = 0.18
+    static let fadeDuration: TimeInterval = 0.50
+    static let lifetime: TimeInterval = 0.74
+
+    let origin: NSPoint
+    let startTime: TimeInterval
 }
 
 private final class PetHoverPanel: NSPanel {
@@ -942,28 +1083,30 @@ private struct PetHoverContentView: View {
     let shadowInset: CGFloat
 
     var body: some View {
-        glassSurface
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .onHover { isHovered in
-                if isHovered {
-                    NSCursor.pointingHand.set()
-                    model.onMouseEntered?()
-                } else {
-                    NSCursor.arrow.set()
-                    model.onMouseExited?()
-                }
+        Button {
+            model.onClick?()
+        } label: {
+            glassSurface
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(CodexPressableCardStyle(cornerRadius: 16))
+        .onHover { isHovered in
+            if isHovered {
+                NSCursor.pointingHand.set()
+                model.onMouseEntered?()
+            } else {
+                NSCursor.arrow.set()
+                model.onMouseExited?()
             }
-            .onTapGesture {
-                model.onClick?()
-            }
-            .shadow(color: Color.black.opacity(0.12), radius: 12, x: 0, y: 0)
-            .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 0)
-            .padding(shadowInset)
-            .frame(
-                width: cardSize.width + shadowInset * 2,
-                height: cardSize.height + shadowInset * 2
-            )
-            .background(Color.clear)
+        }
+        .shadow(color: Color.black.opacity(0.12), radius: 12, x: 0, y: 0)
+        .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 0)
+        .padding(shadowInset)
+        .frame(
+            width: cardSize.width + shadowInset * 2,
+            height: cardSize.height + shadowInset * 2
+        )
+        .background(Color.clear)
     }
 
     @ViewBuilder
