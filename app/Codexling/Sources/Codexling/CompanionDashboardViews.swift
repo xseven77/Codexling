@@ -38,7 +38,7 @@ struct CompanionDashboardView: View {
                 frame: frameStore.currentFrame,
                 todayMinutes: companionStatsStore.todayMinutes
             )
-            .frame(width: 188)
+            .frame(width: DetachedWindowMetrics.sidebarWidth)
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -53,7 +53,7 @@ struct CompanionDashboardView: View {
                     quotaSection
                 }
                 .padding(.top, 25)
-                .padding(.horizontal, 22)
+                .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -66,7 +66,7 @@ struct CompanionDashboardView: View {
                     showsDetachedButton: showsDetachedButton,
                     onOpenSettings: onOpenSettings
                 )
-                .padding(.horizontal, 22)
+                .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
                 .padding(.bottom, 25)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -103,21 +103,21 @@ struct CompanionDashboardView: View {
     }
 }
 
+private struct ResetCouponDisplayTicket: Identifiable {
+    let id: String
+    let name: String
+    let source: String
+    let expiresAt: String
+}
+
 private struct ResetCouponSummaryView: View {
     let coupons: [ResetCoupon]
     @State private var selectedIndex = 0
 
-    private struct Ticket: Identifiable {
-        let id: String
-        let name: String
-        let source: String
-        let expiresAt: String
-    }
-
-    private var tickets: [Ticket] {
+    private var tickets: [ResetCouponDisplayTicket] {
         coupons.flatMap { coupon in
             (0..<coupon.count).map { copyIndex in
-                Ticket(
+                ResetCouponDisplayTicket(
                     id: "\(coupon.id)-\(copyIndex)",
                     name: coupon.name,
                     source: coupon.source,
@@ -130,9 +130,21 @@ private struct ResetCouponSummaryView: View {
     var body: some View {
         Group {
             if tickets.isEmpty {
-                HStack(spacing: 9) {
-                    Image(systemName: "ticket")
-                        .foregroundStyle(Color.codexMuted)
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.codexMist.opacity(0.65))
+                            .frame(width: 34, height: 34)
+                            .rotationEffect(.degrees(-8))
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.codexLine.opacity(0.55), style: StrokeStyle(lineWidth: 0.8, dash: [3, 2.5]))
+                            .frame(width: 34, height: 34)
+                            .rotationEffect(.degrees(-8))
+                        Image(systemName: "ticket")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Color.codexMuted.opacity(0.72))
+                            .rotationEffect(.degrees(-8))
+                    }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("重置券 0 张")
                             .font(.system(size: 11, weight: .semibold))
@@ -140,35 +152,36 @@ private struct ResetCouponSummaryView: View {
                             .font(.system(size: 9))
                             .foregroundStyle(Color.codexMuted)
                     }
+                    Spacer(minLength: 0)
                 }
-                .padding(11)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.codexCard.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.codexLine, lineWidth: 0.7))
-            } else {
-                Button(action: showNextTicket) {
-                    ZStack(alignment: .topLeading) {
-                        ForEach(Array(visibleDepths.reversed()), id: \.self) { depth in
-                            let ticketIndex = (selectedIndex + depth) % tickets.count
-                            ResetCouponTicketCard(
-                                name: tickets[ticketIndex].name,
-                                source: tickets[ticketIndex].source,
-                                expiresAt: formattedExpiration(tickets[ticketIndex].expiresAt),
-                                position: ticketIndex + 1,
-                                total: tickets.count,
-                                isFront: depth == 0
-                            )
-                            .scaleEffect(1 - CGFloat(depth) * 0.012, anchor: .top)
-                            .offset(y: CGFloat(depth) * 3)
-                            .zIndex(Double(visibleDepths.count - depth))
-                        }
-                    }
-                    .frame(height: 84, alignment: .top)
-                    .clipped()
-                    .contentShape(Rectangle())
+                .background(
+                    LinearGradient(
+                        colors: [Color.codexCard.opacity(0.92), Color.codexMist.opacity(0.42)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.codexLine.opacity(0.85), lineWidth: 0.7)
+                )
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.35))
+                        .frame(height: 0.6)
+                        .padding(.horizontal, 12)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("重置券 \(tickets.count) 张，当前第 \(selectedIndex + 1) 张，点击查看下一张")
+            } else {
+                ResetCouponTicketDeck(
+                    tickets: tickets,
+                    selectedIndex: selectedIndex,
+                    formattedExpiration: formattedExpiration,
+                    onSwitch: showNextTicket
+                )
             }
         }
         .onChange(of: tickets.map(\.id)) { _, ids in
@@ -176,10 +189,6 @@ private struct ResetCouponSummaryView: View {
                 selectedIndex = 0
             }
         }
-    }
-
-    private var visibleDepths: Range<Int> {
-        0..<min(3, tickets.count)
     }
 
     private func showNextTicket() {
@@ -202,144 +211,587 @@ private struct ResetCouponSummaryView: View {
     }
 }
 
+private struct ResetCouponTicketDeck: View {
+    let tickets: [ResetCouponDisplayTicket]
+    let selectedIndex: Int
+    let formattedExpiration: (String) -> String
+    let onSwitch: () -> Void
+
+    private var selectedTicket: ResetCouponDisplayTicket {
+        tickets[selectedIndex]
+    }
+
+    /// 可见堆叠层数：1 张显示 1 层，2 张显示 2 层，3 张及以上最多 3 层。
+    private var visibleStackCount: Int {
+        min(ResetCouponTicketMetrics.maxStackLayers, tickets.count)
+    }
+
+    private var backLayerDepths: [Int] {
+        guard tickets.count > 1 else { return [] }
+        return Array(1..<visibleStackCount)
+    }
+
+    private var deepestBackOffset: CGFloat {
+        CGFloat(backLayerDepths.last ?? 0) * ResetCouponTicketMetrics.stackOffsetY
+    }
+
+    private var deckHeight: CGFloat {
+        ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (backLayerDepths.isEmpty ? 4 : 8)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(backLayerDepths.reversed(), id: \.self) { depth in
+                ResetCouponStackLayer(depth: depth, totalBackLayers: backLayerDepths.count)
+                    .scaleEffect(
+                        1 - CGFloat(depth) * ResetCouponTicketMetrics.stackScaleStep,
+                        anchor: .topLeading
+                    )
+                    .offset(
+                        x: CGFloat(depth) * ResetCouponTicketMetrics.stackOffsetX,
+                        y: CGFloat(depth) * ResetCouponTicketMetrics.stackOffsetY
+                    )
+                    .zIndex(Double(depth))
+            }
+
+            ResetCouponTicketCard(
+                name: selectedTicket.name,
+                source: selectedTicket.source,
+                expiresAt: formattedExpiration(selectedTicket.expiresAt),
+                position: selectedIndex + 1,
+                total: tickets.count,
+                stackDepth: 0,
+                isFront: true,
+                onSwitch: tickets.count > 1 ? onSwitch : nil
+            )
+            .zIndex(Double(visibleStackCount + 1))
+        }
+        .padding(.bottom, backLayerDepths.isEmpty ? 6 : 8)
+        .frame(height: deckHeight, alignment: .top)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("重置券 \(tickets.count) 张，当前第 \(selectedIndex + 1) 张")
+    }
+}
+
+private enum ResetCouponTicketMetrics {
+    static let cardHeight: CGFloat = 82
+    static let stubWidth: CGFloat = 88
+    static let stubHorizontalPadding: CGFloat = 12
+    static let perforationNotchRadius: CGFloat = 4
+    static let maxStackLayers = 3
+    static let stackOffsetX: CGFloat = 2.5
+    static let stackOffsetY: CGFloat = 5
+    static let stackScaleStep: CGFloat = 0.016
+}
+
+private struct ResetCouponTicketShape: Shape {
+    var cornerRadius: CGFloat = 12
+    var edgeNotchRadius: CGFloat = 4.5
+    var perforationNotchRadius: CGFloat = ResetCouponTicketMetrics.perforationNotchRadius
+    var perforationInset: CGFloat = ResetCouponTicketMetrics.stubWidth
+
+    func path(in rect: CGRect) -> Path {
+        let perforationX = rect.maxX - perforationInset
+        var path = Path()
+
+        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: perforationX - perforationNotchRadius, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: perforationX, y: rect.minY),
+            radius: perforationNotchRadius,
+            startAngle: .degrees(180),
+            endAngle: .degrees(0),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY + cornerRadius),
+            radius: cornerRadius,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(0),
+            clockwise: false
+        )
+
+        let rightNotchY = rect.midY
+        path.addLine(to: CGPoint(x: rect.maxX, y: rightNotchY - edgeNotchRadius))
+        path.addArc(
+            center: CGPoint(x: rect.maxX, y: rightNotchY),
+            radius: edgeNotchRadius,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(90),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY - cornerRadius),
+            radius: cornerRadius,
+            startAngle: .degrees(0),
+            endAngle: .degrees(90),
+            clockwise: false
+        )
+
+        path.addLine(to: CGPoint(x: perforationX + perforationNotchRadius, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: perforationX, y: rect.maxY),
+            radius: perforationNotchRadius,
+            startAngle: .degrees(0),
+            endAngle: .degrees(180),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY - cornerRadius),
+            radius: cornerRadius,
+            startAngle: .degrees(90),
+            endAngle: .degrees(180),
+            clockwise: false
+        )
+
+        let leftNotchY = rect.midY
+        path.addLine(to: CGPoint(x: rect.minX, y: leftNotchY + edgeNotchRadius))
+        path.addArc(
+            center: CGPoint(x: rect.minX, y: leftNotchY),
+            radius: edgeNotchRadius,
+            startAngle: .degrees(90),
+            endAngle: .degrees(-90),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addArc(
+            center: CGPoint(x: rect.minX + cornerRadius, y: rect.minY + cornerRadius),
+            radius: cornerRadius,
+            startAngle: .degrees(180),
+            endAngle: .degrees(-90),
+            clockwise: false
+        )
+
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ResetCouponPaperTexture: View {
+    let isDark: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let lineColor = Color.black.opacity(isDark ? 0.06 : 0.018)
+            var y: CGFloat = 3
+            while y < size.height {
+                var line = Path()
+                line.move(to: CGPoint(x: 0, y: y))
+                line.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(line, with: .color(lineColor), lineWidth: 0.35)
+                y += 5.5
+            }
+
+            let speckColor = Color.black.opacity(isDark ? 0.05 : 0.012)
+            let specks: [(CGFloat, CGFloat)] = [
+                (0.12, 0.18), (0.28, 0.42), (0.46, 0.24), (0.63, 0.58),
+                (0.78, 0.31), (0.88, 0.72), (0.34, 0.81), (0.55, 0.67)
+            ]
+            for (xFactor, yFactor) in specks {
+                let rect = CGRect(
+                    x: size.width * xFactor,
+                    y: size.height * yFactor,
+                    width: 0.7,
+                    height: 0.7
+                )
+                context.fill(Path(ellipseIn: rect), with: .color(speckColor))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ResetCouponPerforation: View {
+    let tone: Color
+    let isDark: Bool
+    var height: CGFloat = ResetCouponTicketMetrics.cardHeight
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .stroke(
+                    tone.opacity(isDark ? 0.18 : 0.10),
+                    style: StrokeStyle(lineWidth: 0.5, dash: [1.5, 3.5])
+                )
+                .frame(width: 0.5, height: height)
+
+            VStack(spacing: 4.2) {
+                ForEach(0..<perforationDotCount, id: \.self) { index in
+                    Circle()
+                        .fill(tone.opacity(index.isMultiple(of: 2) ? 0.82 : 0.58))
+                        .frame(width: 1.6, height: 1.6)
+                }
+            }
+            .frame(height: height - ResetCouponTicketMetrics.perforationNotchRadius * 2)
+        }
+        .frame(width: 2, height: height)
+        .allowsHitTesting(false)
+    }
+
+    private var perforationDotCount: Int {
+        max(7, Int((height - ResetCouponTicketMetrics.perforationNotchRadius * 2) / 5.8))
+    }
+}
+
+private struct ResetCouponStackLayer: View {
+    let depth: Int
+    let totalBackLayers: Int
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isDark: Bool { colorScheme == .dark }
+
+    private var layerOpacity: Double {
+        switch totalBackLayers {
+        case 1: 0.92
+        case 2 where depth == 1: 0.88
+        default: depth == 1 ? 0.86 : 0.74
+        }
+    }
+
+    private var edgeOpacity: Double {
+        depth == totalBackLayers ? 0.58 : (depth == 1 ? 0.72 : 0.64)
+    }
+
+    private var surfaceTop: Color {
+        isDark
+            ? Color(red: 0.138, green: 0.145, blue: 0.148)
+            : Color(red: 0.972, green: 0.978, blue: 0.958)
+    }
+
+    private var surfaceBottom: Color {
+        isDark
+            ? Color(red: 0.108, green: 0.115, blue: 0.118)
+            : Color(red: 0.928, green: 0.942, blue: 0.932)
+    }
+
+    private var edge: Color {
+        isDark
+            ? Color(red: 0.240, green: 0.255, blue: 0.250)
+            : Color(red: 0.790, green: 0.812, blue: 0.800)
+    }
+
+    var body: some View {
+        ResetCouponTicketShape()
+            .fill(
+                LinearGradient(
+                    colors: [surfaceTop, surfaceBottom],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay {
+                ResetCouponTicketShape()
+                    .stroke(edge.opacity(edgeOpacity), lineWidth: 0.75)
+            }
+            .frame(maxWidth: .infinity, minHeight: ResetCouponTicketMetrics.cardHeight, maxHeight: ResetCouponTicketMetrics.cardHeight)
+            .opacity(layerOpacity)
+    }
+}
+
+private struct ResetCouponStubSection: View {
+    let position: Int
+    let total: Int
+    let source: String
+    let isFront: Bool
+    let isDark: Bool
+    let onSwitch: (() -> Void)?
+
+    var body: some View {
+        Group {
+            if total > 1, let onSwitch {
+                Button(action: onSwitch) {
+                    stubContent
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
+            } else {
+                stubContent
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var stubContent: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(
+                        Color.codexGreen.opacity(isDark ? 0.42 : 0.34),
+                        style: StrokeStyle(lineWidth: 0.9, dash: [2.5, 1.8])
+                    )
+                    .background(
+                        Color.codexGreen.opacity(isDark ? 0.08 : 0.05),
+                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    )
+                HStack(spacing: 4) {
+                    Image(systemName: "ticket.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(String(format: "%02d", position))
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                }
+                .foregroundStyle(Color.codexGreen)
+                .rotationEffect(.degrees(-7))
+            }
+            .frame(width: 58, height: 26)
+
+            Text(isFront && total > 1 ? "切换查看" : "可用券")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
+
+            if !source.isEmpty {
+                Text(source)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(Color.codexMuted.opacity(0.78))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+        }
+        .padding(.horizontal, ResetCouponTicketMetrics.stubHorizontalPadding)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+private struct ResetCouponTicketShadow: ViewModifier {
+    let isFront: Bool
+    let isDark: Bool
+
+    func body(content: Content) -> some View {
+        if isFront {
+            content
+                .shadow(
+                    color: Color.black.opacity(isDark ? 0.11 : 0.042),
+                    radius: 12,
+                    x: 0,
+                    y: 5
+                )
+                .shadow(
+                    color: Color.black.opacity(isDark ? 0.05 : 0.018),
+                    radius: 3,
+                    x: 0,
+                    y: 1
+                )
+        } else {
+            content
+        }
+    }
+}
+
 private struct ResetCouponTicketCard: View {
     let name: String
     let source: String
     let expiresAt: String
     let position: Int
     let total: Int
+    let stackDepth: Int
     let isFront: Bool
+    let onSwitch: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
-    private var ticketSurface: Color {
-        if colorScheme == .dark {
-            return isFront
-                ? Color(red: 0.145, green: 0.151, blue: 0.154)
-                : Color(red: 0.118, green: 0.125, blue: 0.127)
-        }
-        return isFront
-            ? Color(red: 0.997, green: 0.994, blue: 0.976)
-            : Color(red: 0.942, green: 0.952, blue: 0.945)
+    private var isDark: Bool { colorScheme == .dark }
+
+    private var ticketSurfaceTop: Color {
+        isDark
+            ? Color(red: 0.158, green: 0.165, blue: 0.168)
+            : Color(red: 0.998, green: 0.993, blue: 0.968)
+    }
+
+    private var ticketSurfaceBottom: Color {
+        isDark
+            ? Color(red: 0.118, green: 0.125, blue: 0.128)
+            : Color(red: 0.958, green: 0.968, blue: 0.952)
+    }
+
+    private var stubSurface: Color {
+        isDark
+            ? Color(red: 0.132, green: 0.139, blue: 0.142)
+            : Color(red: 0.978, green: 0.984, blue: 0.972)
     }
 
     private var ticketEdge: Color {
-        colorScheme == .dark
+        isDark
             ? Color(red: 0.255, green: 0.270, blue: 0.266)
-            : Color(red: 0.835, green: 0.855, blue: 0.845)
+            : Color(red: 0.805, green: 0.828, blue: 0.815)
     }
 
+    private var edgeStrokeOpacity: Double { 0.95 }
+
     var body: some View {
-        HStack(spacing: 11) {
-            ZStack {
-                Circle()
-                    .fill(
-                        colorScheme == .dark
-                            ? Color(red: 0.075, green: 0.210, blue: 0.125)
-                            : Color(red: 0.884, green: 0.968, blue: 0.900)
-                    )
-                Circle()
-                    .stroke(Color.codexGreen.opacity(0.34), lineWidth: 0.8)
-                    .padding(2)
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.codexGreen)
-            }
-            .frame(width: 34, height: 34)
+        HStack(spacing: 0) {
+            HStack(spacing: 11) {
+                resetIcon
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(name.isEmpty ? "Codex 重置券" : name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                    Text("\(position) / \(total)")
-                        .font(.system(size: 8, weight: .bold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.codexGreen)
-                        .padding(.horizontal, 6)
-                        .frame(height: 17)
-                        .background(
-                            colorScheme == .dark
-                                ? Color(red: 0.105, green: 0.235, blue: 0.145)
-                                : Color(red: 0.895, green: 0.970, blue: 0.915),
-                            in: Capsule()
-                        )
-                }
-                Label("\(expiresAt) 到期", systemImage: "calendar.badge.clock")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(Color.codexMuted)
-            }
-
-            Spacer(minLength: 8)
-
-            VStack(spacing: 3) {
-                ForEach(0..<10, id: \.self) { _ in
-                    Circle()
-                        .fill(ticketEdge.opacity(0.72))
-                        .frame(width: 1.4, height: 1.4)
-                }
-            }
-            .frame(width: 1.5, height: 45)
-
-            VStack(spacing: 3) {
-                HStack(spacing: 3) {
-                    Image(systemName: "ticket.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text(String(format: "%02d", position))
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                }
-                .foregroundStyle(Color.codexGreen)
-                Text(isFront && total > 1 ? "点击切换" : "可用券")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(Color.codexMuted)
-                if !source.isEmpty {
-                    Text(source)
-                        .font(.system(size: 7, weight: .medium))
-                        .foregroundStyle(Color.codexMuted.opacity(0.78))
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(name.isEmpty ? "Codex 重置券" : name)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                        Text("\(position) / \(total)")
+                            .font(.system(size: 8, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 6)
+                            .frame(height: 17)
+                            .background(
+                                LinearGradient(
+                                    colors: isDark
+                                        ? [Color(red: 0.105, green: 0.235, blue: 0.145), Color(red: 0.085, green: 0.195, blue: 0.120)]
+                                        : [Color(red: 0.905, green: 0.978, blue: 0.922), Color(red: 0.865, green: 0.958, blue: 0.895)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                in: Capsule()
+                            )
+                            .overlay(Capsule().stroke(Color.codexGreen.opacity(isFront ? 0.22 : 0.14), lineWidth: 0.6))
                     }
+                    Label("\(expiresAt) 到期", systemImage: "calendar.badge.clock")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+                }
+
+                Spacer(minLength: 6)
             }
-            .frame(width: 52)
+            .padding(.leading, 16)
+            .padding(.trailing, 8)
+
+            stubSection
+                .frame(width: ResetCouponTicketMetrics.stubWidth)
         }
-        .opacity(isFront ? 1 : 0)
-        .padding(.horizontal, 13)
-        .frame(maxWidth: .infinity, minHeight: 78, maxHeight: 78)
-        .background(
+        .frame(maxWidth: .infinity, minHeight: ResetCouponTicketMetrics.cardHeight, maxHeight: ResetCouponTicketMetrics.cardHeight)
+        .background { ticketBackground }
+        .clipShape(ResetCouponTicketShape())
+        .overlay {
+            ResetCouponTicketShape()
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            ticketEdge.opacity(edgeStrokeOpacity),
+                            ticketEdge.opacity(edgeStrokeOpacity * 0.62)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.85
+                )
+        }
+        .overlay {
+            GeometryReader { geometry in
+                ResetCouponPerforation(tone: ticketEdge, isDark: isDark)
+                    .position(
+                        x: geometry.size.width - ResetCouponTicketMetrics.stubWidth,
+                        y: geometry.size.height / 2
+                    )
+            }
+            .allowsHitTesting(false)
+        }
+        .overlay { innerHighlight }
+        .modifier(ResetCouponTicketShadow(isFront: isFront, isDark: isDark))
+    }
+
+    private var resetIcon: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: isDark
+                            ? [Color(red: 0.120, green: 0.280, blue: 0.165), Color(red: 0.065, green: 0.175, blue: 0.095)]
+                            : [Color(red: 0.930, green: 0.990, blue: 0.940), Color(red: 0.845, green: 0.955, blue: 0.875)],
+                        center: .init(x: 0.32, y: 0.28),
+                        startRadius: 2,
+                        endRadius: 20
+                    )
+                )
+            Circle()
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(isDark ? 0.18 : 0.65),
+                            Color.codexGreen.opacity(0.28),
+                            Color.black.opacity(isDark ? 0.22 : 0.08)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color.codexGreen.opacity(0.95),
+                            Color(red: 0.110, green: 0.620, blue: 0.255)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .shadow(color: Color.white.opacity(isDark ? 0.08 : 0.35), radius: 0.4, x: -0.3, y: -0.3)
+        }
+        .frame(width: 36, height: 36)
+    }
+
+    private var stubSection: some View {
+        ResetCouponStubSection(
+            position: position,
+            total: total,
+            source: source,
+            isFront: isFront,
+            isDark: isDark,
+            onSwitch: onSwitch
+        )
+    }
+
+    @ViewBuilder
+    private var ticketBackground: some View {
+        ZStack {
             LinearGradient(
-                colors: colorScheme == .dark
-                    ? [ticketSurface, Color(red: 0.125, green: 0.132, blue: 0.134)]
-                    : [ticketSurface, Color(red: 0.973, green: 0.980, blue: 0.969)],
+                colors: [ticketSurfaceTop, ticketSurfaceBottom],
                 startPoint: .top,
                 endPoint: .bottom
-            ),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isFront ? ticketEdge : ticketEdge.opacity(0.72), lineWidth: 0.8)
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.codexGreen)
-                .frame(width: 3, height: 48)
-                .padding(.leading, 4)
+            )
+
+            HStack(spacing: 0) {
+                Color.clear
+                LinearGradient(
+                    colors: [
+                        stubSurface.opacity(0.15),
+                        stubSurface,
+                        stubSurface.opacity(isDark ? 0.88 : 0.96)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: ResetCouponTicketMetrics.stubWidth)
+            }
+
+            ResetCouponPaperTexture(isDark: isDark)
+                .blendMode(isDark ? .plusLighter : .multiply)
+                .opacity(isDark ? 0.35 : 0.55)
         }
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.055 : 0.72))
-                .frame(height: 0.7)
-                .padding(.horizontal, 13)
-        }
-        .overlay(alignment: .leading) {
-            Circle().fill(Color.codexCard).frame(width: 8, height: 8).offset(x: -4)
-        }
-        .overlay(alignment: .trailing) {
-            Circle().fill(Color.codexCard).frame(width: 8, height: 8).offset(x: 4)
-        }
-        .shadow(
-            color: isFront ? Color.black.opacity(colorScheme == .dark ? 0.10 : 0.045) : .clear,
-            radius: isFront ? 2 : 0,
-            y: isFront ? 1 : 0
-        )
+    }
+
+    private var innerHighlight: some View {
+        ResetCouponTicketShape()
+            .stroke(Color.white.opacity(isDark ? 0.06 : 0.38), lineWidth: 0.6)
+            .blur(radius: 0.2)
+            .padding(0.6)
+            .mask {
+                ResetCouponTicketShape()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white, Color.clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+            }
     }
 }
 
@@ -627,7 +1079,7 @@ struct QuotaCardsView: View {
     let isLoggedIn: Bool
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: DetachedWindowMetrics.quotaCardSpacing) {
             if snapshot.hasShortWindow, let short = snapshot.shortWindow {
                 QuotaRingCard(window: short, tint: primaryHealth.color)
                     .frame(width: cardWidth)
@@ -652,7 +1104,7 @@ struct QuotaCardsView: View {
         }
     }
 
-    private var cardWidth: CGFloat { 169 }
+    private var cardWidth: CGFloat { DetachedWindowMetrics.quotaCardWidth }
 
     private var primaryHealth: QuotaHealthLevel {
         QuotaHealthLevel.from(window: snapshot.primaryWindow, isLoggedIn: isLoggedIn)

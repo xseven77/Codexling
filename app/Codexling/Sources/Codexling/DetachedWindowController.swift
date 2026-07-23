@@ -1,19 +1,39 @@
 import AppKit
 import SwiftUI
 
+enum DetachedWindowContentMode: Equatable {
+    case dashboard(isLoggedIn: Bool)
+    case settings
+}
+
 enum DetachedWindowMetrics {
-    static let minWidth: CGFloat = 520
+    static let quotaCardWidth: CGFloat = 169
+    static let quotaCardSpacing: CGFloat = 9
+    static let sidebarWidth: CGFloat = 188
+    static let dashboardContentPadding: CGFloat = 22
+
+    /// 主界面固定宽度：侧栏 + 内容区内边距 + 两张额度卡。
+    static var dashboardWidth: CGFloat {
+        sidebarWidth
+            + dashboardContentPadding * 2
+            + quotaCardWidth * 2
+            + quotaCardSpacing
+    }
+
     static let maxWidth: CGFloat = 680
-    // Heights describe the complete native window frame. The content uses a
-    // full-size transparent title bar, so this maps directly to the HTML box.
     static let minHeight: CGFloat = 420
     static let maxHeight: CGFloat = 960
-    static let defaultWidth: CGFloat = 580
-    static let defaultHeight: CGFloat = 495
-    static let dashboardHeight: CGFloat = 495
-    static let dashboardVisualHeight: CGFloat = 493
+    static let loginDashboardHeight: CGFloat = 440
+    static let loggedInDashboardHeight: CGFloat = 570
     static let settingsHeight: CGFloat = 860
     static let chromeHeaderHeight: CGFloat = 38
+
+    static var defaultWidth: CGFloat { dashboardWidth }
+    static var defaultHeight: CGFloat { loggedInDashboardHeight }
+
+    static func dashboardHeight(isLoggedIn: Bool) -> CGFloat {
+        isLoggedIn ? loggedInDashboardHeight : loginDashboardHeight
+    }
 
     static func maximumContentHeight(for screen: NSScreen?) -> CGFloat {
         let visibleHeight = screen?.visibleFrame.height
@@ -22,12 +42,18 @@ enum DetachedWindowMetrics {
         return min(maxHeight, max(1, visibleHeight - 32))
     }
 
-    static func clampContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
+    static func clampSettingsContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
         let dynamicMaxHeight = maximumContentHeight(for: screen)
         return NSSize(
-            width: min(max(size.width, minWidth), maxWidth),
+            width: min(max(size.width, dashboardWidth), maxWidth),
             height: min(max(size.height, min(minHeight, dynamicMaxHeight)), dynamicMaxHeight)
         )
+    }
+
+    static func fixedDashboardContentSize(isLoggedIn: Bool, screen: NSScreen? = nil) -> NSSize {
+        let dynamicMaxHeight = maximumContentHeight(for: screen)
+        let height = min(dashboardHeight(isLoggedIn: isLoggedIn), dynamicMaxHeight)
+        return NSSize(width: dashboardWidth, height: height)
     }
 }
 
@@ -37,6 +63,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var hostingController: NSHostingController<DetachedUsageWindowView>!
     private let settings: AppSettingsStore
     private let onClose: (() -> Void)?
+    private var contentMode: DetachedWindowContentMode = .dashboard(isLoggedIn: true)
+    private var isProgrammaticResize = false
 
     init(
         store: UsageSnapshotStore,
@@ -72,8 +100,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 companionStatsStore: companionStatsStore,
                 updater: updater,
                 actions: actions,
-                onPreferredHeightChanged: { [weak self] height in
-                    self?.setPreferredContentHeight(height)
+                onContentLayoutChanged: { [weak self] mode in
+                    self?.applyContentLayout(mode)
                 }
             )
         )
@@ -84,12 +112,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         hostingController.view.layer?.isOpaque = false
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
         window.contentViewController = hostingController
-        applyContentSizeLimits(to: window)
+        contentMode = .dashboard(isLoggedIn: true)
+        applyContentSizeLimits(for: contentMode)
         var initialFrame = window.frame
-        initialFrame.size = NSSize(
-            width: DetachedWindowMetrics.defaultWidth,
-            height: DetachedWindowMetrics.defaultHeight
-        )
+        initialFrame.size = DetachedWindowMetrics.fixedDashboardContentSize(isLoggedIn: true)
         window.setFrame(initialFrame, display: false)
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -108,15 +134,40 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         applyWindowChrome()
     }
 
-    private func setPreferredContentHeight(_ requestedHeight: CGFloat) {
-        let target = min(requestedHeight, DetachedWindowMetrics.maximumContentHeight(for: window.screen))
-        let current = window.frame.height
-        guard abs(current - target) > 1 else { return }
+    private func applyContentLayout(_ mode: DetachedWindowContentMode) {
+        contentMode = mode
+        applyContentSizeLimits(for: mode)
+
+        let targetSize: NSSize = switch mode {
+        case let .dashboard(isLoggedIn):
+            DetachedWindowMetrics.fixedDashboardContentSize(
+                isLoggedIn: isLoggedIn,
+                screen: window.screen
+            )
+        case .settings:
+            NSSize(
+                width: DetachedWindowMetrics.dashboardWidth,
+                height: min(
+                    DetachedWindowMetrics.settingsHeight,
+                    DetachedWindowMetrics.maximumContentHeight(for: window.screen)
+                )
+            )
+        }
+
+        resizeWindow(to: targetSize, animate: false)
+    }
+
+    /// 以窗口顶边为锚点调整尺寸，避免关闭设置页时窗口从下往上“弹回”。
+    private func resizeWindow(to targetSize: NSSize, animate: Bool) {
+        guard window.frame.size != targetSize else { return }
 
         var frame = window.frame
-        frame.origin.y += frame.height - target
-        frame.size.height = target
-        window.setFrame(frame, display: true, animate: true)
+        frame.origin.y += frame.size.height - targetSize.height
+        frame.size = targetSize
+
+        isProgrammaticResize = true
+        window.setFrame(frame, display: true, animate: animate)
+        isProgrammaticResize = false
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -124,22 +175,31 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        DetachedWindowMetrics.clampContentSize(frameSize, screen: sender.screen)
+        switch contentMode {
+        case let .dashboard(isLoggedIn):
+            DetachedWindowMetrics.fixedDashboardContentSize(isLoggedIn: isLoggedIn, screen: sender.screen)
+        case .settings:
+            DetachedWindowMetrics.clampSettingsContentSize(frameSize, screen: sender.screen)
+        }
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
+        guard !isProgrammaticResize, let window = notification.object as? NSWindow else { return }
 
-        let clampedFrameSize = DetachedWindowMetrics.clampContentSize(window.frame.size, screen: window.screen)
-        guard window.frame.size != clampedFrameSize else { return }
-        var frame = window.frame
-        frame.size = clampedFrameSize
-        window.setFrame(frame, display: true)
+        let clampedFrameSize: NSSize = switch contentMode {
+        case let .dashboard(isLoggedIn):
+            DetachedWindowMetrics.fixedDashboardContentSize(isLoggedIn: isLoggedIn, screen: window.screen)
+        case .settings:
+            DetachedWindowMetrics.clampSettingsContentSize(window.frame.size, screen: window.screen)
+        }
+
+        resizeWindow(to: clampedFrameSize, animate: false)
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
-        applyContentSizeLimits(to: window)
+        guard notification.object is NSWindow else { return }
+        applyContentSizeLimits(for: contentMode)
+        applyContentLayout(contentMode)
     }
 
     private func applyWindowChrome(for theme: AppThemePreference? = nil) {
@@ -160,27 +220,33 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func applyContentSizeLimits(to window: NSWindow) {
+    private func applyContentSizeLimits(for mode: DetachedWindowContentMode) {
         let dynamicMaxHeight = DetachedWindowMetrics.maximumContentHeight(for: window.screen)
         let dynamicMinHeight = min(DetachedWindowMetrics.minHeight, dynamicMaxHeight)
-        let frameMin = NSSize(
-            width: DetachedWindowMetrics.minWidth,
-            height: dynamicMinHeight
-        )
-        let frameMax = NSSize(
-            width: DetachedWindowMetrics.maxWidth,
-            height: dynamicMaxHeight
-        )
+
+        let frameMin: NSSize
+        let frameMax: NSSize
+
+        switch mode {
+        case let .dashboard(isLoggedIn):
+            let fixedSize = DetachedWindowMetrics.fixedDashboardContentSize(
+                isLoggedIn: isLoggedIn,
+                screen: window.screen
+            )
+            frameMin = fixedSize
+            frameMax = fixedSize
+        case .settings:
+            frameMin = NSSize(
+                width: DetachedWindowMetrics.dashboardWidth,
+                height: dynamicMinHeight
+            )
+            frameMax = NSSize(
+                width: DetachedWindowMetrics.maxWidth,
+                height: dynamicMaxHeight
+            )
+        }
 
         window.minSize = frameMin
         window.maxSize = frameMax
-
-        let currentFrameSize = window.frame.size
-        let clampedFrameSize = DetachedWindowMetrics.clampContentSize(currentFrameSize, screen: window.screen)
-        if currentFrameSize != clampedFrameSize {
-            var frame = window.frame
-            frame.size = clampedFrameSize
-            window.setFrame(frame, display: false)
-        }
     }
 }

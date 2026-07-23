@@ -9,11 +9,11 @@ struct DetachedUsageWindowView: View {
     @Bindable var companionStatsStore: CompanionStatsStore
     @Bindable var updater: AppUpdateController
     let actions: UsageActions
-    let onPreferredHeightChanged: (CGFloat) -> Void
+    let onContentLayoutChanged: (DetachedWindowContentMode) -> Void
     @State private var showsSettings = false
 
-    private var dashboardPreferredHeight: CGFloat {
-        min(DetachedWindowMetrics.maxHeight, store.isLoggedIn ? 570 : 440)
+    private var dashboardContentMode: DetachedWindowContentMode {
+        .dashboard(isLoggedIn: store.isLoggedIn)
     }
 
     var body: some View {
@@ -27,11 +27,11 @@ struct DetachedUsageWindowView: View {
                     onLogout: {
                         actions.disconnect()
                         showsSettings = false
-                        onPreferredHeightChanged(440)
+                        onContentLayoutChanged(.dashboard(isLoggedIn: false))
                     }
                 ) {
                     showsSettings = false
-                    onPreferredHeightChanged(dashboardPreferredHeight)
+                    onContentLayoutChanged(dashboardContentMode)
                 }
             } else {
                 CompanionDashboardView(
@@ -45,31 +45,25 @@ struct DetachedUsageWindowView: View {
                     showsDetachedButton: false,
                     onOpenSettings: {
                         showsSettings = true
-                        onPreferredHeightChanged(DetachedWindowMetrics.settingsHeight)
+                        onContentLayoutChanged(.settings)
                     }
                 )
             }
         }
-        .frame(
-            minWidth: DetachedWindowMetrics.minWidth,
-            maxWidth: DetachedWindowMetrics.maxWidth,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .preferredColorScheme(settings.resolvedColorScheme)
         .background(Color.codexBackground)
         .ignoresSafeArea(.container, edges: .top)
         .onAppear {
-            onPreferredHeightChanged(dashboardPreferredHeight)
+            onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: store.snapshot.resetCoupons) { _, _ in
             guard !showsSettings else { return }
-            onPreferredHeightChanged(dashboardPreferredHeight)
+            onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: store.isLoggedIn) { _, _ in
             guard !showsSettings else { return }
-            onPreferredHeightChanged(dashboardPreferredHeight)
+            onContentLayoutChanged(dashboardContentMode)
         }
     }
 }

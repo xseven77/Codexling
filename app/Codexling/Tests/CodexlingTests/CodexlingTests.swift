@@ -239,10 +239,11 @@ final class CodexlingTests: XCTestCase {
             XCTAssertLessThanOrEqual(maximum, visibleHeight - 32)
         }
 
-        let clamped = DetachedWindowMetrics.clampContentSize(
+        let clamped = DetachedWindowMetrics.clampSettingsContentSize(
             NSSize(width: 460, height: 10_000),
             screen: NSScreen.main
         )
+        XCTAssertGreaterThanOrEqual(clamped.width, DetachedWindowMetrics.dashboardWidth)
         XCTAssertLessThanOrEqual(clamped.height, maximum)
     }
 
