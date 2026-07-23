@@ -23,7 +23,26 @@ final class PetFrameStore {
         selectedPet = pet
         self.activityState = activityState
         player.setPet(pet)
+        guard !player.isPlayingOneShot else { return }
         player.setState(activityState.petAnimationState)
+    }
+
+    var canPlayIdleInteraction: Bool {
+        switch activityState {
+        case .idle, .unavailable:
+            true
+        default:
+            false
+        }
+    }
+
+    func playRandomIdleAction() {
+        guard canPlayIdleInteraction else { return }
+        guard let action = PetAnimationState.idleInteractionCandidates.randomElement() else { return }
+        player.playOneShot(action) { [weak self] in
+            guard let self else { return }
+            player.setState(activityState.petAnimationState)
+        }
     }
 
     func stop() {

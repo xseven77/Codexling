@@ -45,6 +45,11 @@ final class CodexlingTests: XCTestCase {
         let waiting = PetAnimationContract.sequence(for: .waiting, reducedMotion: true)
         XCTAssertEqual(waiting.frames, [PetAnimationFrame(row: 6, column: 0, duration: 0.15)])
         XCTAssertNil(waiting.loopStartIndex)
+
+        let wavingOneShot = PetAnimationContract.oneShotSequence(for: .waving, reducedMotion: false)
+        XCTAssertEqual(wavingOneShot.frames.count, 12)
+        XCTAssertNil(wavingOneShot.loopStartIndex)
+        XCTAssertEqual(wavingOneShot.frames.first?.row, 3)
     }
 
     func testAutomaticPetBackgroundMapsQuotaHealth() {

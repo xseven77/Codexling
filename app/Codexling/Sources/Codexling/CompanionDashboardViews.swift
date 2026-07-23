@@ -35,7 +35,7 @@ struct CompanionDashboardView: View {
                 snapshot: store.snapshot,
                 activity: activityStore.snapshot,
                 settings: settings,
-                frame: frameStore.currentFrame,
+                frameStore: frameStore,
                 todayMinutes: companionStatsStore.todayMinutes
             )
             .frame(width: DetachedWindowMetrics.sidebarWidth)
@@ -901,7 +901,7 @@ private struct CompanionSidebar: View {
     let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
     @Bindable var settings: AppSettingsStore
-    let frame: NSImage?
+    @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
 
     private var accountName: String {
@@ -998,26 +998,33 @@ private struct CompanionSidebar: View {
 
     @ViewBuilder
     private var petView: some View {
-        if let frame {
-            Image(nsImage: frame)
-                .resizable()
-                .interpolation(.none)
-                .scaledToFit()
-                .accessibilityLabel("\(settings.selectedPet?.displayName ?? "Pet") 动画")
-        } else if let pet = settings.selectedPet {
-            PetStaticFrameView(pet: pet)
-                .accessibilityLabel("\(pet.displayName) 静态预览")
-        } else {
-            VStack(spacing: 9) {
-                Circle()
-                    .fill(activity.state.statusColor.opacity(0.14))
-                    .frame(width: 76, height: 76)
-                    .overlay(Circle().fill(activity.state.statusColor).frame(width: 12, height: 12))
-                Text("未找到可用 Pet")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.codexMuted)
+        Group {
+            if let frame = frameStore.currentFrame {
+                Image(nsImage: frame)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+                    .accessibilityLabel("\(settings.selectedPet?.displayName ?? "Pet") 动画")
+            } else if let pet = settings.selectedPet {
+                PetStaticFrameView(pet: pet)
+                    .accessibilityLabel("\(pet.displayName) 静态预览")
+            } else {
+                VStack(spacing: 9) {
+                    Circle()
+                        .fill(activity.state.statusColor.opacity(0.14))
+                        .frame(width: 76, height: 76)
+                        .overlay(Circle().fill(activity.state.statusColor).frame(width: 12, height: 12))
+                    Text("未找到可用 Pet")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            frameStore.playRandomIdleAction()
+        }
+        .accessibilityHint(frameStore.canPlayIdleInteraction ? "点击播放随机动作" : "")
     }
 }
 

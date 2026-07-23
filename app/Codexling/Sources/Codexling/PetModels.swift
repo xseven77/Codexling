@@ -367,7 +367,7 @@ private extension Data {
     }
 }
 
-enum PetAnimationState: String, Sendable {
+enum PetAnimationState: String, Sendable, CaseIterable {
     case idle
     case running
     case review
@@ -375,6 +375,10 @@ enum PetAnimationState: String, Sendable {
     case failed
     case waving
     case jumping
+
+    static var idleInteractionCandidates: [PetAnimationState] {
+        allCases.filter { $0 != .idle }
+    }
 }
 
 struct PetAnimationFrame: Equatable, Sendable {
@@ -431,6 +435,35 @@ enum PetAnimationContract {
             frames: reaction + slowIdle,
             loopStartIndex: reaction.count
         )
+    }
+
+    static func oneShotSequence(
+        for state: PetAnimationState,
+        reducedMotion: Bool
+    ) -> PetAnimationSequence {
+        let stateFrames: [PetAnimationFrame] = switch state {
+        case .idle:
+            idle
+        case .running:
+            frames(row: 7, count: 6, duration: 120, finalDuration: 220)
+        case .review:
+            frames(row: 8, count: 6, duration: 150, finalDuration: 280)
+        case .waiting:
+            frames(row: 6, count: 6, duration: 150, finalDuration: 260)
+        case .failed:
+            frames(row: 5, count: 8, duration: 140, finalDuration: 240)
+        case .waving:
+            frames(row: 3, count: 4, duration: 140, finalDuration: 280)
+        case .jumping:
+            frames(row: 4, count: 5, duration: 140, finalDuration: 280)
+        }
+
+        if reducedMotion {
+            return PetAnimationSequence(frames: [stateFrames[0]], loopStartIndex: nil)
+        }
+
+        let reaction = stateFrames + stateFrames + stateFrames
+        return PetAnimationSequence(frames: reaction, loopStartIndex: nil)
     }
 
     private static func frames(row: Int, durations: [Int]) -> [PetAnimationFrame] {
@@ -499,6 +532,8 @@ final class PetAnimationPlayer {
     private var sequence = PetAnimationContract.sequence(for: .idle, reducedMotion: false)
     private var frameIndex = 0
     private var timer: Timer?
+    private(set) var isPlayingOneShot = false
+    private var oneShotCompletion: (() -> Void)?
 
     func setPet(_ pet: CodexPet?) {
         guard pet?.id != petID else { return }
@@ -508,22 +543,45 @@ final class PetAnimationPlayer {
     }
 
     func setState(_ newState: PetAnimationState) {
+        guard !isPlayingOneShot else { return }
         guard newState != state else { return }
         state = newState
         restart()
     }
 
+    func playOneShot(_ action: PetAnimationState, onComplete: @escaping () -> Void) {
+        guard action != .idle else { return }
+        stop()
+        isPlayingOneShot = true
+        oneShotCompletion = onComplete
+        state = action
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        sequence = PetAnimationContract.oneShotSequence(for: action, reducedMotion: reducedMotion)
+        frameIndex = 0
+        showCurrentFrame()
+    }
+
     func stop() {
         timer?.invalidate()
         timer = nil
+        isPlayingOneShot = false
+        oneShotCompletion = nil
     }
 
     private func restart() {
         stop()
+        isPlayingOneShot = false
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         sequence = PetAnimationContract.sequence(for: state, reducedMotion: reducedMotion)
         frameIndex = 0
         showCurrentFrame()
+    }
+
+    private func finishOneShot() {
+        isPlayingOneShot = false
+        let completion = oneShotCompletion
+        oneShotCompletion = nil
+        completion?()
     }
 
     private func showCurrentFrame() {
@@ -547,6 +605,9 @@ final class PetAnimationPlayer {
         let next = frameIndex + 1
         if next < sequence.frames.count {
             frameIndex = next
+        } else if isPlayingOneShot {
+            finishOneShot()
+            return
         } else if let loopStartIndex = sequence.loopStartIndex {
             frameIndex = loopStartIndex
         } else {
