@@ -112,7 +112,6 @@ private struct ResetCouponDisplayTicket: Identifiable {
 
 private struct ResetCouponSummaryView: View {
     let coupons: [ResetCoupon]
-    @State private var selectedIndex = 0
 
     private var tickets: [ResetCouponDisplayTicket] {
         coupons.flatMap { coupon in
@@ -178,23 +177,9 @@ private struct ResetCouponSummaryView: View {
             } else {
                 ResetCouponTicketDeck(
                     tickets: tickets,
-                    selectedIndex: selectedIndex,
-                    formattedExpiration: formattedExpiration,
-                    onSwitch: showNextTicket
+                    formattedExpiration: formattedExpiration
                 )
             }
-        }
-        .onChange(of: tickets.map(\.id)) { _, ids in
-            if ids.isEmpty || selectedIndex >= ids.count {
-                selectedIndex = 0
-            }
-        }
-    }
-
-    private func showNextTicket() {
-        guard !tickets.isEmpty else { return }
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-            selectedIndex = (selectedIndex + 1) % tickets.count
         }
     }
 
@@ -213,9 +198,15 @@ private struct ResetCouponSummaryView: View {
 
 private struct ResetCouponTicketDeck: View {
     let tickets: [ResetCouponDisplayTicket]
-    let selectedIndex: Int
     let formattedExpiration: (String) -> String
-    let onSwitch: () -> Void
+
+    @State private var selectedIndex = 0
+    @State private var outgoingIndex: Int?
+    @State private var shuffleProgress: CGFloat = 0
+    @State private var stackReduced = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isShuffling: Bool { outgoingIndex != nil }
 
     private var selectedTicket: ResetCouponDisplayTicket {
         tickets[selectedIndex]
@@ -226,23 +217,37 @@ private struct ResetCouponTicketDeck: View {
         min(ResetCouponTicketMetrics.maxStackLayers, tickets.count)
     }
 
-    private var backLayerDepths: [Int] {
+    /// 静止时背景层；切换离场时少 1 层，模拟顶部券被抽出。
+    private var displayedBackLayerDepths: [Int] {
+        guard tickets.count > 1 else { return [] }
+        let backCount = stackReduced
+            ? max(0, visibleStackCount - 2)
+            : visibleStackCount - 1
+        guard backCount > 0 else { return [] }
+        return Array(1...backCount)
+    }
+
+    private var restBackLayerDepths: [Int] {
         guard tickets.count > 1 else { return [] }
         return Array(1..<visibleStackCount)
     }
 
     private var deepestBackOffset: CGFloat {
-        CGFloat(backLayerDepths.last ?? 0) * ResetCouponTicketMetrics.stackOffsetY
+        CGFloat(restBackLayerDepths.last ?? 0) * ResetCouponTicketMetrics.stackOffsetY
     }
 
     private var deckHeight: CGFloat {
-        ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (backLayerDepths.isEmpty ? 4 : 8)
+        ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (restBackLayerDepths.isEmpty ? 4 : 8)
+    }
+
+    private var shuffleAnimation: Animation {
+        .spring(response: 0.38, dampingFraction: 0.86)
     }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(backLayerDepths.reversed(), id: \.self) { depth in
-                ResetCouponStackLayer(depth: depth, totalBackLayers: backLayerDepths.count)
+            ForEach(displayedBackLayerDepths.reversed(), id: \.self) { depth in
+                ResetCouponStackLayer(depth: depth, totalBackLayers: restBackLayerDepths.count)
                     .scaleEffect(
                         1 - CGFloat(depth) * ResetCouponTicketMetrics.stackScaleStep,
                         anchor: .topLeading
@@ -254,22 +259,115 @@ private struct ResetCouponTicketDeck: View {
                     .zIndex(Double(depth))
             }
 
-            ResetCouponTicketCard(
-                name: selectedTicket.name,
-                source: selectedTicket.source,
-                expiresAt: formattedExpiration(selectedTicket.expiresAt),
+            ResetCouponDeckTicket(
+                ticket: selectedTicket,
                 position: selectedIndex + 1,
                 total: tickets.count,
-                stackDepth: 0,
+                formattedExpiration: formattedExpiration,
                 isFront: true,
-                onSwitch: tickets.count > 1 ? onSwitch : nil
+                onSwitch: tickets.count > 1 && !isShuffling ? { cycleTicket() } : nil
             )
             .zIndex(Double(visibleStackCount + 1))
+
+            if let outgoingIndex {
+                ResetCouponDeckTicket(
+                    ticket: tickets[outgoingIndex],
+                    position: outgoingIndex + 1,
+                    total: tickets.count,
+                    formattedExpiration: formattedExpiration,
+                    isFront: true,
+                    onSwitch: nil
+                )
+                .modifier(ResetCouponShuffleOutgoing(progress: shuffleProgress))
+                .zIndex(Double(visibleStackCount + 2))
+                .allowsHitTesting(false)
+            }
         }
-        .padding(.bottom, backLayerDepths.isEmpty ? 6 : 8)
+        .animation(shuffleAnimation, value: displayedBackLayerDepths)
+        .padding(.bottom, restBackLayerDepths.isEmpty ? 6 : 8)
         .frame(height: deckHeight, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("重置券 \(tickets.count) 张，当前第 \(selectedIndex + 1) 张")
+        .onChange(of: tickets.map(\.id)) { _, ids in
+            if ids.isEmpty || selectedIndex >= ids.count {
+                selectedIndex = 0
+                outgoingIndex = nil
+                shuffleProgress = 0
+                stackReduced = false
+            }
+        }
+    }
+
+    private func cycleTicket() {
+        guard tickets.count > 1, outgoingIndex == nil else { return }
+
+        if reduceMotion {
+            selectedIndex = (selectedIndex + 1) % tickets.count
+            return
+        }
+
+        let previousIndex = selectedIndex
+        outgoingIndex = previousIndex
+        selectedIndex = (previousIndex + 1) % tickets.count
+        shuffleProgress = 0
+
+        withAnimation(shuffleAnimation) {
+            stackReduced = true
+            shuffleProgress = 1
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(390))
+            var cleanup = Transaction()
+            cleanup.disablesAnimations = true
+            withTransaction(cleanup) {
+                outgoingIndex = nil
+                shuffleProgress = 0
+            }
+            withAnimation(shuffleAnimation) {
+                stackReduced = false
+            }
+        }
+    }
+}
+
+private struct ResetCouponShuffleOutgoing: ViewModifier {
+    let progress: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(1 - 0.024 * progress, anchor: .topLeading)
+            .rotationEffect(
+                .degrees(Double(ResetCouponTicketMetrics.shuffleRotation * progress)),
+                anchor: .topLeading
+            )
+            .offset(
+                x: ResetCouponTicketMetrics.shuffleSlideX * progress,
+                y: ResetCouponTicketMetrics.shuffleSlideY * progress
+            )
+            .opacity(Double(1 - progress))
+    }
+}
+
+private struct ResetCouponDeckTicket: View {
+    let ticket: ResetCouponDisplayTicket
+    let position: Int
+    let total: Int
+    let formattedExpiration: (String) -> String
+    let isFront: Bool
+    let onSwitch: (() -> Void)?
+
+    var body: some View {
+        ResetCouponTicketCard(
+            name: ticket.name,
+            source: ticket.source,
+            expiresAt: formattedExpiration(ticket.expiresAt),
+            position: position,
+            total: total,
+            stackDepth: 0,
+            isFront: isFront,
+            onSwitch: onSwitch
+        )
     }
 }
 
@@ -282,6 +380,9 @@ private enum ResetCouponTicketMetrics {
     static let stackOffsetX: CGFloat = 2.5
     static let stackOffsetY: CGFloat = 5
     static let stackScaleStep: CGFloat = 0.016
+    static let shuffleSlideX: CGFloat = 46
+    static let shuffleSlideY: CGFloat = 11
+    static let shuffleRotation: CGFloat = 7
 }
 
 private struct ResetCouponTicketShape: Shape {
@@ -500,16 +601,17 @@ private struct ResetCouponStubSection: View {
     let onSwitch: (() -> Void)?
 
     var body: some View {
-        Group {
+        ZStack {
+            stubContent
+
             if total > 1, let onSwitch {
                 Button(action: onSwitch) {
-                    stubContent
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
                 .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
-            } else {
-                stubContent
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
