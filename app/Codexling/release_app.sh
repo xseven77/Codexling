@@ -204,11 +204,29 @@ build_release_artifacts() {
   [[ -f "${ZIP_PATH}" ]] || fail "ZIP 未生成：${ZIP_PATH}"
 }
 
+release_dmg_image_if_busy() {
+  hdiutil detach "${DMG_PATH}" >/dev/null 2>&1 || true
+}
+
 verify_dmg() {
-  local mount_output mount_point
+  local mount_output mount_point attempt
 
   info "挂载验证 DMG 内容"
-  mount_output="$(hdiutil attach "${DMG_PATH}" -nobrowse -readonly)"
+  release_dmg_image_if_busy
+
+  mount_output=""
+  for attempt in 1 2 3 4 5 6; do
+    if mount_output="$(hdiutil attach "${DMG_PATH}" -nobrowse -readonly 2>&1)"; then
+      break
+    fi
+    if [[ "${attempt}" -eq 6 ]]; then
+      printf "%s\n" "${mount_output}"
+      fail "无法挂载 DMG：${DMG_PATH}。若仍失败，可先执行：hdiutil detach \"${DMG_PATH}\""
+    fi
+    release_dmg_image_if_busy
+    sleep 1
+  done
+
   mount_point="$(printf "%s\n" "${mount_output}" | awk -F'\t' '/\/Volumes\// {print $NF; exit}')"
 
   if [[ -z "${mount_point}" || ! -d "${mount_point}" ]]; then
