@@ -229,7 +229,7 @@ struct UsagePanel: View {
                 }
                 .padding(.leading, accountTitleLeadingPadding)
                 .offset(y: accountTitleVerticalOffset)
-                Text("\(snapshot.accountEmail) · \(snapshot.workspaceName) · \(snapshot.planName)")
+                Text("\(snapshot.accountEmail) · \(snapshot.workspaceName)")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)

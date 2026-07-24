@@ -54,28 +54,53 @@ final class AppUpdateController {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
     }
 
-    var statusText: String {
+    /// 设置页「应用」区块副标题：与主标题版本号配合，覆盖检查 / 下载 / 安装全链路。
+    var settingsStatusLine: String {
         switch phase {
         case .idle:
             if let lastCheckedAt {
-                return "上次检查：\(UsageDateFormat.display(lastCheckedAt))"
+                return "上次检查于 \(UsageDateFormat.display(lastCheckedAt))，可再次检查"
             }
-            return "当前版本 \(currentVersion)（\(currentBuild)）"
+            return "通过 GitHub Releases 检查并安装新版本"
         case .checking:
-            return "正在检查更新…"
+            return "正在连接 GitHub Releases…"
         case .upToDate:
-            return "已是最新版本 \(currentVersion)"
+            if let lastCheckedAt {
+                return "已是最新版本（\(UsageDateFormat.display(lastCheckedAt)) 检查）"
+            }
+            return "已是最新版本"
         case .available:
             if let latestRelease {
-                return "发现新版本 \(latestRelease.version)"
+                return "发现新版本 \(latestRelease.version)，可下载并安装"
             }
-            return "发现新版本"
+            return "发现新版本，可下载并安装"
         case .downloading:
-            return "正在下载… \(Int((downloadProgress * 100).rounded()))%"
+            let percent = Int((downloadProgress * 100).rounded())
+            if let latestRelease {
+                return "正在下载 \(latestRelease.version)… \(percent)%"
+            }
+            return "正在下载安装包… \(percent)%"
         case .installing:
-            return "正在安装并准备重启…"
+            return "正在安装，完成后将自动重启"
         case .failed(let message):
             return message
+        }
+    }
+
+    var settingsPrimaryActionTitle: String {
+        switch phase {
+        case .checking:
+            "检查中…"
+        case .available:
+            "下载并安装"
+        case .downloading:
+            "下载中…"
+        case .installing:
+            "安装中…"
+        case .failed:
+            "重新检查"
+        default:
+            "检查更新"
         }
     }
 
@@ -103,7 +128,7 @@ final class AppUpdateController {
                     self.phase = .upToDate
                 }
             } catch {
-                self.phase = .failed(error.localizedDescription)
+                self.phase = .failed(Self.checkFailureMessage(for: error))
             }
         }
     }
@@ -123,9 +148,23 @@ final class AppUpdateController {
                 try await self.installFromDMG(at: dmgURL, expectedAppName: "Codexling.app")
                 self.relaunchAfterInstall()
             } catch {
-                self.phase = .failed(error.localizedDescription)
+                self.phase = .failed(Self.installFailureMessage(for: error))
             }
         }
+    }
+
+    private static func checkFailureMessage(for error: Error) -> String {
+        if let updateError = error as? AppUpdateError, let detail = updateError.errorDescription {
+            return "检查失败：\(detail)"
+        }
+        return "检查失败：\(error.localizedDescription)"
+    }
+
+    private static func installFailureMessage(for error: Error) -> String {
+        if let updateError = error as? AppUpdateError, let detail = updateError.errorDescription {
+            return "更新失败：\(detail)"
+        }
+        return "更新失败：\(error.localizedDescription)"
     }
 
     private func fetchLatestRelease() async throws -> AppReleaseInfo {
@@ -315,17 +354,17 @@ enum AppUpdateError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .network:
-            "网络请求失败，请稍后重试"
+            "无法连接网络，请稍后重试"
         case .httpStatus(let code):
-            "检查更新失败（HTTP \(code)）"
+            "GitHub 返回错误（HTTP \(code)），请稍后重试"
         case .invalidRelease:
-            "无法解析 GitHub Release 信息"
+            "无法解析 Release 信息"
         case .missingDMG:
-            "最新 Release 中未找到 DMG 安装包"
+            "Release 中未找到 DMG 安装包"
         case .missingAppInDMG:
-            "DMG 中未找到 Codexling.app"
+            "安装包中未找到 Codexling.app"
         case .shellFailed(let detail):
-            "安装失败：\(detail)"
+            detail
         }
     }
 }

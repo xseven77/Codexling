@@ -201,12 +201,6 @@ private struct ResetCouponTicketDeck: View {
     let formattedExpiration: (String) -> String
 
     @State private var selectedIndex = 0
-    @State private var outgoingIndex: Int?
-    @State private var shuffleProgress: CGFloat = 0
-    @State private var stackReduced = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var isShuffling: Bool { outgoingIndex != nil }
 
     private var selectedTicket: ResetCouponDisplayTicket {
         tickets[selectedIndex]
@@ -217,12 +211,9 @@ private struct ResetCouponTicketDeck: View {
         min(ResetCouponTicketMetrics.maxStackLayers, tickets.count)
     }
 
-    /// 静止时背景层；切换离场时少 1 层，模拟顶部券被抽出。
     private var displayedBackLayerDepths: [Int] {
         guard tickets.count > 1 else { return [] }
-        let backCount = stackReduced
-            ? max(0, visibleStackCount - 2)
-            : visibleStackCount - 1
+        let backCount = visibleStackCount - 1
         guard backCount > 0 else { return [] }
         return Array(1...backCount)
     }
@@ -238,15 +229,6 @@ private struct ResetCouponTicketDeck: View {
 
     private var deckHeight: CGFloat {
         ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (restBackLayerDepths.isEmpty ? 4 : 8)
-    }
-
-    private var stackSettleAnimation: Animation {
-        .spring(response: 0.42, dampingFraction: 0.88)
-    }
-
-    /// Pull-and-toss: soft lift, then accelerate off the stub side.
-    private var tossAnimation: Animation {
-        .timingCurve(0.18, 0.72, 0.28, 1.0, duration: ResetCouponTicketMetrics.shuffleDuration)
     }
 
     var body: some View {
@@ -270,25 +252,10 @@ private struct ResetCouponTicketDeck: View {
                 total: tickets.count,
                 formattedExpiration: formattedExpiration,
                 isFront: true,
-                onSwitch: tickets.count > 1 && !isShuffling ? { cycleTicket() } : nil
+                onSwitch: tickets.count > 1 ? { cycleTicket() } : nil
             )
             .zIndex(Double(visibleStackCount + 1))
-
-            if let outgoingIndex {
-                ResetCouponDeckTicket(
-                    ticket: tickets[outgoingIndex],
-                    position: outgoingIndex + 1,
-                    total: tickets.count,
-                    formattedExpiration: formattedExpiration,
-                    isFront: true,
-                    onSwitch: nil
-                )
-                .modifier(ResetCouponShuffleOutgoing(progress: shuffleProgress))
-                .zIndex(Double(visibleStackCount + 2))
-                .allowsHitTesting(false)
-            }
         }
-        .animation(stackSettleAnimation, value: displayedBackLayerDepths)
         .padding(.bottom, restBackLayerDepths.isEmpty ? 6 : 8)
         .frame(height: deckHeight, alignment: .top)
         .accessibilityElement(children: .contain)
@@ -296,113 +263,13 @@ private struct ResetCouponTicketDeck: View {
         .onChange(of: tickets.map(\.id)) { _, ids in
             if ids.isEmpty || selectedIndex >= ids.count {
                 selectedIndex = 0
-                outgoingIndex = nil
-                shuffleProgress = 0
-                stackReduced = false
             }
         }
     }
 
     private func cycleTicket() {
-        guard tickets.count > 1, outgoingIndex == nil else { return }
-
-        if reduceMotion {
-            selectedIndex = (selectedIndex + 1) % tickets.count
-            return
-        }
-
-        let previousIndex = selectedIndex
-        outgoingIndex = previousIndex
-        selectedIndex = (previousIndex + 1) % tickets.count
-        shuffleProgress = 0
-
-        withAnimation(stackSettleAnimation) {
-            stackReduced = true
-        }
-        withAnimation(tossAnimation) {
-            shuffleProgress = 1
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(
-                for: .milliseconds(Int(ResetCouponTicketMetrics.shuffleDuration * 1000) + 40)
-            )
-            var cleanup = Transaction()
-            cleanup.disablesAnimations = true
-            withTransaction(cleanup) {
-                outgoingIndex = nil
-                shuffleProgress = 0
-            }
-            withAnimation(stackSettleAnimation) {
-                stackReduced = false
-            }
-        }
-    }
-}
-
-/// Skeuomorphic exit: peel up from the stack, yank by the stub, then fall away.
-private struct ResetCouponShuffleOutgoing: ViewModifier {
-    let progress: CGFloat
-
-    func body(content: Content) -> some View {
-        let lift = liftAmount(progress)
-        let travel = travelAmount(progress)
-        let fade = fadeAmount(progress)
-
-        content
-            .compositingGroup()
-            .shadow(
-                color: Color.black.opacity(0.10 + 0.14 * Double(lift)),
-                radius: 2 + 7 * lift,
-                x: 0,
-                y: 1 + 5 * lift
-            )
-            .rotation3DEffect(
-                .degrees(Double(-10 * lift - 14 * travel)),
-                axis: (x: 0.18, y: 1, z: 0.06),
-                anchor: .trailing,
-                anchorZ: 0,
-                perspective: 0.55
-            )
-            .rotationEffect(
-                .degrees(Double(ResetCouponTicketMetrics.shuffleTwist * travel)),
-                anchor: .trailing
-            )
-            .scaleEffect(
-                1 + 0.028 * lift - 0.05 * travel,
-                anchor: .trailing
-            )
-            .offset(
-                x: ResetCouponTicketMetrics.shuffleSlideX * travel,
-                y: -ResetCouponTicketMetrics.shuffleLiftY * lift
-                    + ResetCouponTicketMetrics.shuffleFallY * travel * travel
-            )
-            .opacity(Double(1 - fade))
-    }
-
-    /// Soft paper lift that peaks early, then settles as the ticket flies away.
-    private func liftAmount(_ t: CGFloat) -> CGFloat {
-        let peak: CGFloat = 0.28
-        if t <= peak {
-            let u = t / peak
-            return sin(u * .pi / 2)
-        }
-        let u = (t - peak) / max(0.001, 1 - peak)
-        return max(0, 1 - u * u)
-    }
-
-    /// Ease-in travel so the yank accelerates off the stub.
-    private func travelAmount(_ t: CGFloat) -> CGFloat {
-        let delayed = max(0, (t - 0.06) / 0.94)
-        return delayed * delayed * (3 - 2 * delayed)
-    }
-
-    /// Only dissolve once most of the ticket has left the deck.
-    private func fadeAmount(_ t: CGFloat) -> CGFloat {
-        let start: CGFloat = 0.62
-        guard t > start else { return 0 }
-        let u = (t - start) / (1 - start)
-        return u * u
+        guard tickets.count > 1 else { return }
+        selectedIndex = (selectedIndex + 1) % tickets.count
     }
 }
 
@@ -437,11 +304,6 @@ private enum ResetCouponTicketMetrics {
     static let stackOffsetX: CGFloat = 2.5
     static let stackOffsetY: CGFloat = 5
     static let stackScaleStep: CGFloat = 0.016
-    static let shuffleDuration: TimeInterval = 0.52
-    static let shuffleSlideX: CGFloat = 118
-    static let shuffleLiftY: CGFloat = 10
-    static let shuffleFallY: CGFloat = 34
-    static let shuffleTwist: CGFloat = 5.5
 }
 
 private struct ResetCouponTicketShape: Shape {
@@ -764,7 +626,6 @@ private struct ResetCouponTicketCard: View {
     let isFront: Bool
     let onSwitch: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
-    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -864,24 +725,6 @@ private struct ResetCouponTicketCard: View {
             .allowsHitTesting(false)
         }
         .overlay { innerHighlight }
-        .overlay {
-            GeometryReader { geometry in
-                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
-                ZStack {
-                    ForEach(ripples) { ripple in
-                        CodexMaterialWave(
-                            origin: ripple.location,
-                            diameter: coverDiameter
-                        ) {
-                            ripples.removeAll { $0.id == ripple.id }
-                        }
-                    }
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-            .allowsHitTesting(false)
-            .clipShape(ResetCouponTicketShape())
-        }
         .coordinateSpace(name: Self.ticketSpace)
         .modifier(ResetCouponTicketShadow(isFront: isFront, isDark: isDark))
     }
@@ -937,16 +780,10 @@ private struct ResetCouponTicketCard: View {
             isFront: isFront,
             isDark: isDark,
             coordinateSpaceName: Self.ticketSpace,
-            onStubTap: onSwitch == nil ? nil : { location in
-                spawnRipple(at: location)
+            onStubTap: onSwitch == nil ? nil : { _ in
                 onSwitch?()
             }
         )
-    }
-
-    private func spawnRipple(at location: CGPoint) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     @ViewBuilder
@@ -1131,7 +968,7 @@ private struct CompanionSidebar: View {
             }
             Text(snapshot.accountEmail)
                 .lineLimit(1)
-            Text("\(snapshot.workspaceName) · \(snapshot.planName)")
+            Text(snapshot.workspaceName)
                 .lineLimit(1)
         }
             .font(.system(size: 10))

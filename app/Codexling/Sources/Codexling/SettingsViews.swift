@@ -143,7 +143,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Codexling \(updater.currentVersion)（\(updater.currentBuild)）")
                             .font(.system(size: 13, weight: .semibold))
-                        Text(updateStatusText)
+                        Text(updater.settingsStatusLine)
                             .font(.system(size: 11))
                             .foregroundStyle(statusColor)
                             .fixedSize(horizontal: false, vertical: true)
@@ -155,7 +155,7 @@ struct SettingsView: View {
                             title: "打开 GitHub Releases",
                             action: updater.openReleasesPage
                         )
-                        Button(primaryUpdateTitle, action: primaryUpdateAction)
+                        Button(updater.settingsPrimaryActionTitle, action: primaryUpdateAction)
                             .buttonStyle(CodexlingPetInstallButtonStyle())
                             .disabled(updater.phase.isBusy)
                     }
@@ -188,32 +188,6 @@ struct SettingsView: View {
             .codexGreen
         default:
             .codexMuted
-        }
-    }
-
-    private var updateStatusText: String {
-        switch updater.phase {
-        case .idle, .upToDate:
-            "通过 GitHub Releases 检查新版本"
-        default:
-            updater.statusText
-        }
-    }
-
-    private var primaryUpdateTitle: String {
-        switch updater.phase {
-        case .checking:
-            "检查中…"
-        case .available:
-            "下载并安装"
-        case .downloading:
-            "下载中…"
-        case .installing:
-            "安装中…"
-        case .failed:
-            "重新检查"
-        default:
-            "检查更新"
         }
     }
 
@@ -416,7 +390,6 @@ struct SettingsView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .buttonStyle(CodexPressableStyle())
         .fixedSize()
     }
 
@@ -647,7 +620,6 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .buttonStyle(CodexPressableStyle())
         .fixedSize(horizontal: true, vertical: false)
     }
 }
