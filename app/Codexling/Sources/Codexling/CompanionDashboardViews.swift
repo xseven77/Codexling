@@ -42,7 +42,11 @@ struct CompanionDashboardView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ActivityHeading(snapshot: activityStore.snapshot)
+                    ActivityHeading(
+                        activity: activityStore.snapshot,
+                        usage: store.snapshot,
+                        isLoggedIn: store.isLoggedIn
+                    )
 
                     TaskStackView(
                         snapshot: activityStore.snapshot,
@@ -626,6 +630,7 @@ private struct ResetCouponTicketCard: View {
     let isFront: Bool
     let onSwitch: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
+    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -725,6 +730,24 @@ private struct ResetCouponTicketCard: View {
             .allowsHitTesting(false)
         }
         .overlay { innerHighlight }
+        .overlay {
+            GeometryReader { geometry in
+                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
+                ZStack {
+                    ForEach(ripples) { ripple in
+                        CodexMaterialWave(
+                            origin: ripple.location,
+                            diameter: coverDiameter
+                        ) {
+                            ripples.removeAll { $0.id == ripple.id }
+                        }
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .allowsHitTesting(false)
+            .clipShape(ResetCouponTicketShape())
+        }
         .coordinateSpace(name: Self.ticketSpace)
         .modifier(ResetCouponTicketShadow(isFront: isFront, isDark: isDark))
     }
@@ -780,10 +803,16 @@ private struct ResetCouponTicketCard: View {
             isFront: isFront,
             isDark: isDark,
             coordinateSpaceName: Self.ticketSpace,
-            onStubTap: onSwitch == nil ? nil : { _ in
+            onStubTap: onSwitch == nil ? nil : { location in
+                spawnRipple(at: location)
                 onSwitch?()
             }
         )
+    }
+
+    private func spawnRipple(at location: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     @ViewBuilder
@@ -1050,25 +1079,81 @@ private struct PetStaticFrameView: View {
 }
 
 private struct ActivityHeading: View {
-    let snapshot: CodexActivitySnapshot
+    let activity: CodexActivitySnapshot
+    let usage: CodexUsageSnapshot
+    let isLoggedIn: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(snapshot.dashboardTitle)
+                Text(activity.dashboardTitle)
                     .font(.system(size: 20, weight: .semibold))
                     .lineLimit(1)
-                Text(snapshot.dashboardSubtitle)
+                Text(activity.dashboardSubtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Label("刚刚更新", systemImage: "arrow.clockwise")
-                .labelStyle(.titleAndIcon)
-                .font(.system(size: 10))
-                .foregroundStyle(Color.codexMuted)
+            QuotaAtAGlanceChip(usage: usage, isLoggedIn: isLoggedIn)
         }
+    }
+}
+
+private struct QuotaAtAGlanceChip: View {
+    let usage: CodexUsageSnapshot
+    let isLoggedIn: Bool
+
+    private var window: UsageWindow { usage.primaryWindow }
+    private var health: QuotaHealthLevel {
+        QuotaHealthLevel.from(window: window, isLoggedIn: isLoggedIn)
+    }
+
+    private var isAvailable: Bool {
+        isLoggedIn && window.total > 0
+    }
+
+    private var title: String {
+        guard isAvailable else { return "额度不可用" }
+        let name = window.label == "周额度" ? "本周" : window.label
+        return "\(name) \(window.percentText)"
+    }
+
+    private var helpText: String {
+        guard isAvailable else { return "登录并刷新后可查看额度余量" }
+        var parts = ["\(window.label) 剩余 \(window.amountText)"]
+        if !window.resetsAt.isEmpty {
+            parts.append("重置 \(UsageDateFormat.dateAndTime(window.resetsAt))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(health.color)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .foregroundStyle(isAvailable ? health.color : Color.codexMuted)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(
+            isAvailable ? health.color.opacity(0.10) : Color.codexMist.opacity(0.72),
+            in: Capsule(style: .continuous)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(
+                    isAvailable ? health.color.opacity(0.22) : Color.codexLine.opacity(0.75),
+                    lineWidth: 0.7
+                )
+        )
+        .help(helpText)
+        .accessibilityLabel("\(title)，\(helpText)")
     }
 }
 
@@ -1308,7 +1393,7 @@ private struct SyncFooterView: View {
         if isRefreshing {
             return "正在刷新…"
         }
-        let lastSuccess = UsageDateFormat.relative(snapshot.fetchedAt)
+        let lastSuccess = UsageDateFormat.syncTime(snapshot.fetchedAt)
         return hasRefreshError
             ? "\(snapshot.refreshState) · 上次成功：\(lastSuccess)"
             : "上次同步：\(lastSuccess)"
@@ -1322,26 +1407,25 @@ private struct SyncFooterView: View {
                 .lineLimit(1)
                 .help(hasRefreshError ? snapshot.refreshState : syncText)
             Spacer(minLength: 4)
-            Button(action: actions.openUsagePage) { Image(systemName: "arrow.up.right.square") }
-                .buttonStyle(DashboardIconButtonStyle())
-                .contentShape(RoundedRectangle(cornerRadius: 8))
-                .help("跳转到官方 Usage 页面")
-            Button(action: onOpenSettings) { Image(systemName: "gearshape") }
-                .buttonStyle(DashboardIconButtonStyle())
-                .help("设置")
-            if showsDetachedButton {
-                Button(action: actions.openDetachedWindow) { Image(systemName: "rectangle.on.rectangle.angled") }
-                    .buttonStyle(DashboardIconButtonStyle())
-                    .help("打开分离窗口")
+            HStack(spacing: 5) {
+                Button(action: onOpenSettings) { Image(systemName: "gearshape") }
+                    .buttonStyle(DashboardIconButtonStyle(helpText: "设置"))
+                Button(action: actions.openUsagePage) { Image(systemName: "arrow.up.right.square") }
+                    .buttonStyle(DashboardIconButtonStyle(helpText: "打开官方 Usage"))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                if showsDetachedButton {
+                    Button(action: actions.openDetachedWindow) { Image(systemName: "rectangle.on.rectangle.angled") }
+                        .buttonStyle(DashboardIconButtonStyle(helpText: "打开分离窗口"))
+                }
             }
             Button {
                 showQuitConfirmation = true
             } label: {
                 Image(systemName: "power")
             }
-            .buttonStyle(DashboardIconButtonStyle())
-            .help("关闭软件")
+            .buttonStyle(DashboardIconButtonStyle(helpText: "关闭软件"))
             .accessibilityLabel("关闭软件")
+            .padding(.leading, 2)
             Button(action: actions.refresh) {
                 if isRefreshing {
                     ProgressView()
@@ -1354,6 +1438,7 @@ private struct SyncFooterView: View {
             }
             .buttonStyle(DashboardRefreshButtonStyle())
             .disabled(isRefreshing)
+            .padding(.leading, 4)
         }
         .padding(.top, 14)
         .frame(height: 46, alignment: .bottom)
@@ -1432,6 +1517,8 @@ private struct CompanionLoginView: View {
 }
 
 private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
+    var helpText: String = ""
+
     func makeBody(configuration: Configuration) -> some View {
         CodexMaterialWaveButtonBody(
             action: { configuration.trigger() },
@@ -1444,6 +1531,7 @@ private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
                 .frame(width: 32, height: 32)
                 .background(Color.codexMist.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
         }
+        .help(helpText)
     }
 }
 

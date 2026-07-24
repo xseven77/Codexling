@@ -25,7 +25,12 @@ enum DetachedWindowMetrics {
     static let maxHeight: CGFloat = 960
     static let loginDashboardHeight: CGFloat = 440
     static let loggedInDashboardHeight: CGFloat = 510
-    static let settingsHeight: CGFloat = 860
+    /// 设置页首次打开时先用屏幕允许的最大高度布局，避免在滚动模式下测不准内容高度。
+    static func settingsWindowProvisionalHeight(screen: NSScreen? = nil) -> CGFloat {
+        maximumSettingsWindowHeight(for: screen)
+    }
+    /// 用户手动缩小时的下限；低于内容高度时 SwiftUI 才启用滚动。
+    static let settingsMinWindowHeight: CGFloat = 400
     static let chromeHeaderHeight: CGFloat = 38
 
     static var defaultWidth: CGFloat { dashboardWidth }
@@ -42,8 +47,16 @@ enum DetachedWindowMetrics {
         return min(maxHeight, max(1, visibleHeight - 32))
     }
 
+    /// 设置页允许占满当前屏幕可视高度（不受主界面 960 上限约束）。
+    static func maximumSettingsWindowHeight(for screen: NSScreen?) -> CGFloat {
+        let visibleHeight = screen?.visibleFrame.height
+            ?? NSScreen.main?.visibleFrame.height
+            ?? maxHeight
+        return max(1, visibleHeight - 32)
+    }
+
     static func clampSettingsContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
-        let dynamicMaxHeight = maximumContentHeight(for: screen)
+        let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
         return NSSize(
             width: min(max(size.width, dashboardWidth), maxWidth),
             height: min(max(size.height, min(minHeight, dynamicMaxHeight)), dynamicMaxHeight)
@@ -55,6 +68,27 @@ enum DetachedWindowMetrics {
         let height = min(dashboardHeight(isLoggedIn: isLoggedIn), dynamicMaxHeight)
         return NSSize(width: dashboardWidth, height: height)
     }
+
+    static func preferredSettingsWindowSize(contentHeight: CGFloat, screen: NSScreen? = nil) -> NSSize {
+        let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
+        let height = min(max(contentHeight, settingsMinWindowHeight), dynamicMaxHeight)
+        return NSSize(width: dashboardWidth, height: height)
+    }
+
+    static func settingsWindowSizeLimits(measuredContentHeight: CGFloat?, screen: NSScreen? = nil) -> (min: NSSize, max: NSSize) {
+        let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
+        let minHeight = min(settingsMinWindowHeight, dynamicMaxHeight)
+        let maxHeight: CGFloat
+        if let measuredContentHeight, measuredContentHeight > 0 {
+            maxHeight = min(measuredContentHeight, dynamicMaxHeight)
+        } else {
+            maxHeight = dynamicMaxHeight
+        }
+        return (
+            NSSize(width: dashboardWidth, height: minHeight),
+            NSSize(width: maxWidth, height: maxHeight)
+        )
+    }
 }
 
 @MainActor
@@ -65,6 +99,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private let onClose: (() -> Void)?
     private var contentMode: DetachedWindowContentMode = .dashboard(isLoggedIn: true)
     private var isProgrammaticResize = false
+    private var settingsMeasuredContentHeight: CGFloat?
 
     init(
         store: UsageSnapshotStore,
@@ -102,10 +137,19 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 actions: actions,
                 onContentLayoutChanged: { [weak self] mode in
                     self?.applyContentLayout(mode)
+                },
+                onSettingsMeasuredHeight: { [weak self] height in
+                    guard let self else { return }
+                    if height < 0 {
+                        invalidateSettingsMeasuredHeight()
+                    } else if height > 1 {
+                        commitSettingsMeasuredContentHeight(height)
+                    } else {
+                        scheduleSettingsHeightMeasurement()
+                    }
                 }
             )
         )
-
         window.title = "Codexling"
         applyWindowChrome()
         hostingController.view.wantsLayer = true
@@ -135,6 +179,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyContentLayout(_ mode: DetachedWindowContentMode) {
+        let enteringSettings = contentMode != .settings && mode == .settings
+        if enteringSettings {
+            settingsMeasuredContentHeight = nil
+        }
         contentMode = mode
         applyContentSizeLimits(for: mode)
 
@@ -145,15 +193,55 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 screen: window.screen
             )
         case .settings:
-            NSSize(
-                width: DetachedWindowMetrics.dashboardWidth,
-                height: min(
-                    DetachedWindowMetrics.settingsHeight,
-                    DetachedWindowMetrics.maximumContentHeight(for: window.screen)
-                )
+            DetachedWindowMetrics.preferredSettingsWindowSize(
+                contentHeight: settingsMeasuredContentHeight
+                    ?? DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: window.screen),
+                screen: window.screen
             )
         }
 
+        resizeWindow(to: targetSize, animate: false)
+    }
+
+    private func scheduleSettingsHeightMeasurement() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, case .settings = contentMode else { return }
+            // 仅在尚未完成首次测量时临时拉高窗口；切勿在 commit 后再扩高，否则会与 Preference 形成 resize 死循环。
+            guard settingsMeasuredContentHeight == nil else { return }
+            let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: window.screen)
+            if window.frame.size.height + 1 < provisional {
+                resizeWindow(
+                    to: NSSize(width: DetachedWindowMetrics.dashboardWidth, height: provisional),
+                    animate: false
+                )
+            }
+        }
+    }
+
+    private func invalidateSettingsMeasuredHeight() {
+        guard case .settings = contentMode else { return }
+        settingsMeasuredContentHeight = nil
+        applyContentSizeLimits(for: .settings)
+        let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: window.screen)
+        resizeWindow(
+            to: NSSize(width: DetachedWindowMetrics.dashboardWidth, height: provisional),
+            animate: false
+        )
+    }
+
+    private func commitSettingsMeasuredContentHeight(_ height: CGFloat) {
+        guard case .settings = contentMode else { return }
+        let measured = ceil(height)
+        guard measured > 1 else { return }
+        guard settingsMeasuredContentHeight != measured else { return }
+
+        settingsMeasuredContentHeight = measured
+        applyContentSizeLimits(for: .settings)
+
+        let targetSize = DetachedWindowMetrics.preferredSettingsWindowSize(
+            contentHeight: measured,
+            screen: window.screen
+        )
         resizeWindow(to: targetSize, animate: false)
     }
 
@@ -186,14 +274,21 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) {
         guard !isProgrammaticResize, let window = notification.object as? NSWindow else { return }
 
-        let clampedFrameSize: NSSize = switch contentMode {
+        switch contentMode {
         case let .dashboard(isLoggedIn):
-            DetachedWindowMetrics.fixedDashboardContentSize(isLoggedIn: isLoggedIn, screen: window.screen)
+            let clampedFrameSize = DetachedWindowMetrics.fixedDashboardContentSize(
+                isLoggedIn: isLoggedIn,
+                screen: window.screen
+            )
+            resizeWindow(to: clampedFrameSize, animate: false)
         case .settings:
-            DetachedWindowMetrics.clampSettingsContentSize(window.frame.size, screen: window.screen)
+            let clamped = DetachedWindowMetrics.clampSettingsContentSize(
+                window.frame.size,
+                screen: window.screen
+            )
+            guard clamped != window.frame.size else { return }
+            resizeWindow(to: clamped, animate: false)
         }
-
-        resizeWindow(to: clampedFrameSize, animate: false)
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
@@ -221,9 +316,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyContentSizeLimits(for mode: DetachedWindowContentMode) {
-        let dynamicMaxHeight = DetachedWindowMetrics.maximumContentHeight(for: window.screen)
-        let dynamicMinHeight = min(DetachedWindowMetrics.minHeight, dynamicMaxHeight)
-
         let frameMin: NSSize
         let frameMax: NSSize
 
@@ -236,14 +328,12 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             frameMin = fixedSize
             frameMax = fixedSize
         case .settings:
-            frameMin = NSSize(
-                width: DetachedWindowMetrics.dashboardWidth,
-                height: dynamicMinHeight
+            let limits = DetachedWindowMetrics.settingsWindowSizeLimits(
+                measuredContentHeight: settingsMeasuredContentHeight,
+                screen: window.screen
             )
-            frameMax = NSSize(
-                width: DetachedWindowMetrics.maxWidth,
-                height: dynamicMaxHeight
-            )
+            frameMin = limits.min
+            frameMax = limits.max
         }
 
         window.minSize = frameMin

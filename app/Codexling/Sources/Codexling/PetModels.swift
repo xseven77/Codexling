@@ -74,12 +74,16 @@ enum CodexlingPetInstaller {
     }
 
     private static var defaultPetsRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/pets", isDirectory: true)
+        CodexPetCatalog.defaultCustomPetsRoot
     }
 }
 
 struct CodexPetCatalog: Sendable {
+    static var defaultCustomPetsRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/pets", isDirectory: true)
+    }
+
     private struct BuiltInPetSpec: Sendable {
         let id: String
         let displayName: String
@@ -107,9 +111,8 @@ struct CodexPetCatalog: Sendable {
         cacheRoot: URL? = nil,
         applicationURLs: [URL]? = nil
     ) {
-        let home = FileManager.default.homeDirectoryForCurrentUser
         self.customPetsRoot = customPetsRoot
-            ?? home.appendingPathComponent(".codex/pets", isDirectory: true)
+            ?? Self.defaultCustomPetsRoot
 
         if let cacheRoot {
             self.cacheRoot = cacheRoot

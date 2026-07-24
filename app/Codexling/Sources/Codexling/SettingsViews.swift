@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -7,28 +8,46 @@ struct SettingsView: View {
     let layout: UsagePanelLayout
     let onLogout: () -> Void
     let onClose: () -> Void
-    @State private var showsCodexlingPetInstallToast = false
+    var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var showsLogoutConfirmation = false
+    @State private var toast: SettingsToast?
+    @State private var toastDismissGeneration = 0
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            ViewThatFits(in: .vertical) {
-                settingsContent
-                    .fixedSize(horizontal: false, vertical: true)
+            Group {
+                if layout == .window {
+                    GeometryReader { geometry in
+                        ViewThatFits(in: .vertical) {
+                            settingsWindowColumn
 
-                ScrollView {
-                    settingsContent
+                            ScrollView {
+                                settingsContent
+                            }
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                        }
+                    }
+                } else {
+                    ViewThatFits(in: .vertical) {
+                        settingsContent
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        ScrollView {
+                            settingsContent
+                        }
+                        .scrollIndicators(.hidden)
+                        .background(ScrollIndicatorHider())
+                    }
                 }
-                .scrollIndicators(.hidden)
-                .background(ScrollIndicatorHider())
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
         .overlay(alignment: .bottom) {
-            if showsCodexlingPetInstallToast {
-                Label("Codexling Pet 已安装到本机 Codex", systemImage: "checkmark.circle.fill")
+            if let toast {
+                Label(toast.message, systemImage: toast.systemImage)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -36,7 +55,38 @@ struct SettingsView: View {
                     .background(.black.opacity(0.84), in: Capsule(style: .continuous))
                     .padding(.bottom, 18)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .accessibilityLabel("Codexling Pet 安装成功")
+                    .accessibilityLabel(toast.message)
+            }
+        }
+        .onChange(of: settings.theme) { _, theme in
+            showToast("主题：\(theme.title)")
+        }
+        .onChange(of: settings.autoRefreshInterval) { _, interval in
+            showToast("自动刷新：\(interval.title)")
+        }
+        .onChange(of: settings.petBackgroundColor) { _, color in
+            showToast("胶囊提醒色：\(color.title)")
+        }
+        .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
+            showToast("活动状态流光已\(enabled ? "开启" : "关闭")")
+        }
+        .onChange(of: updater.phase) { oldPhase, phase in
+            guard oldPhase != phase else { return }
+            switch phase {
+            case .upToDate:
+                showToast("已是最新版本")
+            case .available:
+                if let version = updater.latestRelease?.version {
+                    showToast("发现新版本 \(version)", systemImage: "arrow.down.circle.fill")
+                } else {
+                    showToast("发现新版本", systemImage: "arrow.down.circle.fill")
+                }
+            case .failed(let message):
+                showToast(message, systemImage: "exclamationmark.triangle.fill")
+            case .installing:
+                showToast("正在安装，完成后将自动重启", systemImage: "arrow.down.circle.fill")
+            default:
+                break
             }
         }
         .alert("确认退出登录？", isPresented: $showsLogoutConfirmation) {
@@ -45,18 +95,58 @@ struct SettingsView: View {
         } message: {
             Text("退出后需要重新授权才能查看用量。")
         }
+        .onPreferenceChange(SettingsMeasuredContentHeightKey.self) { height in
+            guard layout == .window, height > 1 else { return }
+            onMeasuredContentHeightChange(height)
+        }
+        .onAppear {
+            guard layout == .window else { return }
+            onMeasuredContentHeightChange(0)
+        }
+        .onChange(of: settingsMeasuredContentIdentity) { _, _ in
+            guard layout == .window else { return }
+            onMeasuredContentHeightChange(-1)
+        }
+    }
+
+    private var settingsWindowColumn: some View {
+        VStack(spacing: 0) {
+            header
+            settingsContent
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: SettingsMeasuredContentHeightKey.self,
+                    value: geometry.size.height
+                )
+            }
+        }
+        .id(settingsMeasuredContentIdentity)
     }
 
     private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             accountCard
             updateSection
             petSection
+            thirdPartyPetResourcesSection
         }
         .padding(.horizontal, 16)
-        .padding(.top, 18)
-        .padding(.bottom, 22)
+        .padding(.top, 14)
+        .padding(.bottom, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var settingsMeasuredContentIdentity: String {
+        [
+            settings.isCodexlingPetInstalled ? "1" : "0",
+            String(settings.availablePets.count),
+            store.isLoggedIn ? "1" : "0",
+            String(describing: updater.phase),
+        ].joined(separator: "-")
     }
 
     private var accountCard: some View {
@@ -107,7 +197,7 @@ struct SettingsView: View {
             }
         }
         .padding(.horizontal, 13)
-        .frame(minHeight: 54)
+        .frame(minHeight: 50)
         .settingsGroupSurface()
     }
 
@@ -161,7 +251,7 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .frame(minHeight: 66)
+                .frame(minHeight: 60)
 
                 if case .downloading = updater.phase {
                     ProgressView(value: updater.downloadProgress)
@@ -223,10 +313,10 @@ struct SettingsView: View {
     }
 
     private var petSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             SettingsSection(
                 title: "状态栏与 Pet",
-                subtitle: "颜色与任务状态同步，或固定一种颜色。"
+                subtitle: "状态栏胶囊颜色与任务流光。"
             ) {
                 VStack(spacing: 0) {
                 SettingsInlineRow(
@@ -257,9 +347,9 @@ struct SettingsView: View {
 
             SettingsSection(
                 title: "当前 Pet",
-                subtitle: "规则：仅当未安装 Codexling Pet 时展示；安装后重扫并自动选中。"
+                subtitle: "未安装 Codexling Pet 时显示安装入口；安装后重扫并自动选中。"
             ) {
-                VStack(spacing: 10) {
+                VStack(spacing: 8) {
                 if let pet = settings.selectedPet {
                     HStack(spacing: 12) {
                         PetSettingsThumbnail(pet: pet)
@@ -287,21 +377,35 @@ struct SettingsView: View {
                         .settingsGroupSurface()
                 }
 
-                HStack {
+                HStack(spacing: 10) {
                     let builtInCount = settings.availablePets.filter { $0.source == .codexBuiltIn }.count
                     let customCount = settings.availablePets.filter { $0.source == .custom }.count
                     Text("已发现 \(builtInCount) 个内置 Pet，\(customCount) 个自定义 Pet")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.codexMuted)
                     Spacer()
+                    Button(action: openCustomPetsFolderInFinder) {
+                        Text("打开文件夹")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.codexPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                    .help("在 Finder 中打开 ~/.codex/pets")
                     Button {
                         settings.reloadPets()
+                        let builtIn = settings.availablePets.filter { $0.source == .codexBuiltIn }.count
+                        let custom = settings.availablePets.filter { $0.source == .custom }.count
+                        showToast("已扫描：\(builtIn) 个内置，\(custom) 个自定义 Pet")
                     } label: {
                         Text("重新扫描")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color.codexPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
                     }
-                    .buttonStyle(CodexPressableStyle())
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 }
                 .padding(.horizontal, 4)
 
@@ -317,6 +421,30 @@ struct SettingsView: View {
                 }
                 }
             }
+        }
+    }
+
+    private var thirdPartyPetResourcesSection: some View {
+        SettingsSection(
+            title: "更多 Pet",
+            subtitle: "到下列站点下载更多精灵，放入 ~/.codex/pets 后点「重新扫描」。感谢 codex-pets.net 与 GitHub 社区的整理与分享。"
+        ) {
+            VStack(spacing: 0) {
+                SettingsExternalLinkRow(
+                    icon: .symbol("safari"),
+                    title: "codex-pets.net",
+                    subtitle: "Pet 资源站",
+                    url: URL(string: "https://codex-pets.net/")!
+                )
+                SettingsRowDivider()
+                SettingsExternalLinkRow(
+                    icon: .githubMark,
+                    title: "Awesome Codex Pet",
+                    subtitle: "GitHub 精选合集",
+                    url: URL(string: "https://github.com/legeling/awesome-codex-pet")!
+                )
+            }
+            .settingsGroupSurface()
         }
     }
 
@@ -347,18 +475,6 @@ struct SettingsView: View {
         .padding(16)
         .background(Color.codexGreen.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.codexGreen.opacity(0.20), lineWidth: 0.8))
-    }
-
-    private func showCodexlingPetInstallToastIfNeeded() {
-        guard settings.isCodexlingPetInstalled else { return }
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-            showsCodexlingPetInstallToast = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
-            withAnimation(.easeOut(duration: 0.2)) {
-                showsCodexlingPetInstallToast = false
-            }
-        }
     }
 
     private var petPicker: some View {
@@ -409,7 +525,9 @@ struct SettingsView: View {
 
     private func petPickerButton(_ pet: CodexPet) -> some View {
         Button {
+            guard settings.selectedPetID != pet.id else { return }
             settings.selectedPetID = pet.id
+            showToast("当前 Pet：\(pet.displayName)", systemImage: "pawprint.fill")
         } label: {
             if settings.selectedPetID == pet.id {
                 Label(pet.displayName, systemImage: "checkmark")
@@ -418,6 +536,46 @@ struct SettingsView: View {
             }
         }
     }
+
+    private func openCustomPetsFolderInFinder() {
+        let directory = CodexPetCatalog.defaultCustomPetsRoot
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(directory)
+            showToast("已在 Finder 中打开 Pet 文件夹", systemImage: "folder.fill")
+        } catch {
+            showToast("无法打开 Pet 文件夹：\(error.localizedDescription)", systemImage: "exclamationmark.triangle.fill")
+        }
+    }
+
+    private func showCodexlingPetInstallToastIfNeeded() {
+        if settings.isCodexlingPetInstalled {
+            showToast("Codexling Pet 已安装到本机 Codex")
+            return
+        }
+        if let error = settings.codexlingPetInstallationError {
+            showToast("Codexling Pet 安装失败：\(error)", systemImage: "exclamationmark.triangle.fill")
+        }
+    }
+
+    private func showToast(_ message: String, systemImage: String = "checkmark.circle.fill") {
+        toastDismissGeneration += 1
+        let generation = toastDismissGeneration
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+            toast = SettingsToast(message: message, systemImage: systemImage)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            guard generation == toastDismissGeneration else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                toast = nil
+            }
+        }
+    }
+}
+
+private struct SettingsToast: Equatable {
+    let message: String
+    let systemImage: String
 }
 
 private struct ScrollIndicatorHider: NSViewRepresentable {
@@ -546,14 +704,15 @@ private struct SettingsSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 11))
                         .foregroundStyle(Color.codexMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -574,7 +733,7 @@ private struct SettingsInlineRow<Content: View>: View {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                 Text(subtitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -583,7 +742,7 @@ private struct SettingsInlineRow<Content: View>: View {
             content
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 15)
+        .padding(.vertical, 11)
     }
 }
 
@@ -683,11 +842,112 @@ private struct SettingsSwitchButtonStyle: PrimitiveButtonStyle {
     }
 }
 
+private enum SettingsLinkIcon {
+    case symbol(String)
+    case githubMark
+}
+
+private struct SettingsLinkIconView: View {
+    let icon: SettingsLinkIcon
+
+    var body: some View {
+        Group {
+            switch icon {
+            case .symbol(let name):
+                Image(systemName: name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.codexPrimary)
+            case .githubMark:
+                GitHubMarkIcon()
+            }
+        }
+        .frame(width: 30, height: 30)
+        .background(Color.codexPrimary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct GitHubMarkIcon: View {
+    var body: some View {
+        Group {
+            if let url = Bundle.main.url(forResource: "github-mark", withExtension: "svg"),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 17, height: 17)
+            } else {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.codexPrimary)
+            }
+        }
+    }
+}
+
+private struct SettingsExternalLinkRow: View {
+    let icon: SettingsLinkIcon
+    let title: String
+    let subtitle: String
+    let url: URL
+    @Environment(\.openURL) private var openURL
+
+    init(
+        icon: SettingsLinkIcon,
+        title: String,
+        subtitle: String,
+        url: URL
+    ) {
+        self.icon = icon
+        self.title = title
+        self.subtitle = subtitle
+        self.url = url
+    }
+
+    var body: some View {
+        Button {
+            openURL(url)
+        } label: {
+            HStack(spacing: 12) {
+                SettingsLinkIconView(icon: icon)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(CodexPressableStyle(cornerRadius: 12))
+        .accessibilityLabel("\(title)，\(subtitle)")
+        .accessibilityHint("在浏览器中打开")
+    }
+}
+
 private struct SettingsRowDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color.codexLine.opacity(0.82))
             .frame(height: 0.7)
+    }
+}
+
+private enum SettingsMeasuredContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

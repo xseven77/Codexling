@@ -211,12 +211,22 @@ enum UsageDateFormat {
         input.dateFormat = "yyyy-MM-dd HH:mm:ss"
         guard let date = input.date(from: value) else { return value }
 
+        return syncTime(date, now: now)
+    }
+
+    /// 底部「上次同步」等场景：显示具体时刻，不用「刚刚」。
+    static func syncTime(_ date: Date, now: Date = Date()) -> String {
         let calendar = Calendar.current
-        let includesYear = calendar.component(.year, from: date) != calendar.component(.year, from: now)
-        let output = DateFormatter()
-        output.locale = Locale(identifier: "zh_CN")
-        output.dateFormat = includesYear ? "yyyy年M月d日 HH:mm" : "M月d日 HH:mm"
-        return output.string(from: date)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        if calendar.isDateInToday(date) {
+            formatter.dateFormat = "今天 HH:mm"
+        } else if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            formatter.dateFormat = "M月d日 HH:mm"
+        } else {
+            formatter.dateFormat = "yyyy年M月d日 HH:mm"
+        }
+        return formatter.string(from: date)
     }
 }
 

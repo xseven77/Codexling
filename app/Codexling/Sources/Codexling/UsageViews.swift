@@ -10,6 +10,7 @@ struct DetachedUsageWindowView: View {
     @Bindable var updater: AppUpdateController
     let actions: UsageActions
     let onContentLayoutChanged: (DetachedWindowContentMode) -> Void
+    let onSettingsMeasuredHeight: (CGFloat) -> Void
     @State private var showsSettings = false
 
     private var dashboardContentMode: DetachedWindowContentMode {
@@ -28,11 +29,13 @@ struct DetachedUsageWindowView: View {
                         actions.disconnect()
                         showsSettings = false
                         onContentLayoutChanged(.dashboard(isLoggedIn: false))
-                    }
-                ) {
-                    showsSettings = false
-                    onContentLayoutChanged(dashboardContentMode)
-                }
+                    },
+                    onClose: {
+                        showsSettings = false
+                        onContentLayoutChanged(dashboardContentMode)
+                    },
+                    onMeasuredContentHeightChange: onSettingsMeasuredHeight
+                )
             } else {
                 CompanionDashboardView(
                     store: store,
