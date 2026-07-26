@@ -160,15 +160,15 @@ export function MenuBarPreview() {
         <div className="flex items-center justify-between gap-2 text-[9px] text-[var(--preview-menubar-fg)]">
           <div className="flex min-w-0 shrink gap-2">
             <span className="shrink-0"></span>
-            <span className="hidden min-[440px]:inline">Finder</span>
-            <span className="hidden min-[480px]:inline">文件</span>
+            <span>Finder</span>
+            <span>文件</span>
           </div>
           <div className="flex min-w-0 items-center justify-end gap-2">
             <span className="inline-flex h-6 min-w-[120px] max-w-[190px] items-center justify-center gap-1.5 truncate rounded-full bg-[var(--preview-status-pill)] px-2.5 text-[10px] font-bold tracking-[0.01em] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48),0_1px_3px_rgba(0,0,0,0.14)] [text-shadow:0_1px_1px_rgba(0,0,0,0.22)]">
               <span className="h-2 w-2 shrink-0 rounded-full bg-[#7c3cff] shadow-[0_0_0_1px_white,0_0_5px_rgba(255,255,255,0.95)]" />
               <span className="truncate">思考中 · 周 95%</span>
             </span>
-            <span className="hidden shrink-0 sm:inline">Wed 17:57</span>
+            <span className="shrink-0">Wed 17:57</span>
           </div>
         </div>
       </div>
