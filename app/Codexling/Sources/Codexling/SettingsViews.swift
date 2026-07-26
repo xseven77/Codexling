@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+private enum SettingsLayoutMetrics {
+    static let sectionSpacing: CGFloat = 24
+}
+
 struct SettingsView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
@@ -115,6 +119,11 @@ struct SettingsView: View {
             guard layout == .window else { return }
             onMeasuredContentHeightChange(0)
         }
+        .task(id: petPreviewIdentity) {
+            await PetThumbnailLoader.shared.preload(
+                settings.availablePets.map(\.spritesheetURL)
+            )
+        }
         .onChange(of: settingsMeasuredContentIdentity) { _, _ in
             guard layout == .window else { return }
             onMeasuredContentHeightChange(-1)
@@ -122,17 +131,14 @@ struct SettingsView: View {
     }
 
     private var settingsWindowColumn: some View {
-        VStack(spacing: 0) {
-            header
-            settingsContent
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+        settingsContent
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(
                     key: SettingsMeasuredContentHeightKey.self,
-                    value: geometry.size.height
+                    value: geometry.size.height + DetachedWindowMetrics.chromeHeaderHeight
                 )
             }
         }
@@ -140,15 +146,15 @@ struct SettingsView: View {
     }
 
     private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             accountCard
             updateSection
             petSection
             thirdPartyPetResourcesSection
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 16)
+        .padding(.horizontal, 18)
+        .padding(.top, 16)
+        .padding(.bottom, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -161,17 +167,21 @@ struct SettingsView: View {
         ].joined(separator: "-")
     }
 
+    private var petPreviewIdentity: String {
+        settings.availablePets.map(\.id).joined(separator: "|")
+    }
+
     private var accountCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             accountCardIdentityRow
                 .padding(.horizontal, 16)
-                .frame(minHeight: 60)
+                .frame(minHeight: 62)
 
             if store.isLoggedIn {
                 SettingsRowDivider()
                 accountCardSubscriptionRow
                     .padding(.horizontal, 16)
-                    .frame(minHeight: 64)
+                    .frame(minHeight: 60)
             }
         }
         .settingsGroupSurface()
@@ -267,7 +277,7 @@ struct SettingsView: View {
             Color.clear.frame(width: 42, height: 28)
             Spacer()
             Text("设置")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
             Spacer()
             HStack(spacing: 4) {
                 Button(action: onClose) {
@@ -278,6 +288,7 @@ struct SettingsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                .offset(y: -3)
                 .help("关闭设置")
                 .accessibilityLabel("关闭设置")
                 Color.clear.frame(width: 10, height: 28)
@@ -316,7 +327,7 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .frame(minHeight: 60)
+                .frame(minHeight: 62)
 
                 if case .downloading = updater.phase {
                     ProgressView(value: updater.downloadProgress)
@@ -376,10 +387,10 @@ struct SettingsView: View {
     }
 
     private var petSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             SettingsSection(
                 title: "状态栏与 Pet",
-                subtitle: "状态栏胶囊颜色与任务流光。"
+                subtitle: "调整额度提醒颜色与任务活动效果。"
             ) {
                 VStack(spacing: 0) {
                 SettingsInlineRow(
@@ -416,6 +427,10 @@ struct SettingsView: View {
                     HStack(spacing: 12) {
                         PetSettingsThumbnail(pet: pet)
                             .frame(width: 58, height: 58)
+                            .background(
+                                Color.codexMuted.opacity(0.055),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(pet.displayName)
@@ -451,11 +466,10 @@ struct SettingsView: View {
                         .foregroundStyle(Color.codexMuted)
                     Spacer()
                     Button(action: openCustomPetsFolderInFinder) {
-                        Text("打开文件夹")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.codexPrimary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
+                        SettingsSecondaryActionLabel(
+                            title: "打开文件夹",
+                            systemImage: "folder"
+                        )
                     }
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                     .help("在 Finder 中打开 ~/.codex/pets")
@@ -465,11 +479,10 @@ struct SettingsView: View {
                         let custom = settings.availablePets.filter { $0.source == .custom }.count
                         showToast("已扫描：\(builtIn) 个内置，\(custom) 个自定义 Pet")
                     } label: {
-                        Text("重新扫描")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.codexPrimary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
+                        SettingsSecondaryActionLabel(
+                            title: "重新扫描",
+                            systemImage: "arrow.clockwise"
+                        )
                     }
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 }
@@ -554,31 +567,47 @@ struct SettingsView: View {
         }
         .buttonStyle(CodexPressableStyle(cornerRadius: 7))
         .popover(isPresented: $showsPetPicker, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                if !builtIns.isEmpty {
-                    SettingsPopoverSection(title: "Codex 内置") {
-                        ForEach(builtIns) { pet in
-                            petPopoverRow(pet)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if !builtIns.isEmpty {
+                        SettingsPopoverSection(title: "Codex 内置") {
+                            LazyVGrid(columns: petPickerColumns, spacing: 6) {
+                                ForEach(builtIns) { pet in
+                                    petPopoverGridItem(pet)
+                                }
+                            }
+                        }
+                    }
+                    if !custom.isEmpty {
+                        SettingsPopoverSection(title: "自定义") {
+                            LazyVGrid(columns: petPickerColumns, spacing: 6) {
+                                ForEach(custom) { pet in
+                                    petPopoverGridItem(pet)
+                                }
+                            }
                         }
                     }
                 }
-                if !custom.isEmpty {
-                    SettingsPopoverSection(title: "自定义") {
-                        ForEach(custom) { pet in
-                            petPopoverRow(pet)
-                        }
-                    }
-                }
+                .padding(8)
             }
-            .padding(8)
-            .frame(minWidth: 180)
+            .frame(width: 330)
+            .frame(maxHeight: 520)
         }
         .fixedSize()
     }
 
-    private func petPopoverRow(_ pet: CodexPet) -> some View {
-        Button {
-            guard settings.selectedPetID != pet.id else {
+    private var petPickerColumns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(minimum: 84), spacing: 6),
+            count: 3
+        )
+    }
+
+    private func petPopoverGridItem(_ pet: CodexPet) -> some View {
+        let isSelected = settings.selectedPetID == pet.id
+
+        return Button {
+            guard !isSelected else {
                 showsPetPicker = false
                 return
             }
@@ -590,20 +619,50 @@ struct SettingsView: View {
                 showToast("已写入 Codex，重启后切换为 \(pet.displayName)", systemImage: "arrow.clockwise.circle.fill")
             }
         } label: {
-            HStack(spacing: 8) {
-                Text(pet.displayName)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if settings.selectedPetID == pet.id {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
+            VStack(spacing: 5) {
+                ZStack(alignment: .topTrailing) {
+                    PetSettingsThumbnail(pet: pet)
+                        .frame(width: 58, height: 58)
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.codexPrimary)
+                            .background(Color.codexBackground, in: Circle())
+                    }
                 }
+                .frame(maxWidth: .infinity)
+
+                Text(pet.displayName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity)
             }
-            .font(.system(size: 13))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
+            .padding(6)
+            .background(
+                isSelected
+                    ? Color.codexPrimary.opacity(0.10)
+                    : Color.codexMuted.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? Color.codexPrimary.opacity(0.50)
+                            : Color.codexMuted.opacity(0.10),
+                        lineWidth: isSelected ? 1.2 : 0.7
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(
+            isSelected
+                ? "\(pet.displayName)，当前已选择"
+                : pet.displayName
+        )
     }
 
     private var codexPetRestartNotice: some View {
@@ -758,13 +817,58 @@ private struct PetSettingsThumbnail: View {
             }
         }
         .task(id: pet.id) {
-            image = PetSpriteSheet(url: pet.spritesheetURL)?.frame(
-                row: 0,
-                column: 0,
-                displayHeight: 52
+            guard let frame = await PetThumbnailLoader.shared.frame(
+                for: pet.spritesheetURL
+            ) else {
+                image = nil
+                return
+            }
+            image = NSImage(
+                cgImage: frame,
+                size: NSSize(
+                    width: PetSpriteSheet.cellWidth,
+                    height: PetSpriteSheet.cellHeight
+                )
             )
         }
         .accessibilityLabel(pet.displayName)
+    }
+}
+
+private actor PetThumbnailLoader {
+    static let shared = PetThumbnailLoader()
+
+    private var frames: [URL: CGImage] = [:]
+    private var failedURLs = Set<URL>()
+
+    func preload(_ urls: [URL]) {
+        for url in urls {
+            _ = frame(for: url)
+        }
+    }
+
+    func frame(for url: URL) -> CGImage? {
+        if let cached = frames[url] {
+            return cached
+        }
+        guard !failedURLs.contains(url),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let spritesheet = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              spritesheet.width == PetSpriteSheet.cellWidth * 8,
+              spritesheet.height >= PetSpriteSheet.cellHeight,
+              let frame = spritesheet.cropping(
+                  to: CGRect(
+                      x: 0,
+                      y: 0,
+                      width: PetSpriteSheet.cellWidth,
+                      height: PetSpriteSheet.cellHeight
+                  )
+              ) else {
+            failedURLs.insert(url)
+            return nil
+        }
+        frames[url] = frame
+        return frame
     }
 }
 
@@ -819,10 +923,10 @@ private struct CodexlingPetInstallButtonStyle: PrimitiveButtonStyle {
             ink: .softLight
         ) {
             configuration.label
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(foregroundColor)
                 .padding(.horizontal, 12)
-                .frame(height: 34)
+                .frame(height: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(backgroundColor.opacity(isEnabled ? 1 : 0.60))
@@ -844,14 +948,15 @@ private struct SettingsSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10.5))
                         .foregroundStyle(Color.codexMuted)
+                        .lineSpacing(1)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -869,12 +974,13 @@ private struct SettingsInlineRow<Content: View>: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12.5, weight: .medium))
                 Text(subtitle)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(Color.codexMuted)
+                    .lineSpacing(1)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -882,7 +988,8 @@ private struct SettingsInlineRow<Content: View>: View {
             content
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .padding(.vertical, 12)
+        .frame(minHeight: 58)
     }
 }
 
@@ -900,8 +1007,38 @@ private struct SettingsMenuTriggerLabel: View {
                 .imageScale(.small)
         }
         .font(.system(size: fontSize, weight: .medium))
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
+        .foregroundStyle(Color.codexInk.opacity(0.90))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            Color.codexMuted.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.66), lineWidth: 0.7)
+        }
+    }
+}
+
+private struct SettingsSecondaryActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(Color.codexInk.opacity(0.84))
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                Color.codexCard.opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.72), lineWidth: 0.7)
+            }
     }
 }
 
@@ -990,11 +1127,11 @@ private struct SettingsSwitch: View {
                     .fill(isOn ? Color.accentColor : inactiveTrack)
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 16, height: 16)
                     .padding(3)
                     .shadow(color: Color.black.opacity(0.16), radius: 1.5, y: 1)
             }
-            .frame(width: 42, height: 24)
+            .frame(width: 38, height: 22)
             .contentShape(Capsule())
         }
         .buttonStyle(SettingsSwitchButtonStyle())
@@ -1030,6 +1167,7 @@ private enum SettingsLinkIcon {
 
 private struct SettingsLinkIconView: View {
     let icon: SettingsLinkIcon
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -1037,13 +1175,35 @@ private struct SettingsLinkIconView: View {
             case .symbol(let name):
                 Image(systemName: name)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.codexPrimary)
             case .githubMark:
                 GitHubMarkIcon()
             }
         }
-        .frame(width: 30, height: 30)
-        .background(Color.codexPrimary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .foregroundStyle(iconForeground)
+        .frame(width: 32, height: 32)
+        .background(iconBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(iconBorder, lineWidth: 0.7)
+        }
+    }
+
+    private var iconForeground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.82)
+            : Color.codexPrimary.opacity(0.90)
+    }
+
+    private var iconBackground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.07)
+            : Color.codexPrimary.opacity(0.06)
+    }
+
+    private var iconBorder: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color.codexLine.opacity(0.58)
     }
 }
 
@@ -1054,12 +1214,12 @@ private struct GitHubMarkIcon: View {
                let image = NSImage(contentsOf: url) {
                 Image(nsImage: image)
                     .resizable()
+                    .renderingMode(.template)
                     .scaledToFit()
                     .frame(width: 17, height: 17)
             } else {
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.codexPrimary)
             }
         }
     }
@@ -1093,10 +1253,10 @@ private struct SettingsExternalLinkRow: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(Color.codexInk)
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10.5))
                         .foregroundStyle(Color.codexMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1107,7 +1267,8 @@ private struct SettingsExternalLinkRow: View {
                     .foregroundStyle(Color.codexMuted)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 11)
+            .frame(minHeight: 56)
             .contentShape(Rectangle())
         }
         .buttonStyle(CodexPressableStyle(cornerRadius: 12))
@@ -1134,10 +1295,10 @@ private enum SettingsMeasuredContentHeightKey: PreferenceKey {
 
 private extension View {
     func settingsGroupSurface() -> some View {
-        background(Color.codexCard.opacity(0.76), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        background(Color.codexCard.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.88), lineWidth: 0.8)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.82), lineWidth: 0.8)
             )
     }
 }

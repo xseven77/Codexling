@@ -204,12 +204,21 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyAlwaysOnTop() {
+        // Keep the detached window managed by Mission Control in both modes.
+        // A pinned window stays above normal windows on its current Space,
+        // rather than behaving like an all-Spaces/full-screen auxiliary panel.
+        window.collectionBehavior.remove([
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .stationary,
+        ])
+        window.collectionBehavior.insert(.managed)
+
         if settings.windowAlwaysOnTop {
             window.level = .floating
-            window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
         } else {
             window.level = .normal
-            window.collectionBehavior.remove([.canJoinAllSpaces, .fullScreenAuxiliary])
         }
         updatePinButtonAppearance()
     }
@@ -234,6 +243,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             settingsMeasuredContentHeight = nil
         }
         contentMode = mode
+        applyBackgroundDragging(for: mode)
         applyContentSizeLimits(for: mode)
 
         let targetSize: NSSize = switch mode {
@@ -351,17 +361,26 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        // The detached window contains sliders and other drag-driven controls.
-        // Background window dragging competes with SwiftUI's Slider gesture and
-        // makes the whole window move instead of the thumb. Keep dragging on
-        // the standard title-bar region and let content own its pointer input.
-        window.isMovableByWindowBackground = false
+        applyBackgroundDragging(for: contentMode)
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
         window.hasShadow = true
         window.appearance = (theme ?? settings.theme).nsAppearance
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(type)?.isHidden = false
+        }
+    }
+
+    private func applyBackgroundDragging(for mode: DetachedWindowContentMode) {
+        switch mode {
+        case .dashboard:
+            // Buttons and other controls keep their own pointer handling;
+            // unhandled content and card backgrounds move the main window.
+            window.isMovableByWindowBackground = true
+        case .settings:
+            // Settings contains drag-sensitive controls, so it retains normal
+            // content interaction and uses the title bar for window movement.
+            window.isMovableByWindowBackground = false
         }
     }
 
