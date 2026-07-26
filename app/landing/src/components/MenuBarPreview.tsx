@@ -1,68 +1,98 @@
+import Image from "next/image";
 import type { ReactNode } from "react";
 
-function IconButton({ label, children }: { label: string; children: ReactNode }) {
+function Ring({
+  percent,
+  color,
+}: {
+  percent: number;
+  color: string;
+}) {
+  return (
+    <div
+      className="h-10 w-10 shrink-0 rounded-full"
+      style={{
+        background: `conic-gradient(${color} ${percent}%, var(--preview-track) 0)`,
+        padding: "5px",
+      }}
+    >
+      <div className="h-full w-full rounded-full bg-[var(--preview-card)]" />
+    </div>
+  );
+}
+
+function QuotaCard({
+  label,
+  percent,
+  color,
+}: {
+  label: string;
+  percent: number;
+  color: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] border border-[color:var(--preview-line)] bg-[var(--preview-card)] px-3 py-2.5">
+      <Ring percent={percent} color={color} />
+      <div className="min-w-0">
+        <div className="text-[20px] font-bold leading-none tabular-nums text-[var(--preview-ink)]">
+          {percent}%
+        </div>
+        <div className="mt-1 text-[10px] font-medium text-[var(--preview-muted)]">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function IconButton({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
     <div
       aria-hidden
       title={label}
-      className="flex h-[30px] w-[30px] items-center justify-center rounded-[9px] border border-[color:var(--preview-line)]/80 bg-[var(--preview-icon-bg)] text-[var(--preview-ink)] shadow-[var(--preview-card-shadow)]"
+      className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-[var(--preview-icon-bg)] text-[var(--preview-muted)]"
     >
       {children}
     </div>
   );
 }
 
-function QuotaRow({
-  label,
-  value,
-  total,
-  percent,
-  tint,
-}: {
-  label: string;
-  value: number;
-  total: number;
-  percent: number;
-  tint: string;
-}) {
+function ResetTicket() {
   return (
-    <div className="flex h-6 items-center gap-2">
-      <span className="w-[58px] text-xs text-[var(--preview-muted)]">{label}</span>
-      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full border border-[color:var(--preview-line)]/55 bg-[var(--preview-track)]">
-        <div
-          className="absolute inset-y-0 left-0 rounded-full"
-          style={{ width: `${Math.max(percent, 4)}%`, backgroundColor: tint }}
-        />
-      </div>
-      <span className="w-12 text-right text-xs font-semibold tabular-nums text-[var(--preview-ink)]">
-        {value}/{total}
-      </span>
-    </div>
-  );
-}
-
-function CouponRow({ expires, source }: { expires: string; source: string }) {
-  return (
-    <div className="flex items-center gap-2.5 rounded-[10px] border border-[color:var(--preview-line)] bg-[var(--preview-card)] px-2.5 py-2 shadow-[var(--preview-card-shadow)]">
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-semibold text-[var(--preview-ink)]">重置券</div>
-        <div className="text-xs text-[var(--preview-muted)]">
-          {expires} 过期 · {source}
+    <div className="relative mt-4 h-[84px]">
+      <div className="absolute inset-x-2 bottom-0 top-3 rounded-[13px] border border-[color:var(--preview-line)] bg-[var(--preview-ticket-back)]" />
+      <div className="absolute inset-x-1 bottom-1.5 top-1.5 rounded-[13px] border border-[color:var(--preview-line)] bg-[var(--preview-ticket-mid)]" />
+      <div className="absolute inset-x-0 top-0 flex h-[70px] items-center rounded-[13px] border border-[color:var(--preview-line)] bg-[linear-gradient(135deg,var(--preview-ticket-face),var(--preview-card))] px-3.5 shadow-[var(--preview-card-shadow)]">
+        <span className="absolute -left-1.5 h-3 w-3 rounded-full bg-[var(--preview-panel)]" />
+        <span className="absolute -right-1.5 h-3 w-3 rounded-full bg-[var(--preview-panel)]" />
+        <div className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-[var(--preview-green-soft)] text-base text-[var(--preview-green)]">
+          ↻
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12px] font-semibold text-[var(--preview-ink)]">
+              重置券
+            </span>
+            <span className="rounded-full bg-[var(--preview-green-soft)] px-1.5 py-0.5 text-[9px] font-bold text-[var(--preview-green)]">
+              1 / 3
+            </span>
+          </div>
+          <div className="mt-1.5 truncate text-[9px] font-medium tabular-nums text-[var(--preview-muted)]">
+            7月27日 07:34 到期
+          </div>
+        </div>
+        <div className="ml-2 border-l-2 border-dotted border-[color:var(--preview-line)] pl-2.5 text-center text-[var(--preview-green)]">
+          <div className="rounded-[5px] border border-dashed border-[color:var(--preview-green)]/50 bg-[var(--preview-green-soft)] px-2 py-1 text-[9px] font-bold">
+            ▣　01
+          </div>
+          <div className="mt-1 text-[8px] font-semibold text-[var(--preview-muted)]">切换查看</div>
+          <div className="text-[7.5px] text-[var(--preview-muted)]">available</div>
         </div>
       </div>
-      <span className="rounded-[7px] bg-[var(--preview-coupon-bg)] px-2 py-1.5 text-[13px] font-bold tabular-nums text-[var(--preview-pink)]">
-        1 张
-      </span>
-    </div>
-  );
-}
-
-function GlassCard({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return (
-    <div
-      className={`rounded-xl border border-[color:var(--preview-line)] bg-[var(--preview-card)] p-3.5 shadow-[var(--preview-card-shadow)] ${className}`}
-    >
-      {children}
     </div>
   );
 }
@@ -70,168 +100,137 @@ function GlassCard({ children, className = "" }: { children: ReactNode; classNam
 export function MenuBarPreview() {
   return (
     <div
-      className="overflow-hidden rounded-[28px] border border-[color:var(--preview-frame-border)] bg-[var(--preview-bg)] shadow-[var(--preview-shadow)]"
+      className="overflow-hidden rounded-[24px] border border-[color:var(--preview-frame-border)] bg-[var(--preview-bg)] shadow-[var(--preview-shadow)]"
       aria-hidden
     >
-      {/* macOS menu bar */}
-      <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-3 py-2 backdrop-blur-xl sm:px-4">
-        <div className="flex items-center justify-between gap-2 text-[10px] text-[var(--preview-menubar-fg)] sm:text-[11px]">
-          <div className="flex min-w-0 shrink gap-2 sm:gap-3">
+      <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-3 py-1.5 backdrop-blur-xl">
+        <div className="flex items-center justify-between gap-2 text-[9px] text-[var(--preview-menubar-fg)]">
+          <div className="flex min-w-0 shrink gap-2">
             <span className="shrink-0"></span>
-            <span className="hidden min-[380px]:inline">Finder</span>
-            <span className="hidden min-[420px]:inline">文件</span>
-            <span className="hidden min-[480px]:inline">编辑</span>
+            <span className="hidden min-[440px]:inline">Finder</span>
+            <span className="hidden min-[480px]:inline">文件</span>
           </div>
-          <div className="flex min-w-0 items-center justify-end gap-2 sm:gap-3">
-            <span className="inline-flex max-w-[58vw] items-center gap-1 truncate rounded-md bg-[var(--preview-menubar-pill)] px-1.5 py-0.5 font-medium text-[var(--preview-menubar-pill-fg)] sm:max-w-none sm:px-2">
-              <span
-                className="h-2 w-2 shrink-0 rounded-full bg-[var(--preview-green)] shadow-[0_0_6px_rgba(40,192,78,0.55)]"
-                aria-hidden
-              />
-              <span className="truncate">Codex 5h 77% · 周 57%</span>
+          <div className="flex min-w-0 items-center justify-end gap-2">
+            <span className="inline-flex h-6 min-w-[120px] max-w-[190px] items-center justify-center gap-1.5 truncate rounded-full bg-[var(--preview-status-pill)] px-2.5 text-[10px] font-bold tracking-[0.01em] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48),0_1px_3px_rgba(0,0,0,0.14)] [text-shadow:0_1px_1px_rgba(0,0,0,0.22)]">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-[#7c3cff] shadow-[0_0_0_1px_white,0_0_5px_rgba(255,255,255,0.95)]" />
+              <span className="truncate">思考中 · 周 95%</span>
             </span>
             <span className="hidden shrink-0 sm:inline">Wed 17:57</span>
           </div>
         </div>
       </div>
 
-      {/* Desktop + popover */}
-      <div
-        className="relative p-3 sm:p-6"
-        style={{
-          background:
-            "linear-gradient(to bottom right, var(--preview-desktop), var(--preview-bg) 45%, var(--preview-desktop-end))",
-        }}
-      >
-        <div className="absolute inset-0 opacity-40">
-          <div className="grid-bg h-full w-full" />
-        </div>
+      <div className="grid h-[462px] grid-cols-[31%_69%] bg-[var(--preview-panel)]">
+        <aside className="relative flex min-w-0 flex-col border-r border-[color:var(--preview-line)] bg-[var(--preview-sidebar)] px-3.5 pb-4 pt-3">
+          <div className="flex gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
+          </div>
 
-        <div className="relative mx-auto w-full max-w-[414px] overflow-hidden rounded-2xl border border-[color:var(--preview-line)]/90 bg-[var(--preview-panel)] shadow-[var(--preview-panel-shadow)]">
-          {/* Header */}
-          <div
-            className="border-b border-[color:var(--preview-line)]/75 px-4 py-4"
-            style={{
-              background:
-                "linear-gradient(to bottom, color-mix(in srgb, var(--preview-card) 90%, transparent), var(--preview-chrome))",
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-[15px] font-semibold text-[var(--preview-ink)]">
-                    Demo User
-                  </span>
-                  <span className="rounded-[5px] bg-[var(--preview-green)]/10 px-1.5 py-0.5 text-[9px] font-bold text-[var(--preview-green)]">
-                    API
-                  </span>
-                </div>
-                <p className="mt-0.5 truncate text-xs text-[var(--preview-muted)]">
-                  name@example.com · Personal · Plus
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1.5">
-                <IconButton label="退出登录">
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
-                    <circle cx="8" cy="5.5" r="2.2" />
-                    <path d="M3.5 13c0-2.5 2-4.5 4.5-4.5s4.5 2 4.5 4.5" />
-                    <path d="M11.5 3.5l1 1" />
-                  </svg>
-                </IconButton>
-                <IconButton label="设置">
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
-                    <path d="M6.4 2.2h3.2l.35 1.35a4.8 4.8 0 0 1 1.05.6l1.35-.4 1.6 1.6-.4 1.35c.24.33.44.68.6 1.05L15 8.4v3.2l-1.35.35a4.8 4.8 0 0 1-.6 1.05l.4 1.35-1.6 1.6-1.35-.4a4.8 4.8 0 0 1-1.05.6L9.6 15.8H6.4l-.35-1.35a4.8 4.8 0 0 1-1.05-.6l-1.35.4-1.6-1.6.4-1.35a4.8 4.8 0 0 1-.6-1.05L.2 11.6V8.4l1.35-.35c.16-.37.36-.72.6-1.05l-.4-1.35 1.6-1.6 1.35.4c.33-.24.68-.44 1.05-.6L6.4 2.2Z" />
-                    <circle cx="8" cy="8" r="2.1" />
-                  </svg>
-                </IconButton>
-                <IconButton label="打开窗口">
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
-                    <rect x="2.5" y="4.5" width="8" height="8" rx="1.2" />
-                    <path d="M6 4.5V3.8A1.3 1.3 0 0 1 7.3 2.5H12.2A1.3 1.3 0 0 1 13.5 3.8V8.7A1.3 1.3 0 0 1 12.2 10H11.5" />
-                  </svg>
-                </IconButton>
-              </div>
+          <div className="mt-5 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[13px] font-bold text-[var(--preview-ink)]">seven x</span>
+              <span className="rounded-[5px] bg-[var(--preview-green-soft)] px-1.5 py-0.5 text-[8px] font-bold text-[var(--preview-green)]">
+                plus
+              </span>
+            </div>
+            <div className="mt-1 truncate text-[9px] text-[var(--preview-muted)]">xujinqi7@gmail.com</div>
+            <div className="mt-2.5 border-t border-[color:var(--preview-line)] pt-2.5 text-[8.5px] font-medium text-[var(--preview-muted)]">
+              8月21日 14:22 · 自动续费 ↗
             </div>
           </div>
 
-          {/* Body */}
-          <div className="space-y-3 px-4 py-3">
-            <GlassCard>
-              <div className="flex flex-col gap-3.5 min-[400px]:flex-row min-[400px]:items-center">
-                <div className="shrink-0 min-[400px]:w-[118px]">
-                  <div className="text-[36px] font-bold leading-none tabular-nums text-[var(--preview-green)] sm:text-[40px]">
-                    77%
-                  </div>
-                  <div className="mt-1.5 text-xs leading-5 text-[var(--preview-muted)]">
-                    5 小时额度
-                    <br />
-                    19:36:04 重置
-                  </div>
-                </div>
-                <div className="min-w-0 flex-1 space-y-2">
-                  <QuotaRow label="5 小时" value={77} total={100} percent={77} tint="var(--preview-green)" />
-                  <QuotaRow label="周额度" value={57} total={100} percent={57} tint="var(--preview-blue)" />
-                </div>
-              </div>
-            </GlassCard>
+          <div className="flex flex-1 items-center justify-center">
+            <Image
+              src="/brand/codexling-logo.webp"
+              alt=""
+              width={128}
+              height={128}
+              className="h-auto w-[70%] max-w-[118px] drop-shadow-[0_14px_16px_rgba(0,0,0,0.18)]"
+            />
+          </div>
 
-            <div>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
-                <span className="text-[13px] font-semibold text-[var(--preview-ink)]">重置券 3 张</span>
-                <span className="text-[11px] text-[var(--preview-muted)] sm:text-xs">按过期时间从近到远</span>
-              </div>
-              <div className="space-y-2">
-                <CouponRow expires="2026-07-18 08:08:34" source="available" />
-                <CouponRow expires="2026-07-18 08:08:34" source="available" />
-                <CouponRow expires="2026-07-18 08:08:34" source="available" />
-              </div>
+          <div className="mx-auto flex max-w-full items-center gap-1.5 rounded-full border border-[color:var(--preview-line)] bg-[var(--preview-card)] px-2.5 py-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[#7c3cff]" />
+            <span className="truncate text-[9px] font-semibold text-[var(--preview-ink)]">
+              Codexling · 正在思考
+            </span>
+          </div>
+          <div className="mt-2 text-center text-[9px] text-[var(--preview-muted)]">
+            今天一起工作 17 分钟
+          </div>
+        </aside>
+
+        <main className="flex min-w-0 flex-col px-4 pb-3 pt-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="truncate text-[18px] font-bold leading-tight text-[var(--preview-ink)]">
+                正在处理 1 个任务
+              </h3>
+            </div>
+            <div className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-[color:var(--preview-green)]/25 bg-[var(--preview-green-soft)] px-2.5 text-[10px] font-bold text-[var(--preview-green)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--preview-green)]" />
+              本周 95%
             </div>
           </div>
 
-          {/* Footer */}
-          <div
-            className="border-t border-[color:var(--preview-line)] px-4 pb-3.5 pt-3.5"
-            style={{
-              background: "linear-gradient(to bottom, var(--preview-chrome), var(--preview-chrome-end))",
-            }}
-          >
-            <div className="space-y-2 text-[13px]">
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                <span className="text-[var(--preview-muted)]">周额度重置</span>
-                <span className="text-right text-[12px] font-medium tabular-nums text-[var(--preview-ink)] sm:text-[13px]">
-                  2026-07-14 15:19:37
-                </span>
-              </div>
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                <span className="text-[var(--preview-muted)]">最近更新</span>
-                <span className="inline-flex items-center gap-1.5 text-right text-[12px] font-medium tabular-nums text-[var(--preview-ink)] sm:text-[13px]">
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[var(--preview-green)]" fill="currentColor">
-                    <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm3.03 4.47-3.56 3.56a.75.75 0 0 1-1.06 0L4.97 8.1a.75.75 0 0 1 1.06-1.06l1.44 1.44 3.03-3.03a.75.75 0 1 1 1.06 1.06Z" />
-                  </svg>
-                  2026-07-09 17:57:06
-                </span>
-              </div>
+          <div className="mt-3 rounded-[13px] border border-[color:var(--preview-line)] bg-[var(--preview-card)] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2 text-[9px]">
+              <span className="font-semibold text-[#7c3cff]">●　思考中</span>
+              <span className="text-[var(--preview-muted)]">任务 1 / 1</span>
             </div>
+            <div className="mt-2 truncate text-[13px] font-bold text-[var(--preview-ink)]">评估并更新 Codexling UI</div>
+            <div className="mt-1 truncate text-[10px] text-[var(--preview-muted)]">正在运行本地命令</div>
+            <div className="mt-2 flex items-center gap-3 truncate text-[8.5px] font-medium text-[var(--preview-muted)]">
+              <span>▱　Codexling</span>
+              <span>⑂　main</span>
+              <span>▣　gpt-5.6-sol</span>
+            </div>
+            <div className="mt-2 flex items-center justify-between border-t border-[color:var(--preview-line)] pt-1.5 text-[8.5px] text-[var(--preview-muted)]">
+              <span>分析任务</span>
+              <span>更新于刚刚</span>
+            </div>
+          </div>
 
-            <div className="mt-3.5 flex gap-2">
-              <div className="flex h-9 flex-1 items-center justify-center rounded-[9px] bg-[var(--preview-primary)] text-[13px] font-semibold text-[var(--preview-on-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]">
-                刷新
-              </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[12px] font-bold text-[var(--preview-ink)]">额度</span>
+            <span className="text-[9px] text-[var(--preview-muted)]">额度重置：7月27日 23:59</span>
+          </div>
+          <div className="mt-2 flex gap-2">
+            <QuotaCard label="5 小时" percent={77} color="var(--preview-green)" />
+            <QuotaCard label="本周" percent={95} color="var(--preview-green)" />
+          </div>
+
+          <ResetTicket />
+
+          <div className="mt-auto flex items-center justify-between border-t border-[color:var(--preview-line)] pt-3.5">
+            <span className="truncate text-[9px] text-[var(--preview-muted)]">上次同步：今天 17:48</span>
+            <div className="flex shrink-0 gap-2">
+              <IconButton label="设置">
+                <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.55V20.3h-3v-.09a1.7 1.7 0 0 0-1.03-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.55-1.03H5.3v-3h.15A1.7 1.7 0 0 0 7 9.94a1.7 1.7 0 0 0-.34-1.88L6.6 8l2.12-2.12.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 11.7 4.7V4.6h3v.1a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 8l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.95 11h.15v3h-.15A1.7 1.7 0 0 0 19.4 15Z" />
+                </svg>
+              </IconButton>
               <IconButton label="官方 Usage">
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
-                  <circle cx="8" cy="8" r="5.5" />
-                  <path d="M2 8h12M8 2.5a10.8 10.8 0 0 1 0 11M8 2.5a10.8 10.8 0 0 0 0 11" />
+                <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="4" width="16" height="16" rx="3" />
+                  <path d="M10 14 16 8M11 8h5v5" />
                 </svg>
               </IconButton>
-              <IconButton label="退出软件">
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
-                  <path d="M8 2.5v5M5.5 5 8 2.5 10.5 5" />
-                  <path d="M3.5 8.5v3A1.5 1.5 0 0 0 5 13h6a1.5 1.5 0 0 0 1.5-1.5v-3" />
+              <IconButton label="退出">
+                <svg viewBox="0 0 24 24" className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M12 3v9" />
+                  <path d="M7.05 5.95a8 8 0 1 0 9.9 0" />
                 </svg>
               </IconButton>
+              <div className="flex h-9 items-center justify-center rounded-[10px] bg-[var(--preview-primary)] px-4 text-[10px] font-bold text-[var(--preview-on-primary)]">
+                立即刷新
+              </div>
             </div>
           </div>
-        </div>
+        </main>
       </div>
     </div>
   );

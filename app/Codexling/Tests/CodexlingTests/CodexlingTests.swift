@@ -630,6 +630,62 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(snapshot.activeTasks.contains { $0.id == "thread-guardian" })
     }
 
+    func testActivityServicePrefersIndexedThreadNameAndLoadsTaskMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-title-db-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rolloutURL = directory.appendingPathComponent("activity.jsonl")
+        try Data("""
+        {"timestamp":"2026-07-22T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}
+        """.utf8).write(to: rolloutURL)
+        let sessionIndexURL = directory.appendingPathComponent("session_index.jsonl")
+        try Data("""
+        {"id":"thread-title","thread_name":"评估并更新 Codexling UI","updated_at":"2026-07-22T08:00:00Z"}
+        """.utf8).write(to: sessionIndexURL)
+
+        let databaseURL = directory.appendingPathComponent("state.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            name TEXT,
+            cwd TEXT,
+            git_branch TEXT,
+            model TEXT,
+            archived INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        INSERT INTO threads VALUES (
+            'thread-title',
+            '\(rolloutURL.path)',
+            '/goal /tmp/Codexling',
+            '',
+            '/tmp/Codexling',
+            'main',
+            'gpt-5.6-sol',
+            0,
+            1
+        );
+        """, nil, nil, nil), SQLITE_OK)
+
+        let snapshot = CodexActivityService(
+            databaseURLs: [databaseURL],
+            sessionIndexURLs: [sessionIndexURL]
+        ).loadSnapshot(now: ISO8601DateFormatter().date(from: "2026-07-22T08:00:01Z")!)
+
+        XCTAssertEqual(snapshot.threadTitle, "评估并更新 Codexling UI")
+        XCTAssertEqual(snapshot.activeTasks.first?.title, "评估并更新 Codexling UI")
+        XCTAssertEqual(snapshot.activeTasks.first?.workspaceName, "Codexling")
+        XCTAssertEqual(snapshot.activeTasks.first?.gitBranch, "main")
+        XCTAssertEqual(snapshot.activeTasks.first?.model, "gpt-5.6-sol")
+    }
+
     func testHoverContentUsesThreadTitleAndVisibleExecutionSummary() {
         let snapshot = CodexActivitySnapshot(
             state: .executing,
@@ -694,6 +750,95 @@ final class CodexlingTests: XCTestCase {
         XCTAssertTrue(builtIns.allSatisfy { $0.rowCount >= 9 })
         XCTAssertTrue(builtIns.contains { $0.assetID == "codex" })
         XCTAssertTrue(builtIns.contains { $0.assetID == "hoots" })
+    }
+
+    func testCodexPetSelectionSyncReadsAndMapsPetIDs() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-pet-sync-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        try """
+        model = "gpt-5"
+
+        [desktop]
+        selected-avatar-id = "custom:nimbus"
+        avatar-overlay-mascot-width-px = 155
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let sync = CodexPetSelectionSync(configURL: configURL)
+        XCTAssertEqual(sync.readSelectedPetID(), "custom:nimbus")
+        XCTAssertEqual(sync.codexPetID(fromAppID: "builtin:hoots"), "hoots")
+        XCTAssertEqual(sync.appPetID(fromCodexID: "hoots"), "builtin:hoots")
+    }
+
+    func testCodexPetSelectionSyncUpdatesOnlyDesktopSelection() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-pet-write-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        try """
+        selected-avatar-id = "leave-this-alone"
+
+        [desktop]
+        selected-avatar-id = "custom:nimbus"
+        avatar-overlay-mascot-width-px = 155
+
+        [desktop.open-in-target-preferences]
+        global = "cursor"
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let sync = CodexPetSelectionSync(configURL: configURL)
+        XCTAssertTrue(try sync.writeSelectedPetID("builtin:hoots"))
+        let updated = try String(contentsOf: configURL, encoding: .utf8)
+
+        XCTAssertTrue(updated.contains("selected-avatar-id = \"leave-this-alone\""))
+        XCTAssertTrue(updated.contains("[desktop]\nselected-avatar-id = \"hoots\""))
+        XCTAssertTrue(updated.contains("avatar-overlay-mascot-width-px = 155"))
+        XCTAssertEqual(sync.readSelectedPetID(), "builtin:hoots")
+        XCTAssertFalse(try sync.writeSelectedPetID("builtin:hoots"))
+    }
+
+    @MainActor
+    func testWindowAlwaysOnTopPreferencePersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertFalse(settings.windowAlwaysOnTop)
+
+        settings.windowAlwaysOnTop = true
+        XCTAssertTrue(defaults.bool(forKey: "codexling.windowAlwaysOnTop"))
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(restored.windowAlwaysOnTop)
+    }
+
+    @MainActor
+    func testPetInteractionRemainsAvailableWhileCodexIsWorking() {
+        let pet = CodexPet(
+            id: "custom:test",
+            assetID: "test",
+            displayName: "Test",
+            description: "",
+            source: .custom,
+            spriteVersionNumber: 2,
+            spritesheetURL: URL(fileURLWithPath: "/private/tmp/nonexistent-pet.png"),
+            rowCount: 9
+        )
+        let frameStore = PetFrameStore()
+
+        frameStore.update(pet: pet, activityState: .executing)
+
+        XCTAssertTrue(frameStore.canPlayIdleInteraction)
+        let firstAction = frameStore.playRandomIdleAction()
+        let secondAction = frameStore.playRandomIdleAction()
+        XCTAssertNotNil(firstAction)
+        XCTAssertNotNil(secondAction)
+        XCTAssertNotEqual(firstAction, secondAction)
+        frameStore.stop()
     }
 
     func testInstalledCodexActivityIsReadableWhenDatabaseExists() {

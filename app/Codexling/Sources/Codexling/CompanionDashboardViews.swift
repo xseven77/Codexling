@@ -62,7 +62,7 @@ struct CompanionDashboardView: View {
 
                     quotaSection
                 }
-                .padding(.top, 25)
+                .padding(.top, layout == .window ? 40 : 25)
                 .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -785,45 +785,34 @@ private struct ResetCouponTicketCard: View {
 
     private var resetIcon: some View {
         ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(
-                    RadialGradient(
+                    LinearGradient(
                         colors: isDark
-                            ? [Color(red: 0.120, green: 0.280, blue: 0.165), Color(red: 0.065, green: 0.175, blue: 0.095)]
-                            : [Color(red: 0.930, green: 0.990, blue: 0.940), Color(red: 0.845, green: 0.955, blue: 0.875)],
-                        center: .init(x: 0.32, y: 0.28),
-                        startRadius: 2,
-                        endRadius: 20
+                            ? [Color.codexGreen.opacity(0.18), Color.codexGreen.opacity(0.08)]
+                            : [Color.codexGreen.opacity(0.11), Color.codexGreen.opacity(0.045)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
                 )
-            Circle()
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(isDark ? 0.18 : 0.65),
-                            Color.codexGreen.opacity(0.28),
-                            Color.black.opacity(isDark ? 0.22 : 0.08)
+                            Color.codexGreen.opacity(isDark ? 0.36 : 0.24),
+                            Color.codexGreen.opacity(isDark ? 0.18 : 0.10)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 1
+                    lineWidth: 0.8
                 )
             Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [
-                            Color.codexGreen.opacity(0.95),
-                            Color(red: 0.110, green: 0.620, blue: 0.255)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .shadow(color: Color.white.opacity(isDark ? 0.08 : 0.35), radius: 0.4, x: -0.3, y: -0.3)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.codexGreen)
         }
-        .frame(width: 36, height: 36)
+        .frame(width: 32, height: 32)
+        .shadow(color: Color.codexGreen.opacity(isDark ? 0.08 : 0.06), radius: 3, y: 1)
     }
 
     private var stubSection: some View {
@@ -1144,15 +1133,9 @@ private struct ActivityHeading: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(activity.dashboardTitle)
-                    .font(.system(size: 20, weight: .semibold))
-                    .lineLimit(1)
-                Text(activity.dashboardSubtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
-            }
+            Text(activity.dashboardTitle)
+                .font(.system(size: 20, weight: .semibold))
+                .lineLimit(1)
             Spacer(minLength: 4)
             QuotaAtAGlanceChip(usage: usage, isLoggedIn: isLoggedIn)
         }
@@ -1218,6 +1201,8 @@ private struct QuotaAtAGlanceChip: View {
 
 private struct TaskStackView: View {
     private static let cardSpace = "taskCard"
+    private static let cardHeight: CGFloat = 144
+    private static let stackOffset: CGFloat = 9
 
     let snapshot: CodexActivitySnapshot
     @Binding var selectedTaskID: String?
@@ -1244,8 +1229,8 @@ private struct TaskStackView: View {
                 cardShape
                     .fill(Color.codexMist)
                     .overlay(cardShape.stroke(Color.codexLine, lineWidth: 0.7))
-                    .frame(maxWidth: .infinity, minHeight: 134, maxHeight: 134)
-                    .offset(x: 8, y: 9)
+                    .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight)
+                    .offset(x: 8, y: Self.stackOffset)
                     .allowsHitTesting(false)
             }
 
@@ -1284,7 +1269,10 @@ private struct TaskStackView: View {
                 .accessibilityLabel(accessibilityText)
         }
         .padding(.trailing, tasks.count > 1 ? 8 : 0)
-        .frame(height: tasks.count > 1 ? 143 : 134, alignment: .top)
+        .frame(
+            height: tasks.count > 1 ? Self.cardHeight + Self.stackOffset : Self.cardHeight,
+            alignment: .top
+        )
     }
 
     private var taskCard: some View {
@@ -1309,28 +1297,58 @@ private struct TaskStackView: View {
             Text(displayDetail)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.codexMuted)
-                .lineLimit(2)
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 4)
-
-            HStack {
-                Text(displayState.footnote)
-                Spacer()
-                if tasks.count > 1 {
-                    Text(selectedIndex + 1 == tasks.count ? "点击回到任务 1" : "点击查看任务 \(selectedIndex + 2)")
+            if !displayMetadata.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(displayMetadata, id: \.value) { item in
+                        Label(item.value, systemImage: item.icon)
+                            .lineLimit(1)
+                    }
                 }
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.codexMuted)
             }
-            .font(.system(size: 10))
-            .foregroundStyle(Color.codexMuted)
-            .padding(.top, 7)
-            .overlay(alignment: .top) { Rectangle().fill(Color.codexLine).frame(height: 0.7) }
+
+            Spacer(minLength: 2)
         }
-        .padding(13)
-        .frame(maxWidth: .infinity, minHeight: 134, maxHeight: 134, alignment: .topLeading)
+        .padding(.horizontal, 13)
+        .padding(.top, 13)
+        .padding(.bottom, 39)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: Self.cardHeight,
+            maxHeight: Self.cardHeight,
+            alignment: .topLeading
+        )
         .background(Color.codexCard, in: cardShape)
+        .overlay(alignment: .bottom) {
+            taskFooter
+                .padding(.horizontal, 13)
+        }
         .overlay(cardShape.stroke(Color.codexLine, lineWidth: 0.7))
         .contentShape(cardShape)
+    }
+
+    private var taskFooter: some View {
+        HStack {
+            Text(displayState.activityLabel)
+            Spacer()
+            if tasks.count > 1 {
+                Text(selectedIndex + 1 == tasks.count ? "点击回到任务 1" : "点击查看任务 \(selectedIndex + 2)")
+            } else {
+                Text("更新于\(UsageDateFormat.relative(displayUpdatedAt))")
+            }
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(Color.codexMuted)
+        .frame(height: 39, alignment: .center)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.codexLine)
+                .frame(height: 0.7)
+        }
     }
 
     private func spawnRipple(at location: CGPoint) {
@@ -1352,6 +1370,15 @@ private struct TaskStackView: View {
     }
     private var displayDetail: String {
         displayedTask?.detail ?? (snapshot.detail.isEmpty ? snapshot.state.hoverTitle : snapshot.detail)
+    }
+    private var displayUpdatedAt: Date { displayedTask?.updatedAt ?? snapshot.updatedAt }
+    private var displayMetadata: [(icon: String, value: String)] {
+        guard let displayedTask else { return [] }
+        return [
+            displayedTask.workspaceName.map { ("folder", $0) },
+            displayedTask.gitBranch.map { ("arrow.triangle.branch", $0) },
+            displayedTask.model.map { ("cpu", $0) }
+        ].compactMap { $0 }
     }
     private var accessibilityText: String {
         tasks.count > 1
@@ -1643,6 +1670,19 @@ extension CodexActivityState {
         case .waitingForUser: "等待用户 · 确认后继续"
         case .completed: "任务完成 · 20 秒后回到空闲"
         case .interrupted: "任务中止 · 20 秒后回到空闲"
+        }
+    }
+
+    var activityLabel: String {
+        switch self {
+        case .unavailable: "活动数据不可用"
+        case .idle: "空闲"
+        case .thinking: "分析任务"
+        case .executing: "执行工具"
+        case .reviewing: "检查改动"
+        case .waitingForUser: "等待用户"
+        case .completed: "任务完成"
+        case .interrupted: "任务中止"
         }
     }
 }

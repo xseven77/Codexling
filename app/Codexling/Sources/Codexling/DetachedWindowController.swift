@@ -100,6 +100,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var contentMode: DetachedWindowContentMode = .dashboard(isLoggedIn: true)
     private var isProgrammaticResize = false
     private var settingsMeasuredContentHeight: CGFloat?
+    private var pinHostingView: NSHostingView<WindowPinButton>!
 
     init(
         store: UsageSnapshotStore,
@@ -152,6 +153,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         )
         window.title = "Codexling"
         applyWindowChrome()
+        installPinButton()
+        applyAlwaysOnTop()
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.isOpaque = false
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -176,6 +179,53 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func refreshThemeAppearance() {
         applyWindowChrome()
+        updatePinButtonAppearance()
+    }
+
+    @objc private func toggleAlwaysOnTop() {
+        settings.windowAlwaysOnTop.toggle()
+        applyAlwaysOnTop()
+    }
+
+    private func installPinButton() {
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .right
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 28))
+        let hostingView = NSHostingView(
+            rootView: makePinButton()
+        )
+        hostingView.frame = NSRect(x: 3, y: 0, width: 28, height: 28)
+        container.addSubview(hostingView)
+
+        accessory.view = container
+        window.addTitlebarAccessoryViewController(accessory)
+        pinHostingView = hostingView
+    }
+
+    private func applyAlwaysOnTop() {
+        if settings.windowAlwaysOnTop {
+            window.level = .floating
+            window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
+        } else {
+            window.level = .normal
+            window.collectionBehavior.remove([.canJoinAllSpaces, .fullScreenAuxiliary])
+        }
+        updatePinButtonAppearance()
+    }
+
+    private func updatePinButtonAppearance() {
+        guard let pinHostingView else { return }
+        pinHostingView.rootView = makePinButton()
+    }
+
+    private func makePinButton() -> WindowPinButton {
+        WindowPinButton(
+            isPinned: settings.windowAlwaysOnTop,
+            action: { [weak self] in
+                self?.toggleAlwaysOnTop()
+            }
+        )
     }
 
     private func applyContentLayout(_ mode: DetachedWindowContentMode) {
@@ -338,5 +388,23 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
         window.minSize = frameMin
         window.maxSize = frameMax
+    }
+}
+
+private struct WindowPinButton: View {
+    let isPinned: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isPinned ? "pin.fill" : "pin")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.codexInk)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+        .help(isPinned ? "取消置顶" : "置顶窗口")
+        .accessibilityLabel(isPinned ? "取消窗口置顶" : "窗口置顶")
     }
 }

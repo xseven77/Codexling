@@ -22,6 +22,7 @@
   --preview-desktop: #ececec;
   --preview-desktop-end: #e8e8e8;
   --preview-panel: #f4f4f4;
+  --preview-sidebar: #edf5f1;
   --preview-chrome: #fafafa;
   --preview-chrome-end: #f7f7f7;
   --preview-card: #ffffff;
@@ -42,6 +43,11 @@
   --preview-panel-shadow: 0 24px 60px rgba(36, 41, 51, 0.14);
   --preview-card-shadow: 0 3px 10px rgba(36, 41, 51, 0.06);
   --preview-coupon-bg: rgba(255, 95, 95, 0.07);
+  --preview-ticket-back: #eef1f0;
+  --preview-ticket-mid: #f7f8f7;
+  --preview-ticket-face: #fffef7;
+  --preview-green-soft: rgba(40, 192, 78, 0.12);
+  --preview-status-pill: #17a967;
   --preview-green: #28c04e;
   --preview-blue: #007aef;
   --preview-pink: #ff5f5f;
@@ -73,6 +79,7 @@
   --preview-desktop: #1a1a1d;
   --preview-desktop-end: #161618;
   --preview-panel: #212124;
+  --preview-sidebar: #1d2220;
   --preview-chrome: #2a2a2d;
   --preview-chrome-end: #252528;
   --preview-card: #333337;
@@ -93,6 +100,11 @@
   --preview-panel-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   --preview-card-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
   --preview-coupon-bg: rgba(255, 95, 95, 0.16);
+  --preview-ticket-back: #262a29;
+  --preview-ticket-mid: #2b2e2d;
+  --preview-ticket-face: #292a27;
+  --preview-green-soft: rgba(40, 192, 78, 0.14);
+  --preview-status-pill: #168c58;
   --preview-green: #28c04e;
   --preview-blue: #007aef;
   --preview-pink: #ff5f5f;

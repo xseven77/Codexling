@@ -27,6 +27,201 @@ struct CodexPet: Identifiable, Hashable, Sendable {
     let rowCount: Int
 }
 
+struct CodexPetSelectionSync: Sendable {
+    let configURL: URL
+
+    init(configURL: URL? = nil) {
+        self.configURL = configURL
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex/config.toml")
+    }
+
+    func readSelectedPetID() -> String? {
+        guard let contents = try? String(contentsOf: configURL, encoding: .utf8),
+              let codexID = selectedAvatarID(in: contents) else {
+            return nil
+        }
+        return appPetID(fromCodexID: codexID)
+    }
+
+    @discardableResult
+    func writeSelectedPetID(_ appPetID: String) throws -> Bool {
+        let codexID = codexPetID(fromAppID: appPetID)
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        let updated = updatingSelectedAvatarID(in: contents, to: codexID)
+        guard updated != contents else { return false }
+        try updated.write(to: configURL, atomically: true, encoding: .utf8)
+        return true
+    }
+
+    func codexPetID(fromAppID appPetID: String) -> String {
+        if appPetID.hasPrefix("builtin:") {
+            return String(appPetID.dropFirst("builtin:".count))
+        }
+        return appPetID
+    }
+
+    func appPetID(fromCodexID codexID: String) -> String {
+        codexID.hasPrefix("custom:") ? codexID : "builtin:\(codexID)"
+    }
+
+    func selectedAvatarID(in contents: String) -> String? {
+        let lines = contents.components(separatedBy: .newlines)
+        var isDesktopSection = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                isDesktopSection = trimmed == "[desktop]"
+                continue
+            }
+            guard isDesktopSection,
+                  let value = tomlStringValue(in: trimmed, key: "selected-avatar-id") else {
+                continue
+            }
+            return value
+        }
+        return nil
+    }
+
+    func updatingSelectedAvatarID(in contents: String, to codexID: String) -> String {
+        var lines = contents.components(separatedBy: .newlines)
+        let hadTrailingNewline = contents.hasSuffix("\n")
+        if hadTrailingNewline, lines.last == "" {
+            lines.removeLast()
+        }
+
+        let escapedID = codexID
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let settingLine = "selected-avatar-id = \"\(escapedID)\""
+        var desktopSectionIndex: Int?
+        var desktopSectionEnd = lines.count
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("[") && trimmed.hasSuffix("]") else { continue }
+            if desktopSectionIndex != nil {
+                desktopSectionEnd = index
+                break
+            }
+            if trimmed == "[desktop]" {
+                desktopSectionIndex = index
+            }
+        }
+
+        if let desktopSectionIndex {
+            for index in (desktopSectionIndex + 1)..<desktopSectionEnd {
+                let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+                if tomlStringValue(in: trimmed, key: "selected-avatar-id") != nil {
+                    let indentation = String(lines[index].prefix { $0 == " " || $0 == "\t" })
+                    lines[index] = indentation + settingLine
+                    return lines.joined(separator: "\n") + (hadTrailingNewline ? "\n" : "")
+                }
+            }
+            lines.insert(settingLine, at: desktopSectionIndex + 1)
+        } else {
+            if !lines.isEmpty, lines.last != "" {
+                lines.append("")
+            }
+            lines.append("[desktop]")
+            lines.append(settingLine)
+        }
+
+        return lines.joined(separator: "\n") + (hadTrailingNewline ? "\n" : "")
+    }
+
+    private func tomlStringValue(in line: String, key: String) -> String? {
+        guard !line.hasPrefix("#"),
+              let equalsIndex = line.firstIndex(of: "="),
+              line[..<equalsIndex].trimmingCharacters(in: .whitespaces) == key else {
+            return nil
+        }
+        let rawValue = line[line.index(after: equalsIndex)...]
+            .trimmingCharacters(in: .whitespaces)
+        guard rawValue.first == "\"",
+              let closingQuote = rawValue.dropFirst().firstIndex(of: "\"") else {
+            return nil
+        }
+        return String(rawValue[rawValue.index(after: rawValue.startIndex)..<closingQuote])
+            .replacingOccurrences(of: "\\\"", with: "\"")
+            .replacingOccurrences(of: "\\\\", with: "\\")
+    }
+}
+
+enum CodexApplicationRestartError: LocalizedError {
+    case applicationNotFound
+    case terminationRejected
+    case terminationTimedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .applicationNotFound:
+            "未找到 Codex 应用"
+        case .terminationRejected:
+            "Codex 拒绝退出，请先保存当前工作后手动重启"
+        case .terminationTimedOut:
+            "等待 Codex 退出超时，请手动重启"
+        }
+    }
+}
+
+@MainActor
+struct CodexApplicationController {
+    static let bundleIdentifier = "com.openai.codex"
+
+    private let applicationURLs: [URL]
+
+    init(applicationURLs: [URL]? = nil) {
+        if let applicationURLs {
+            self.applicationURLs = applicationURLs
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            self.applicationURLs = [
+                URL(fileURLWithPath: "/Applications/ChatGPT.app"),
+                URL(fileURLWithPath: "/Applications/Codex.app"),
+                home.appendingPathComponent("Applications/ChatGPT.app"),
+                home.appendingPathComponent("Applications/Codex.app"),
+            ]
+        }
+    }
+
+    func restart() async throws {
+        let runningApplication = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.bundleIdentifier)
+            .first
+        guard let applicationURL = runningApplication?.bundleURL ?? installedApplicationURL() else {
+            throw CodexApplicationRestartError.applicationNotFound
+        }
+
+        if let runningApplication {
+            guard runningApplication.terminate() else {
+                throw CodexApplicationRestartError.terminationRejected
+            }
+            var didTerminate = runningApplication.isTerminated
+            for _ in 0..<40 where !didTerminate {
+                try await Task.sleep(for: .milliseconds(150))
+                didTerminate = runningApplication.isTerminated
+            }
+            guard didTerminate else {
+                throw CodexApplicationRestartError.terminationTimedOut
+            }
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        _ = try await NSWorkspace.shared.openApplication(
+            at: applicationURL,
+            configuration: configuration
+        )
+    }
+
+    private func installedApplicationURL() -> URL? {
+        applicationURLs.first {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("Contents/Info.plist").path)
+        }
+    }
+}
+
 private struct CustomPetManifest: Decodable {
     let id: String
     let displayName: String

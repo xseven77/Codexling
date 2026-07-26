@@ -173,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openDetachedWindow() {
         guard let actions else { return }
+        settingsStore.syncPetSelectionFromCodex()
 
         if windowController == nil {
             windowController = DetachedWindowController(

@@ -9,6 +9,7 @@ final class PetFrameStore {
     private(set) var currentFrame: NSImage?
     private(set) var selectedPet: CodexPet?
     private(set) var activityState: CodexActivityState = .unavailable
+    private var lastInteractionAction: PetAnimationState?
     var onFrameChanged: (() -> Void)?
 
     init() {
@@ -28,21 +29,25 @@ final class PetFrameStore {
     }
 
     var canPlayIdleInteraction: Bool {
-        switch activityState {
-        case .idle, .unavailable:
-            true
-        default:
-            false
-        }
+        selectedPet != nil
     }
 
-    func playRandomIdleAction() {
-        guard canPlayIdleInteraction else { return }
-        guard let action = PetAnimationState.idleInteractionCandidates.randomElement() else { return }
+    @discardableResult
+    func playRandomIdleAction() -> PetAnimationState? {
+        guard canPlayIdleInteraction else { return nil }
+        let candidates = PetAnimationState.idleInteractionCandidates.filter {
+            $0 != lastInteractionAction
+        }
+        guard let action = candidates.randomElement()
+            ?? PetAnimationState.idleInteractionCandidates.randomElement() else {
+            return nil
+        }
+        lastInteractionAction = action
         player.playOneShot(action) { [weak self] in
             guard let self else { return }
             player.setState(activityState.petAnimationState)
         }
+        return action
     }
 
     func stop() {

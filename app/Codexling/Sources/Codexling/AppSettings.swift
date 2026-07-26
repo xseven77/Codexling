@@ -159,9 +159,12 @@ final class AppSettingsStore {
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
+        static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
     }
 
     private let defaults: UserDefaults
+    private let codexPetSelectionSync: CodexPetSelectionSync?
+    private var suppressCodexPetSelectionWrite = true
     private(set) var systemColorScheme: ColorScheme
 
     var theme: AppThemePreference {
@@ -193,6 +196,9 @@ final class AppSettingsStore {
         didSet {
             guard selectedPetID != oldValue else { return }
             defaults.set(selectedPetID, forKey: Keys.selectedPetID)
+            if !suppressCodexPetSelectionWrite {
+                syncSelectedPetToCodex()
+            }
             onPetSettingsChanged?()
         }
     }
@@ -221,9 +227,18 @@ final class AppSettingsStore {
         }
     }
 
+    var windowAlwaysOnTop: Bool {
+        didSet {
+            guard windowAlwaysOnTop != oldValue else { return }
+            defaults.set(windowAlwaysOnTop, forKey: Keys.windowAlwaysOnTop)
+        }
+    }
+
     private(set) var availablePets: [CodexPet] = []
     private(set) var isCodexlingPetInstalled = false
     private(set) var codexlingPetInstallationError: String?
+    private(set) var codexPetSyncError: String?
+    private(set) var codexPetRestartRequired = false
 
     var selectedPet: CodexPet? {
         availablePets.first { $0.id == selectedPetID } ?? availablePets.first
@@ -237,11 +252,16 @@ final class AppSettingsStore {
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        codexPetSelectionSync: CodexPetSelectionSync? = nil
+    ) {
         if defaults === UserDefaults.standard {
             Self.migrateLegacyDefaultsIfNeeded(into: defaults)
         }
         self.defaults = defaults
+        self.codexPetSelectionSync = codexPetSelectionSync
+            ?? (defaults === UserDefaults.standard ? CodexPetSelectionSync() : nil)
         systemColorScheme = Self.currentSystemColorScheme()
 
         if let raw = defaults.string(forKey: Keys.theme),
@@ -265,11 +285,14 @@ final class AppSettingsStore {
         statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
         let savedCornerPercent = defaults.object(forKey: Keys.statusBarCornerPercent) as? Double ?? 50
         statusBarCornerPercent = min(max(savedCornerPercent, 20), 50)
+        windowAlwaysOnTop = defaults.object(forKey: Keys.windowAlwaysOnTop) as? Bool ?? false
         // The status capsule now has one behavior: open the detached window.
         // Remove the retired popover preference so older installations cannot
         // retain an unreachable mode.
         defaults.removeObject(forKey: "codexling.statusBarClickBehavior")
         reloadPets(notify: false)
+        syncPetSelectionFromCodex()
+        suppressCodexPetSelectionWrite = false
     }
 
     private static func migrateLegacyDefaultsIfNeeded(into defaults: UserDefaults) {
@@ -282,7 +305,8 @@ final class AppSettingsStore {
             Keys.selectedPetID,
             Keys.petBackgroundColor,
             Keys.statusBarWaveEnabled,
-            Keys.statusBarCornerPercent
+            Keys.statusBarCornerPercent,
+            Keys.windowAlwaysOnTop
         ]
         for key in keys where defaults.object(forKey: key) == nil {
             let suffix = key.replacingOccurrences(of: "codexling.", with: "")
@@ -324,6 +348,31 @@ final class AppSettingsStore {
         } else if notify {
             onPetSettingsChanged?()
         }
+    }
+
+    func syncPetSelectionFromCodex() {
+        guard let codexPetID = codexPetSelectionSync?.readSelectedPetID(),
+              availablePets.contains(where: { $0.id == codexPetID }),
+              selectedPetID != codexPetID else {
+            return
+        }
+        selectedPetID = codexPetID
+    }
+
+    private func syncSelectedPetToCodex() {
+        guard let codexPetSelectionSync else { return }
+        do {
+            if try codexPetSelectionSync.writeSelectedPetID(selectedPetID) {
+                codexPetRestartRequired = true
+            }
+            codexPetSyncError = nil
+        } catch {
+            codexPetSyncError = error.localizedDescription
+        }
+    }
+
+    func markCodexPetRestartCompleted() {
+        codexPetRestartRequired = false
     }
 
     func installCodexlingPet() {

@@ -90,6 +90,13 @@ enum CodexActivityState: String, Sendable {
     }
 }
 
+private extension String {
+    var nilIfEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
 struct CodexActivitySnapshot: Equatable, Sendable {
     var state: CodexActivityState
     var detail: String
@@ -134,6 +141,9 @@ struct CodexTaskActivity: Identifiable, Equatable, Sendable {
     var detail: String
     var title: String
     var updatedAt: Date
+    var workspaceName: String? = nil
+    var gitBranch: String? = nil
+    var model: String? = nil
 }
 
 struct ParsedCodexThreadActivity: Equatable, Sendable {
@@ -142,6 +152,9 @@ struct ParsedCodexThreadActivity: Equatable, Sendable {
     var detail: String
     var title: String
     var updatedAt: Date
+    var workspaceName: String? = nil
+    var gitBranch: String? = nil
+    var model: String? = nil
 
     var isActive: Bool {
         switch state {
@@ -351,18 +364,22 @@ struct CodexActivityEventParser: Sendable {
 
 struct CodexActivityService: Sendable {
     let databaseURLs: [URL]
+    let sessionIndexURLs: [URL]
     let parser = CodexActivityEventParser()
 
-    init(databaseURLs: [URL]? = nil) {
+    init(databaseURLs: [URL]? = nil, sessionIndexURLs: [URL]? = nil) {
+        let home = FileManager.default.homeDirectoryForCurrentUser
         if let databaseURLs {
             self.databaseURLs = databaseURLs
         } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser
             self.databaseURLs = [
                 home.appendingPathComponent(".codex/state_5.sqlite"),
                 home.appendingPathComponent(".codex/sqlite/state_5.sqlite")
             ]
         }
+        self.sessionIndexURLs = sessionIndexURLs ?? [
+            home.appendingPathComponent(".codex/session_index.jsonl")
+        ]
     }
 
     func loadSnapshot(now: Date = Date()) -> CodexActivitySnapshot {
@@ -372,6 +389,7 @@ struct CodexActivityService: Sendable {
             return .unavailable
         }
 
+        let indexedTitles = loadIndexedThreadTitles()
         let rows = loadRecentThreads(databaseURL: databaseURL)
         guard !rows.isEmpty else {
             return CodexActivitySnapshot(
@@ -388,7 +406,20 @@ struct CodexActivityService: Sendable {
                 of: URL(fileURLWithPath: row.rolloutPath),
                 expandForLifecycle: index == 0
             ) else { return nil }
-            return parser.parse(data: data, id: row.id, title: row.title, now: now)
+            let indexedTitle = indexedTitles[row.id]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let databaseName = row.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayTitle = if let indexedTitle, !indexedTitle.isEmpty {
+                indexedTitle
+            } else if let databaseName, !databaseName.isEmpty {
+                databaseName
+            } else {
+                row.title
+            }
+            var activity = parser.parse(data: data, id: row.id, title: displayTitle, now: now)
+            activity.workspaceName = row.workspaceName
+            activity.gitBranch = row.gitBranch
+            activity.model = row.model
+            return activity
         }
         guard !activities.isEmpty else { return .unavailable }
 
@@ -427,13 +458,26 @@ struct CodexActivityService: Sendable {
                     state: $0.state,
                     detail: $0.detail,
                     title: $0.title,
-                    updatedAt: $0.updatedAt
+                    updatedAt: $0.updatedAt,
+                    workspaceName: $0.workspaceName,
+                    gitBranch: $0.gitBranch,
+                    model: $0.model
                 )
             }
         )
     }
 
-    private func loadRecentThreads(databaseURL: URL) -> [(id: String, rolloutPath: String, title: String)] {
+    private typealias RecentThread = (
+        id: String,
+        rolloutPath: String,
+        title: String,
+        name: String?,
+        workspaceName: String?,
+        gitBranch: String?,
+        model: String?
+    )
+
+    private func loadRecentThreads(databaseURL: URL) -> [RecentThread] {
         var database: OpaquePointer?
         guard sqlite3_open_v2(
             databaseURL.path,
@@ -448,8 +492,13 @@ struct CodexActivityService: Sendable {
         let threadSourceFilter = tableHasColumn("thread_source", database: database)
             ? "AND COALESCE(thread_source, 'user') <> 'subagent'"
             : ""
+        let nameExpression = tableHasColumn("name", database: database) ? "name" : "NULL"
+        let cwdExpression = tableHasColumn("cwd", database: database) ? "cwd" : "NULL"
+        let branchExpression = tableHasColumn("git_branch", database: database) ? "git_branch" : "NULL"
+        let modelExpression = tableHasColumn("model", database: database) ? "model" : "NULL"
         let sql = """
-        SELECT id, rollout_path, title
+        SELECT id, rollout_path, title,
+               \(nameExpression), \(cwdExpression), \(branchExpression), \(modelExpression)
         FROM threads
         WHERE archived = 0
         \(threadSourceFilter)
@@ -463,16 +512,43 @@ struct CodexActivityService: Sendable {
         }
         defer { sqlite3_finalize(statement) }
 
-        var rows: [(String, String, String)] = []
+        var rows: [RecentThread] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let idText = sqlite3_column_text(statement, 0),
                   let pathText = sqlite3_column_text(statement, 1) else { continue }
             let id = String(cString: idText)
             let path = String(cString: pathText)
             let title = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? "Codex 任务"
-            rows.append((id, path, title))
+            let name = sqliteString(statement, column: 3)
+            let cwd = sqliteString(statement, column: 4)
+            let workspaceName = cwd.map {
+                URL(fileURLWithPath: $0).lastPathComponent
+            }?.nilIfEmpty
+            let branch = sqliteString(statement, column: 5)?.nilIfEmpty
+            let model = sqliteString(statement, column: 6)?.nilIfEmpty
+            rows.append((id, path, title, name, workspaceName, branch, model))
         }
         return rows
+    }
+
+    private func loadIndexedThreadTitles() -> [String: String] {
+        var titles: [String: String] = [:]
+        for url in sessionIndexURLs where FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            for line in data.split(separator: 0x0A) {
+                guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let id = object["id"] as? String,
+                      let title = object["thread_name"] as? String else {
+                    continue
+                }
+                titles[id] = title
+            }
+        }
+        return titles
+    }
+
+    private func sqliteString(_ statement: OpaquePointer, column: Int32) -> String? {
+        sqlite3_column_text(statement, column).map { String(cString: $0) }
     }
 
     private func tableHasColumn(_ name: String, database: OpaquePointer) -> Bool {

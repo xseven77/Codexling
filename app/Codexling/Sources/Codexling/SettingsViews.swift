@@ -11,6 +11,8 @@ struct SettingsView: View {
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var showsLogoutConfirmation = false
     @State private var showsPetPicker = false
+    @State private var showsCodexRestartConfirmation = false
+    @State private var isRestartingCodex = false
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @Environment(\.openURL) private var openURL
@@ -96,6 +98,14 @@ struct SettingsView: View {
             Button("退出登录", role: .destructive, action: onLogout)
         } message: {
             Text("退出后需要重新授权才能查看用量。")
+        }
+        .alert("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("重启 Codex", role: .destructive) {
+                restartCodex()
+            }
+        } message: {
+            Text("这会退出并重新打开 Codex，正在运行或等待确认的任务可能会被中断。")
         }
         .onPreferenceChange(SettingsMeasuredContentHeightKey.self) { height in
             guard layout == .window, height > 1 else { return }
@@ -254,21 +264,25 @@ struct SettingsView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            Color.clear.frame(width: 34, height: 34)
+            Color.clear.frame(width: 42, height: 28)
             Spacer()
             Text("设置")
                 .font(.system(size: 16, weight: .semibold))
             Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.codexInk)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.codexInk)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                .help("关闭设置")
+                .accessibilityLabel("关闭设置")
+                Color.clear.frame(width: 10, height: 28)
             }
-            .buttonStyle(CodexPressableStyle(cornerRadius: 10))
-            .help("关闭设置")
-            .accessibilityLabel("关闭设置")
+            .frame(width: 42)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
@@ -425,6 +439,10 @@ struct SettingsView: View {
                         .settingsGroupSurface()
                 }
 
+                if settings.codexPetRestartRequired {
+                    codexPetRestartNotice
+                }
+
                 HStack(spacing: 10) {
                     let builtInCount = settings.availablePets.filter { $0.source == .codexBuiltIn }.count
                     let customCount = settings.availablePets.filter { $0.source == .custom }.count
@@ -566,7 +584,11 @@ struct SettingsView: View {
             }
             settings.selectedPetID = pet.id
             showsPetPicker = false
-            showToast("当前 Pet：\(pet.displayName)", systemImage: "pawprint.fill")
+            if let error = settings.codexPetSyncError {
+                showToast("Codex Pet 同步失败：\(error)", systemImage: "exclamationmark.triangle.fill")
+            } else {
+                showToast("已写入 Codex，重启后切换为 \(pet.displayName)", systemImage: "arrow.clockwise.circle.fill")
+            }
         } label: {
             HStack(spacing: 8) {
                 Text(pet.displayName)
@@ -582,6 +604,63 @@ struct SettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var codexPetRestartNotice: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.codexAmber)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Codex 重启后生效")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("当前运行中的 Pet 不会自动刷新。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                showsCodexRestartConfirmation = true
+            } label: {
+                if isRestartingCodex {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 64)
+                } else {
+                    Text("重启 Codex")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                }
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+            .disabled(isRestartingCodex)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.codexAmber.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.codexAmber.opacity(0.24), lineWidth: 0.8)
+        }
+    }
+
+    private func restartCodex() {
+        guard !isRestartingCodex else { return }
+        isRestartingCodex = true
+        Task { @MainActor in
+            do {
+                try await CodexApplicationController().restart()
+                settings.markCodexPetRestartCompleted()
+                showToast("Codex 已重新打开，Pet 已生效", systemImage: "pawprint.fill")
+            } catch {
+                showToast("无法重启 Codex：\(error.localizedDescription)", systemImage: "exclamationmark.triangle.fill")
+            }
+            isRestartingCodex = false
+        }
     }
 
     @ViewBuilder

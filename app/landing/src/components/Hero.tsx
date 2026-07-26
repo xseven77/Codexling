@@ -66,7 +66,7 @@ export function Hero() {
           </div>
         </div>
 
-        <div className="min-w-0 max-sm:animate-none sm:animate-float">
+        <div className="min-w-0">
           <MenuBarPreview />
         </div>
       </div>
