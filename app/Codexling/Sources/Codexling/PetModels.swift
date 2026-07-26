@@ -148,6 +148,98 @@ struct CodexPetSelectionSync: Sendable {
     }
 }
 
+@MainActor
+final class CodexPetSelectionMonitor {
+    private let configURL: URL
+    private let debounceInterval: TimeInterval
+    private let onChange: () -> Void
+    private var source: DispatchSourceFileSystemObject?
+    private var fileDescriptor: CInt = -1
+    private var debounceWorkItem: DispatchWorkItem?
+    private var rearmWorkItem: DispatchWorkItem?
+
+    init(
+        configURL: URL? = nil,
+        debounceInterval: TimeInterval = 0.3,
+        onChange: @escaping () -> Void
+    ) {
+        self.configURL = configURL
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex/config.toml")
+        self.debounceInterval = debounceInterval
+        self.onChange = onChange
+    }
+
+    func start() {
+        guard source == nil else { return }
+        installSource()
+    }
+
+    func stop() {
+        debounceWorkItem?.cancel()
+        debounceWorkItem = nil
+        rearmWorkItem?.cancel()
+        rearmWorkItem = nil
+        source?.cancel()
+        source = nil
+    }
+
+    private func installSource() {
+        guard source == nil else { return }
+        let descriptor = open(configURL.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            scheduleRearm()
+            return
+        }
+
+        fileDescriptor = descriptor
+        let nextSource = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .attrib, .rename, .delete, .revoke],
+            queue: .main
+        )
+        nextSource.setEventHandler { [weak self, weak nextSource] in
+            guard let self, let nextSource else { return }
+            let event = nextSource.data
+            scheduleSync()
+            if !event.intersection([.rename, .delete, .revoke]).isEmpty {
+                source?.cancel()
+                source = nil
+                scheduleRearm()
+            }
+        }
+        nextSource.setCancelHandler { [weak self] in
+            guard let self else { return }
+            if fileDescriptor >= 0 {
+                close(fileDescriptor)
+                fileDescriptor = -1
+            }
+        }
+        source = nextSource
+        nextSource.resume()
+    }
+
+    private func scheduleSync() {
+        debounceWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.onChange()
+        }
+        debounceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)
+    }
+
+    private func scheduleRearm() {
+        rearmWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            rearmWorkItem = nil
+            installSource()
+        }
+        rearmWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+}
+
 enum CodexApplicationRestartError: LocalizedError {
     case applicationNotFound
     case terminationRejected

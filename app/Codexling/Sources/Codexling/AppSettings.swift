@@ -356,7 +356,21 @@ final class AppSettingsStore {
               selectedPetID != codexPetID else {
             return
         }
+        let wasSuppressingWrite = suppressCodexPetSelectionWrite
+        suppressCodexPetSelectionWrite = true
         selectedPetID = codexPetID
+        suppressCodexPetSelectionWrite = wasSuppressingWrite
+        codexPetRestartRequired = false
+        codexPetSyncError = nil
+    }
+
+    func refreshPetsAndSyncSelectionFromCodex() {
+        let wasSuppressingWrite = suppressCodexPetSelectionWrite
+        suppressCodexPetSelectionWrite = true
+        reloadPets(notify: false)
+        syncPetSelectionFromCodex()
+        suppressCodexPetSelectionWrite = wasSuppressingWrite
+        onPetSettingsChanged?()
     }
 
     private func syncSelectedPetToCodex() {

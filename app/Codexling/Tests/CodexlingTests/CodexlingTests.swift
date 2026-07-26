@@ -801,6 +801,36 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexPetSelectionMonitorDetectsAtomicConfigReplacement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-pet-monitor-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        try """
+        [desktop]
+        selected-avatar-id = "custom:nimbus"
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let changeDetected = expectation(description: "Pet config change detected")
+        let monitor = CodexPetSelectionMonitor(
+            configURL: configURL,
+            debounceInterval: 0.05
+        ) {
+            changeDetected.fulfill()
+        }
+        monitor.start()
+
+        try """
+        [desktop]
+        selected-avatar-id = "custom:levi"
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        await fulfillment(of: [changeDetected], timeout: 2)
+        monitor.stop()
+    }
+
+    @MainActor
     func testWindowAlwaysOnTopPreferencePersists() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

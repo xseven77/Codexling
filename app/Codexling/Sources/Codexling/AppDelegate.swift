@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let usageService = CodexUsageService()
     private var actions: UsageActions?
     private var autoRefreshTimer: Timer?
+    private var codexPetSelectionMonitor: CodexPetSelectionMonitor?
     private var isRefreshing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -78,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startAutoRefreshTimer()
         activityStore.start()
         companionStatsStore.start()
+        let petSelectionMonitor = CodexPetSelectionMonitor { [weak self] in
+            self?.settingsStore.refreshPetsAndSyncSelectionFromCodex()
+        }
+        petSelectionMonitor.start()
+        codexPetSelectionMonitor = petSelectionMonitor
         syncCompanionState()
         migrateLegacyTokenIfNeeded()
         openDetachedWindow()
@@ -90,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activityStore.stop()
         companionStatsStore.stop()
         frameStore.stop()
+        codexPetSelectionMonitor?.stop()
     }
 
     func applicationDidUpdate(_ notification: Notification) {
