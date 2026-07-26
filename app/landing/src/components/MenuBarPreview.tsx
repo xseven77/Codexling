@@ -1,5 +1,9 @@
+"use client";
+
 import Image from "next/image";
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+
+const MOBILE_PREVIEW_WIDTH = 560;
 
 function Ring({
   percent,
@@ -98,12 +102,61 @@ function ResetTicket() {
 }
 
 export function MenuBarPreview() {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [mobileLayout, setMobileLayout] = useState<{ scale: number; height: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current;
+    const canvas = canvasRef.current;
+    if (!wrapper || !canvas) return;
+
+    const updateScale = () => {
+      if (!window.matchMedia("(max-width: 639px)").matches) {
+        setMobileLayout(null);
+        return;
+      }
+
+      const scale = Math.min(1, wrapper.clientWidth / MOBILE_PREVIEW_WIDTH);
+      const height = canvas.offsetHeight * scale;
+      setMobileLayout((current) => {
+        if (
+          current &&
+          Math.abs(current.scale - scale) < 0.001 &&
+          Math.abs(current.height - height) < 0.5
+        ) {
+          return current;
+        }
+        return { scale, height };
+      });
+    };
+
+    updateScale();
+    const observer = new ResizeObserver(updateScale);
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
-      className="overflow-hidden rounded-[24px] border border-[color:var(--preview-frame-border)] bg-[var(--preview-bg)] shadow-[var(--preview-shadow)]"
-      aria-hidden
+      ref={wrapperRef}
+      className="relative w-full max-sm:aspect-[560/499]"
+      style={mobileLayout ? { height: mobileLayout.height, aspectRatio: "auto" } : undefined}
     >
-      <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-3 py-1.5 backdrop-blur-xl">
+      <div
+        ref={canvasRef}
+        className="overflow-hidden rounded-[24px] border border-[color:var(--preview-frame-border)] bg-[var(--preview-bg)] shadow-[var(--preview-shadow)] max-sm:w-[560px] sm:w-full"
+        style={
+          mobileLayout
+            ? {
+                transform: `scale(${mobileLayout.scale})`,
+                transformOrigin: "top left",
+              }
+            : undefined
+        }
+        aria-hidden
+      >
+        <div className="border-b border-[color:var(--preview-hairline)] bg-[var(--preview-menubar-bg)] px-3 py-1.5 backdrop-blur-xl">
         <div className="flex items-center justify-between gap-2 text-[9px] text-[var(--preview-menubar-fg)]">
           <div className="flex min-w-0 shrink gap-2">
             <span className="shrink-0"></span>
@@ -120,7 +173,7 @@ export function MenuBarPreview() {
         </div>
       </div>
 
-      <div className="grid h-[462px] grid-cols-[31%_69%] bg-[var(--preview-panel)]">
+        <div className="grid h-[462px] grid-cols-[31%_69%] bg-[var(--preview-panel)]">
         <aside className="relative flex min-w-0 flex-col border-r border-[color:var(--preview-line)] bg-[var(--preview-sidebar)] px-3.5 pb-4 pt-3">
           <div className="flex gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
@@ -231,6 +284,7 @@ export function MenuBarPreview() {
             </div>
           </div>
         </main>
+        </div>
       </div>
     </div>
   );
