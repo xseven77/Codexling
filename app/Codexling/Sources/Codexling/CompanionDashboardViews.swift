@@ -1583,7 +1583,7 @@ private struct CompanionLoginView: View {
                 .disabled(isAuthenticating)
                 .frame(maxWidth: 292)
                 .padding(.top, 22)
-                Text("登录信息仅保存在本机 Keychain")
+                Text("授权 token 仅保存在本机 Application Support")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
                     .padding(.top, 12)

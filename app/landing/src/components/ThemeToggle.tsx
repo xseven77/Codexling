@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTheme, type ThemeName } from "./ThemeProvider";
 
 function SunIcon({ className }: { className?: string }) {
@@ -43,14 +49,18 @@ const OPTIONS: { value: ThemeName; label: string; Icon: typeof SunIcon }[] = [
   { value: "dark", label: "深色", Icon: MoonIcon },
 ];
 
+const subscribeToHydration = () => () => {};
+
 export function ThemeToggle({ className = "" }: { className?: string }) {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(
+    subscribeToHydration,
+    () => true,
+    () => false,
+  );
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const listId = useId();
-
-  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;

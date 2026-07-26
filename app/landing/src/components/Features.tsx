@@ -1,74 +1,110 @@
-const features = [
+import {
+  Activity,
+  Gauge,
+  MonitorCog,
+  PanelTop,
+  PawPrint,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+type Feature = {
+  title: string;
+  description: string;
+  icon: LucideIcon;
+};
+
+const features: Feature[] = [
   {
-    title: "菜单栏常驻摘要",
+    title: "状态随时看",
     description:
-      "在 macOS 状态栏直接看到 5 小时与周额度百分比，无需打开浏览器或 ChatGPT 页面。",
-    icon: "◉",
+      "圆点显示任务状态，旁边直接给出当前额度窗口。胶囊可保持中性，也可随额度变化。",
+    icon: Activity,
   },
   {
-    title: "官方 OAuth 登录",
+    title: "会主动出现的任务浮窗",
     description:
-      "沿用 Codex usage 同源 PKCE 流程，跳转 OpenAI 官方授权页，Token 存入 Keychain。",
-    icon: "🔐",
+      "空闲时悬停即可快速查看；Codex 开始工作后，浮窗会自动展开并持续呈现 Pet、任务摘要和活跃任务数。",
+    icon: PanelTop,
   },
   {
-    title: "详情弹窗一目了然",
+    title: "并行任务集中查看",
     description:
-      "点击菜单栏即可查看额度、重置券、过期时间与最近刷新状态；底部一键刷新，顶部可进设置。",
-    icon: "▦",
+      "逐个查看任务状态、工作区、分支、模型和最近摘要，也会记录今天一起工作的时长。",
+    icon: MonitorCog,
   },
   {
-    title: "主题与自动刷新",
+    title: "额度和到期时间",
     description:
-      "设置页支持浅色 / 深色 / 跟随系统，并可配置 30 秒到 10 分钟的自动刷新间隔。",
-    icon: "⚙",
+      "各个额度窗口、重置时间和重置券都在一起；能取到时也会显示当前订阅周期。",
+    icon: Gauge,
   },
   {
-    title: "本地快照缓存",
+    title: "Pet 跟着任务动",
     description:
-      "最近一次成功拉取的数据会缓存在本地，启动更快，离线也能看到上次额度概况。",
-    icon: "⚡",
+      "内置 Pet 和自定义 Pet 都能用。切换后会同步到 Codex，需要重启时 App 会提醒你。",
+    icon: PawPrint,
   },
   {
-    title: "隐私优先设计",
-    description: "不保存账号密码，不绕过 MFA / SSO，不依赖私有账号凭证。",
-    icon: "🛡",
+    title: "任务数据留在本机",
+    description:
+      "登录在 OpenAI 官方页面完成；任务记录只在本机读取，不会由 Codexling 另行上传。",
+    icon: ShieldCheck,
   },
   {
-    title: "开源可审计",
-    description: "Swift 源码完全开放，GitHub Release 提供 DMG 与 ZIP 两种安装方式。",
-    icon: "⌘",
+    title: "常用设置都在 App 里",
+    description:
+      "主题、额度刷新、状态栏流光、窗口置顶和版本更新都能在 App 中完成。",
+    icon: RefreshCw,
   },
 ];
 
 export function Features() {
   return (
-    <section id="features" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24" aria-labelledby="features-heading">
+    <section
+      id="features"
+      className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24"
+      aria-labelledby="features-heading"
+    >
       <div className="max-w-2xl">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-accent">
-          Features
+        <p className="text-sm font-medium tracking-[0.16em] text-accent">
+          主要功能
         </p>
-        <h2 id="features-heading" className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl">
-          为 macOS 原生体验而生
+        <h2
+          id="features-heading"
+          className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl"
+        >
+          不只看额度，也看 Codex 在做什么
         </h2>
         <p className="mt-4 text-base text-muted sm:text-lg">
-          借鉴 OpenAI 与 Notion 的简洁产品叙事，把复杂额度信息压缩成一眼可读的状态栏体验。
+          菜单栏随时看状态，动态浮窗在任务开始时主动跟进，点开完整窗口查看任务、Pet 和用量。
         </p>
       </div>
 
-      <div className="mt-10 grid gap-4 sm:mt-12 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {features.map((feature) => (
-          <article
-            key={feature.title}
-            className="glass group rounded-2xl p-5 transition-transform duration-300 sm:rounded-3xl sm:p-6 sm:hover:-translate-y-1"
-          >
-            <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-accent-soft text-lg">
-              {feature.icon}
-            </div>
-            <h3 className="text-lg font-medium">{feature.title}</h3>
-            <p className="mt-2 text-sm leading-7 text-muted">{feature.description}</p>
-          </article>
-        ))}
+      <div className="mt-10 grid gap-4 sm:mt-12 sm:grid-cols-2 sm:gap-5 lg:grid-cols-12">
+        {features.map((feature, index) => {
+          const Icon = feature.icon;
+
+          return (
+            <article
+              key={feature.title}
+              className={[
+                "glass group min-h-[210px] overflow-hidden rounded-2xl p-5",
+                "bg-gradient-to-br from-surface/70 to-card/30",
+                "transition-[transform,border-color,box-shadow] duration-300",
+                "sm:rounded-3xl sm:p-6 sm:hover:-translate-y-1 sm:hover:border-accent/25 sm:hover:shadow-[0_18px_50px_rgba(0,0,0,0.12)]",
+                index < 3 ? "lg:col-span-4" : "lg:col-span-3",
+              ].join(" ")}
+            >
+              <div className="mb-7 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-accent-soft text-accent ring-1 ring-accent/10">
+                <Icon aria-hidden="true" size={21} strokeWidth={1.8} />
+              </div>
+              <h3 className="text-lg font-medium">{feature.title}</h3>
+              <p className="mt-2 text-sm leading-7 text-muted">{feature.description}</p>
+            </article>
+          );
+        })}
       </div>
     </section>
   );

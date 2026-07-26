@@ -410,7 +410,7 @@ struct SettingsView: View {
 
                 SettingsInlineRow(
                     title: "活动状态流光",
-                    subtitle: "非空闲时，在状态栏胶囊内显示从左向右的流光"
+                    subtitle: "非空闲时，在状态栏胶囊和任务浮窗内显示活动流光"
                 ) {
                     SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
                 }

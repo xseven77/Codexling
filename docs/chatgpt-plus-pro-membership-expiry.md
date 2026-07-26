@@ -1,7 +1,7 @@
 # ChatGPT Plus / Pro 会员到期时间调研方案
 
-> 文档版本：2026-07-24  
-> 状态：已完成「验证机制落地 + 公开端点调研」；**本机实探测需你在登录后执行一次脚本**（见 §5）。
+> 文档版本：2026-07-27
+> 状态：探测、实机验证和产品化均已完成；§5 保留为可选复现步骤。
 
 ---
 
@@ -13,10 +13,10 @@
 | 能否用 **同一 OAuth Bearer** 读取会员到期？ | **有较可行路径**：社区与第三方实现指向 ChatGPT Web **`GET /backend-api/subscriptions?account_id=…`**，响应含 `plan_type`、`active_until`（RFC3339）、`will_renew` 等（**非公开文档 API，存在变更/403 风险**）。 |
 | 备选 | **`GET /backend-api/accounts/check/v4-2023-04-27`** 在多账号/Team 场景下，`accounts.*.entitlement.expires_at` 可能描述 **entitlement**（与当前选中 workspace 相关，不等于个人 Plus 账单日时需甄别）。 |
 
-**产品建议（按稳妥程度）：**
+**当前产品边界：**
 
 1. **不要**把 `wham` 额度窗口的 `reset_at` / 重置券 `expires_at` 当作会员到期展示。  
-2. **优先**在 OAuth 同源、用户已授权前提下，增加 **subscriptions 探测 + 解析 `active_until`**（失败则静默降级，仅显示 `plan_type`）。  
+2. Codexling 已在 OAuth 同源、用户已授权前提下 best-effort 请求 **subscriptions** 并解析 `active_until`；失败时静默降级，仅保留额度和 `plan_type`。
 3. **长期**关注 OpenAI 是否提供正式 Consumer Subscription API；在此之前 treat 为 **best-effort 非保证字段**。
 
 ---
@@ -49,7 +49,7 @@
 | 组件 | 说明 |
 |------|------|
 | `CodexAPIProbe.swift` | 保存 JSON、扫描 `subscription*` / `active_until` / `entitlement` 等键路径 |
-| `CodexUsageService.runChatGPTAPIProbe()` | 用 Keychain token 拉 wham + 探测 subscriptions / accounts-check |
+| `CodexUsageService.runChatGPTAPIProbe()` | 用 Application Support 中的本地 OAuth token 拉 wham，并探测 subscriptions / accounts-check |
 | CLI | `Codexling --probe-chatgpt-apis` |
 | 脚本 | `app/Codexling/scripts/run_chatgpt_api_probe.sh` |
 
@@ -139,47 +139,46 @@ sub2api 测试表明：过期 org workspace 会 fallback 到 personal 账号的 
 
 ---
 
-## 4. 产品化方案（若验证通过）
+## 4. 已落地的产品化实现
 
-> **2026-07-24 更新：** 已在 Codexling 落地：`fetchQuotaSnapshot` 并行拉取 `subscriptions`，写入 `CodexUsageSnapshot.subscriptionActiveUntilISO` / `subscriptionWillRenew`；设置页账号区展示；首页 7 天内琥珀色提醒条。
+> **2026-07-24 更新：** 已在 Codexling 落地：`fetchQuotaSnapshot` 在额度成功后 best-effort 拉取 `subscriptions`，写入 `CodexUsageSnapshot.subscriptionActiveUntilISO` / `subscriptionWillRenew`；设置页账号区展示；首页 7 天内琥珀色提醒条。
 
-### 4.1 数据模型（建议）
+### 4.1 当前数据模型
 
 ```swift
-struct ChatGPTSubscriptionSnapshot: Codable, Equatable {
-    var planType: String          // plus / pro / free …
-    var activeUntil: Date?        // subscriptions.active_until
-    var willRenew: Bool?
-    var source: String            // "subscriptions" | "accounts-check"
-    var fetchedAt: Date
+struct CodexUsageSnapshot: Codable, Equatable, Sendable {
+    // 其他额度与账号字段……
+    var subscriptionActiveUntilISO: String?
+    var subscriptionWillRenew: Bool?
 }
 ```
 
-挂载到 `CodexUsageSnapshot` 或并行字段；**UI 文案**：「当前周期至 …」/「自动续费」而非含糊「会员过期」（避免与 API 语义偏差）。
+字段已直接挂载到 `CodexUsageSnapshot`。UI 使用「当前周期至 …」/「自动续费」；仅在 `will_renew == false` 时使用「会员到期」。
 
 ### 4.2 拉取策略
 
 ```text
 刷新用量
-  → wham/usage（现有）
-  → 并行或串行 GET subscriptions?account_id=
-       200 + active_until → 解析
-       否则 → 可选 GET accounts/check → 解析 entitlement（带 source 标记）
-       全失败 → 仅 plan_type（来自 wham）
+  → GET wham/usage
+  → 可选 GET wham/rate-limit-reset-credits
+  → GET subscriptions?account_id=
+       200 + active_until → 写入当前快照
+       失败或字段缺失 → 不展示订阅周期，额度仍正常返回
 ```
 
-- 缓存：与用量快照同生命周期；失败保留上次成功值并标注 stale。  
-- 隐私：原始 JSON 仅 debug 落盘（默认关）；不上传服务器。
+- 缓存：订阅字段与用量快照同生命周期；一次完整刷新成功后写入最新快照。
+- 隐私：原始 JSON 仅在 debug probe 显式开启时落盘（默认关）；不上传服务器。
 
-### 4.3 合规与体验
+### 4.3 当前降级与体验
 
-- 设置页增加说明：「到期时间来自 ChatGPT 网页接口，可能与账单邮件略有差异」。  
-- 403 时提示「当前账号无法读取订阅详情，请在 chatgpt.com 查看」。  
-- 不在日志中打印 Bearer token。
+- 解析到周期时，设置页展示「当前周期至 …」或「会员到期：…」，并展示续费状态。
+- 周期在 7 天内或已经结束时，首页显示琥珀色提醒。
+- subscriptions 请求失败或字段缺失时不单独报错；设置页保留「订阅与账单请在 ChatGPT 官网管理」和官方 Billing 链接。
+- 不在日志中打印 Bearer token；只有显式开启 debug probe 才会把响应 JSON 写入 Application Support。
 
 ---
 
-## 5. 请你本地执行的一次验证（完成第一步的「实数据」）
+## 5. 可选：本地复现探测
 
 在 **已用 Codexling 登录** 的本机执行：
 
@@ -201,7 +200,7 @@ cd app/Codexling && swift run Codexling --probe-chatgpt-apis
 2. 看 `wham-usage-cached.subscriptionFieldHits` 是否出现 `active_until`。  
 3. 打开 `subscriptions-200.json`（若存在）确认 `active_until` 格式。
 
-将 **脱敏后** 的 `manifest.json`（可删 email）提供给开发即可定稿 Parser PR。
+如需报告接口变化，可将**脱敏后**的 `manifest.json`（删除 email/account_id）提供给开发。
 
 ### 5.1 本机实探测结果（2026-07-24，Plus 账号样本）
 
@@ -222,14 +221,14 @@ cd app/Codexling && swift run Codexling --probe-chatgpt-apis
 
 ---
 
-## 6. 与 Codexling 架构的衔接
+## 6. 当前架构落点
 
 | 层级 | 变更 |
 |------|------|
-| Provider | `CodexUsageService` 增加 `fetchSubscriptionSnapshot(token:accountID:)` |
-| Parser | `CodexlingSubscriptionParser` 解析 subscriptions / accounts-check |
-| UI | 设置页账号卡片：`Plus · 续费至 2026-xx-xx` 或 `Pro · 自动续费` |
-| 测试 | Fixture JSON 来自 `api-probes/latest` 脱敏样本；403/空字段单测 |
+| Provider | `CodexUsageService.fetchQuotaSnapshot` best-effort 请求 subscriptions |
+| Parser | `CodexlingParser.parseSubscription` 解析 `active_until` / `will_renew` |
+| UI | 设置页账号卡和首页 7 天内提醒；链接到官方 Billing |
+| 测试 | subscriptions 解析与 7 天提醒单测 |
 | 文档 | 本文件 + README 链接 |
 
 ---
@@ -238,7 +237,7 @@ cd app/Codexling && swift run Codexling --probe-chatgpt-apis
 
 - [Token Use – Codex Subscription Quota](https://tokenuse.app/docs/development/tools/codex-subscription/) — wham 字段说明  
 - [sub2api – subscription fetch 测试](https://github.com/Wei-Shaw/sub2api/blob/5a8d6c4e/backend/internal/service/openai_subscription_test.go) — `active_until` 样例  
-- 仓库内：`docs/codexling方案.md` §7–10（wham 适配与安全边界）  
+- 仓库内：`docs/codexling方案.md` §3–4（授权边界与 wham/subscriptions 适配）
 - 实现：`app/Codexling/Sources/Codexling/CodexAPIProbe.swift`
 
 ---
@@ -249,3 +248,5 @@ cd app/Codexling && swift run Codexling --probe-chatgpt-apis
 |------|------|
 | 2026-07-24 | 初版：wham 验证方案落地、subscriptions/accounts-check 调研、产品化路径 |
 | 2026-07-24 | 本机探测：`subscriptions.active_until` 可用；wham 无会员到期字段 |
+| 2026-07-26 | 按当前代码修正 token 存储、已落地模型、拉取策略和复现状态 |
+| 2026-07-27 | 按 `ca29220` 的实际串行 best-effort 路径修正拉取、失败降级和 UI 说明 |

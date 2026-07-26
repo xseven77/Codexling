@@ -1,429 +1,151 @@
-# Codexling 方案
+# Codexling 当前实现方案
 
-## 1. 背景
+## 1. 产品形态
 
-目标是在 macOS 状态栏中直接看到 Codex 额度概况，并支持点击后打开详情弹窗。
+Codexling 是一个 macOS 状态栏应用，把 Codex 的任务活动、当前 Pet 和 ChatGPT Codex 额度集中到一个本地 companion dashboard。
 
-需要展示的信息包括：
+状态栏使用两个独立信号：
 
-- 5 小时内额度
-- 一周额度
-- credits 余额
-- 重置券数量
-- 重置券过期时间
-- 当前账号、工作区、套餐、最近刷新时间
+- 前置圆灯：Codex 任务状态。
+- 胶囊背景：额度健康度或用户选择的固定颜色。
 
-这个方案必须通用，并且通过 Codex / ChatGPT 官方登录方式查看，不保存用户密码，不绕过官方认证流程。
+点击胶囊只打开独立窗口。鼠标悬停会显示不抢焦点的 Pet 活动卡片；当前实现没有状态栏用量 popover。
 
-## 2. 官方边界
+独立窗口包含：
 
-当前实现参考 Codex usage：通过 OpenAI 官方 OAuth 授权获取访问令牌，再访问 ChatGPT 的 Codex `wham` 用量端点读取 5 小时 / 7 天额度与重置券。
+- 当前账号、工作区、套餐及订阅周期（可读取时）。
+- 当前任务、并行任务数量和截断后的状态摘要。
+- 当前 Pet 动画与“今天一起工作”累计时间。
+- 主额度与次级额度、重置时间和重置券。
+- 刷新、官方 Usage/Billing 链接、设置、退出登录与退出应用。
 
-需要特别注意：
-
-- `wham` 端点并非公开承诺的长期稳定 API，需要隔离在 provider/parser 中。
-- 不应要求用户输入 OpenAI 账号密码给本应用。
-- 不应绕过 MFA、SSO、Cloudflare、企业策略或官方登录流程。
-
-因此，当前方案采用“官方 OAuth PKCE 授权 + Codex usage 同源 `wham` 用量读取”的方式落地。未来如果 OpenAI 发布正式 Usage API，再增加官方 API provider，并让其优先于当前 provider。
-
-## 3. 产品形态
-
-### 3.1 状态栏展示
-
-状态栏常驻一个简短文本或图标：
+## 2. 运行架构
 
 ```text
-Codex 5h 72% · 周 41%
+AppDelegate
+├── CodexUsageService
+│   ├── OAuth PKCE + localhost callback
+│   ├── /backend-api/wham/usage
+│   ├── /backend-api/wham/rate-limit-reset-credits
+│   └── /backend-api/subscriptions
+├── UsageSnapshotStore
+│   └── latest_snapshot.json
+├── CodexActivityStore
+│   └── state_5.sqlite → rollout JSONL（只读）
+├── AppSettingsStore
+│   ├── UserDefaults
+│   └── Codex Pet 选择双向同步
+├── PetFrameStore
+├── CompanionStatsStore
+│   └── companion_stats.json
+├── StatusBarController
+└── DetachedWindowController
 ```
 
-异常或特殊状态：
+状态栏由 AppKit `NSStatusItem` 和自绘 `StatusCapsuleView` 实现。主窗口与设置页使用 SwiftUI，并由 `DetachedWindowController` 管理固定 dashboard 尺寸、按内容测量的设置页尺寸和窗口置顶。
+
+## 3. 登录与凭据
+
+1. App 生成 OAuth PKCE `state`、`verifier` 和 `challenge`。
+2. 系统浏览器打开 OpenAI 官方授权页。
+3. 本地 listener 在 `http://localhost:1455/auth/callback` 校验回调。
+4. App 交换并按需刷新 access/refresh token。
+5. token 写入：
+
+   ```text
+   ~/Library/Application Support/Codexling/oauth_token.json
+   ```
+
+   文件权限设为 `0600`。旧版 Keychain token 只用于一次性迁移，迁移后会删除。
+
+本应用不读取浏览器 Cookie，不保存密码或 MFA code，也不绕过 SSO、MFA、Cloudflare 或组织策略。
+
+## 4. 用量与订阅数据
+
+| 端点 | 用途 | 失败行为 |
+|---|---|---|
+| `GET /backend-api/wham/usage` | 主/次级额度、套餐、工作区 | 本次刷新失败，保留上次成功快照 |
+| `GET /backend-api/wham/rate-limit-reset-credits` | 可用重置券 | 可选；失败不阻断额度 |
+| `GET /backend-api/subscriptions?account_id=…` | `active_until`、`will_renew` | best-effort；失败时不展示订阅周期 |
+
+这些 ChatGPT Web 端点不是公开稳定 API。所有请求和解析集中在 `CodexUsageService` 与 `CodexlingParser`，UI 只消费 `CodexUsageSnapshot`。
+
+额度窗口不再假定一定是固定的“5 小时 / 7 天”：
+
+- `rate_limit.primary_window` 是主额度；按 `limit_window_seconds` 生成实际标签。
+- `rate_limit.secondary_window` 是次级额度。
+- `limits` 仍作为旧 payload 回退。
+- `total == 0` 的窗口视为不可展示；没有次级额度时不会伪造周额度。
+
+## 5. 本地任务活动
+
+`CodexActivityService` 只读检查：
 
 ```text
-Codex 登录
-Codex 刷新失败
-Codex 无数据
-Codex 受限
+~/.codex/state_5.sqlite
+~/.codex/sqlite/state_5.sqlite
 ```
 
-### 3.2 点击弹窗
-
-点击状态栏后显示详情弹窗：
+它从最近未归档线程的 `rollout_path` 读取 JSONL，并将事件归并为：
 
 ```text
-Codexling
-
-账号：name@example.com
-工作区：Personal
-套餐：Plus / Pro / Business / Enterprise
-
-5小时额度
-剩余：72 / 100
-重置：今天 18:30
-
-周额度
-剩余：410 / 1000
-重置：2026-08-01
-
-Credits
-余额：123 credits
-过期：2027-07-01
-
-重置券
-数量：1
-过期：2026-08-05
-
-最近更新：2026-07-07 15:42
-
-[刷新] [打开官方 Usage 页] [重新登录]
+unavailable / idle / thinking / executing
+reviewing / waitingForUser / completed / interrupted
 ```
 
-## 4. 技术架构
+Provider 会读取所选 rollout 的 JSONL 尾部，但只把生命周期/推理事件标记、工具名称与调用 ID，以及清理并截断后的用户可见 commentary 映射到 UI 状态。它不会持久化、上传或展示 reasoning 内容、完整提示词、工具原始参数、完整命令、Token 或环境变量。
 
-推荐使用原生 macOS 应用：
+## 6. Pet 与陪伴统计
 
-- Swift + SwiftUI
-- `MenuBarExtra` 实现状态栏入口
-- `Popover` 或 `NSPanel` 实现详情弹窗
-- 系统浏览器承载官方 OpenAI OAuth 登录页
-- 本地 `localhost:1455/auth/callback` 接收授权回调
-- `Keychain` 保存 OAuth token，不保存密码
-- `UserDefaults` 或本地 JSON 缓存最后一次成功快照
-- `LaunchAgent` 或 Login Item 支持开机自启
+- 发现 ChatGPT/Codex 安装包中的内置 spritesheet，以及 `~/.codex/pets` 自定义 Pet。
+- Codexling 自带 Pet 资源随 App 打包，但只在用户点击安装后写入 `~/.codex/pets/codexling`。
+- 在 Codexling 选择 Pet 会更新 Codex 的 `config.toml`；Codex 侧选择变化也会被文件监控实时同步回来。
+- `PetFrameStore` 为主窗口与 hover 卡片提供同一动画帧源。
+- `CompanionStatsStore` 每 30 秒结算一次有效活动时长，单次最多计 90 秒，避免系统休眠夸大统计。
 
-整体结构：
+## 7. 刷新与缓存
+
+自动刷新可选 30 秒、1/2/5/10 分钟或关闭，默认 1 分钟。启动时如果已有 token 会立即刷新；手动刷新也会立即执行。
 
 ```text
-CodexlingApp
-  -> AuthController
-     -> 生成 OAuth PKCE state / verifier / challenge
-     -> 打开官方 OpenAI 授权页
-     -> 本地 callback server 接收 code
-     -> 交换 access token / refresh token
-  -> CodexUsageService
-     -> 调用 /backend-api/wham/usage
-     -> 调用 /backend-api/wham/rate-limit-reset-credits
-  -> CodexlingParser
-     -> 解析 usage.limits 和 rate_limit primary/secondary window
-  -> UsageStore
-     -> 缓存最后一次成功结果
-  -> MenubarRenderer
-     -> 渲染状态栏摘要和详情弹窗
+~/Library/Application Support/Codexling/
+├── oauth_token.json       # 0600
+├── latest_snapshot.json
+├── companion_stats.json
+└── api-probes/            # 仅显式 debug 探测时生成
 ```
 
-## 5. 登录方案
+刷新失败不会覆盖上次成功的额度时间；token 无效时清除本地 token 并要求重新授权。当前实现没有指数退避调度。
 
-登录必须走官方授权页：
+## 8. 主题与窗口
 
-1. 首次启动 App。
-2. App 生成 OAuth PKCE 参数，并打开官方 OpenAI authorization URL。
-3. 用户在系统浏览器完成官方登录、MFA 或组织 SSO。
-4. OpenAI 回调到 `http://localhost:1455/auth/callback`。
-5. App 用授权 code 交换 token，并将 token 存入 Keychain。
-6. App 使用 token 调用 Codex `wham` 用量端点获取数据。
+- macOS 26 的 hover 卡片使用系统 `glassEffect`；macOS 14–15 回退到 material。
+- 独立窗口是传统不透明 `windowBackgroundColor`，SwiftUI 根视图使用 `codexBackground`。
+- 已登录 dashboard 固定约 `579×510pt`，未登录约 `579×440pt`。
+- 设置窗口宽度可在 `579–680pt` 调整，高度按内容测量，最小 `400pt`，上限为当前屏幕 `visibleFrame.height - 32pt`。
+- dashboard 可置顶；关闭独立窗口后应用回到仅状态栏模式。
 
-本应用不做：
+## 9. 打包发布
 
-- 不保存账号密码。
-- 不拦截 MFA code。
-- 不保存账号密码。
-- 不绕过 SSO 或组织策略。
-- 不要求用户提供 OpenAI session token。
-
-## 6. 数据模型
-
-建议统一成一个快照模型：
-
-```ts
-type CodexUsageSnapshot = {
-  accountEmail?: string
-  workspaceName?: string
-  planName?: string
-
-  shortWindow?: {
-    label: "5小时额度"
-    used?: number
-    remaining?: number
-    total?: number
-    resetsAt?: string
-  }
-
-  weekly?: {
-    label: "周额度"
-    used?: number
-    remaining?: number
-    total?: number
-    resetsAt?: string
-  }
-
-  credits?: {
-    balance?: number
-    currencyEquivalent?: string
-    expiresAt?: string
-  }
-
-  resetCoupons?: Array<{
-    id?: string
-    name: string
-    count: number
-    expiresAt?: string
-    source?: "referral" | "promotion" | "student" | "unknown"
-  }>
-
-  fetchedAt: string
-  sourceUrl: string
-}
-```
-
-Swift 实现时可拆成：
-
-- `CodexUsageSnapshot`
-- `UsageWindow`
-- `CreditBalance`
-- `ResetCoupon`
-- `UsageFetchState`
-
-## 7. Codex usage 数据适配器设计
-
-因为 `wham` payload 结构可能变化，解析逻辑必须独立封装：
+`package_app.sh` 构建 Release binary，并生成：
 
 ```text
-UsageAdapter
-  -> OfficialUsageApiAdapter       # 未来可加，若官方 API 发布
-  -> Codex usageWhamAdapter         # 当前主方案
-  -> Sample/Unavailable Adapter    # 无 token 或接口不可用时的兜底状态
+dist/Codexling.app
+dist/Codexling-<version>.zip
+dist/Codexling-<version>.dmg
 ```
 
-解析器建议按领域拆分：
-
-- `OAuthTokenStore`
-- `WhamUsageProvider`
-- `QuotaWindowParser`
-- `ResetCreditParser`
-- `ResetCouponParser`
-- `RefreshTimeParser`
-
-适配器输出统一的 `CodexUsageSnapshot`，UI 层不关心数据来自 API 还是页面。
-
-## 8. 刷新策略
-
-默认刷新策略：
-
-- App 启动后立即刷新一次。
-- 正常每 5 分钟刷新一次。
-- 用户点击“刷新”时立即刷新。
-- 登录失效时停止后台刷新，并显示“需要登录”。
-- 解析失败时保留最后一次成功数据，并提示“接口响应可能变化”。
-
-退避策略：
-
-```text
-成功：5分钟后刷新
-网络失败：1分钟、2分钟、5分钟、10分钟退避
-登录失效：等待用户重新登录
-解析失败：30分钟后重试，并提示需要更新适配器
-```
-
-## 9. 本地缓存
-
-本地只缓存展示所需的最近一次快照：
-
-```text
-~/Library/Application Support/Codexling/latest_snapshot.json
-```
-
-缓存内容：
-
-- 最近一次成功的 `CodexUsageSnapshot`
-- 刷新状态
-- 用户 UI 偏好，例如状态栏显示格式
-
-不缓存：
-
-- 用户密码
-- MFA code
-- 手动复制的 session token
-- 原始网页 HTML，除非用户开启 debug 模式
-
-## 10. 安全和隐私
-
-必须遵守：
-
-- 用户只在官方页面登录。
-- App 不读取系统浏览器 Cookie。
-- App 不上传额度信息到第三方服务。
-- 默认不记录原始页面内容。
-- debug 日志需要手动开启，并提示可能包含账号或额度信息。
-
-建议提供隐私设置：
-
-- 隐藏状态栏数字，仅显示颜色或百分比。
-- 弹窗中隐藏邮箱。
-- 一键清除本地缓存。
-- 一键退出登录，清除 WebView 数据。
-
-## 11. UI 细节
-
-状态栏可配置三种展示模式：
-
-```text
-简洁：Codex 72%
-双额度：5h 72% · 周 41%
-图标：仅显示图标，颜色表示健康度
-```
-
-颜色建议：
-
-- 绿色：额度充足，大于 50%
-- 黄色：额度偏低，20% 到 50%
-- 红色：额度紧张，低于 20%
-- 灰色：未登录或无数据
-
-详情弹窗操作：
-
-- 刷新
-- 打开官方 Usage 页
-- 重新登录
-- 偏好设置
-- 退出
-
-## 12. 项目目录建议
-
-```text
-Codexling/
-  README.md
-  PROJECT.md
-  docs/
-    codexling方案.md
-  app/
-    Codexling/
-      CodexlingApp.swift
-      MenuBar/
-      DetailPopover/
-      Auth/
-      Usage/
-      Storage/
-  adapters/
-    usage-page-adapter-notes.md
-    fixtures/
-```
-
-## 13. 实现里程碑
-
-### Milestone 1: App Shell
-
-- 创建 SwiftUI macOS App。
-- 使用 `MenuBarExtra` 显示状态栏入口。
-- 点击后打开详情弹窗。
-- 支持手动刷新按钮和占位数据。
-
-### Milestone 2: 官方 OAuth 登录
-
-- 生成 OAuth PKCE 参数。
-- 打开官方 OpenAI authorization URL。
-- 本地 callback server 接收授权 code。
-- token 写入 Keychain。
-- 能判断“已登录 / 未登录 / token 过期”。
-
-### Milestone 3: Wham Usage 读取
-
-- 调用 `/backend-api/wham/usage`。
-- 解析 5 小时额度。
-- 解析周额度。
-- 解析重置时间。
-- 输出统一快照。
-
-### Milestone 4: Credits 和重置券
-
-- 解析 credits 余额。
-- 解析 reset coupon 数量。
-- 解析 reset coupon 过期时间。
-- 展示 promotion / referral / unknown 来源。
-
-### Milestone 5: 稳定性
-
-- 增加本地缓存。
-- 增加刷新退避。
-- 增加页面结构变化提示。
-- 增加 parser fixture 测试。
-
-### Milestone 6: 打包发布
-
-- 支持开机启动。
-- 支持清除本地数据。
-- 支持导出 debug 信息。
-- 完成签名、公证和安装包。
-
-## 14. 风险
-
-### Wham 响应结构变化
-
-风险：ChatGPT `wham` payload 字段变化，导致解析失败。
-
-应对：
-
-- 适配器独立封装。
-- 保留最后一次成功快照。
-- 提示用户打开官方 Usage 页面确认。
-- 增加可更新 parser。
-
-### 端点不是公开稳定 API
-
-风险：无法使用稳定接口获取额度。
-
-应对：
-
-- 当前版本参考 Codex usage 的 `wham` 端点。
-- 未来新增 `OfficialUsageApiAdapter`。
-- UI 层只依赖统一快照模型。
-
-### 多账号和多工作区
-
-风险：用户有多个 workspace，Usage 数据与当前选中 workspace 相关。
-
-应对：
-
-- 在详情中明确展示当前账号和 workspace。
-- 支持打开官方页面切换 workspace。
-- 后续版本支持 workspace 选择。
-
-### 登录失效
-
-风险：OAuth token 过期或 refresh 失败。
-
-应对：
-
-- 状态栏显示“Codex 登录”。
-- 点击后重新打开官方 OAuth 授权页。
-- 不尝试绕过官方认证。
-
-## 15. 验收标准
-
-MVP 验收：
-
-- App 能在 macOS 状态栏显示。
-- 点击状态栏能打开详情弹窗。
-- 能通过官方 OAuth 登录流程获取 token。
-- 能调用 `wham` 用量端点获取数据。
-- 能显示 5 小时额度和周额度。
-- 能显示最近更新时间。
-- 登录失效时能提示重新登录。
-
-完整版本验收：
-
-- 能显示 credits 余额。
-- 能显示重置券数量和过期时间。
-- 能缓存最后一次成功数据。
-- 接口解析失败时不崩溃。
-- 支持打开官方 Usage 页。
-- 支持清除本地数据。
-
-## 16. 推荐下一步
-
-下一步可以直接创建 SwiftUI macOS 项目，并优先实现：
-
-1. `MenuBarExtra` 状态栏壳子。
-2. `UsageSnapshot` 数据模型。
-3. 假数据详情弹窗。
-4. OAuth PKCE 登录。
-5. Codex usage `wham` 用量 provider。
+产物使用 ad-hoc codesign，并由脚本校验签名和 DMG 内容。当前没有 Apple notarization。
+
+交互式 GitHub Release 流程见 [`app/Codexling/RELEASE.zh-CN.md`](../app/Codexling/RELEASE.zh-CN.md)。
+
+## 10. 验收基线
+
+- OAuth 登录、refresh token、退出登录和旧 token 迁移可用。
+- 主/次级额度、重置券与订阅周期能解析并正确降级。
+- 状态栏任务圆灯与额度背景互不混用。
+- 多任务、等待确认、完成自动回落、中止状态保留和不可用状态均不影响额度刷新。
+- Pet 发现、安装、选择、Codex 双向同步和资源丢失回退可用。
+- 陪伴统计跨日清零，休眠间隔封顶。
+- dashboard、设置尺寸、主题切换和置顶行为符合当前窗口约束。
+- Swift 测试、Release 构建、ZIP/DMG 和 codesign 验证通过。

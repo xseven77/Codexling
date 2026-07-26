@@ -11,7 +11,7 @@ export function JsonLd({ latestVersion }: JsonLdProps) {
     "@type": "SoftwareApplication",
     name: siteConfig.name,
     applicationCategory: "DeveloperApplication",
-    operatingSystem: "macOS 13+",
+    operatingSystem: "macOS 14+",
     description: siteConfig.description,
     url: siteConfig.url,
     downloadUrl: GITHUB_RELEASES_URL,
@@ -29,15 +29,18 @@ export function JsonLd({ latestVersion }: JsonLdProps) {
       url: GITHUB_RELEASES_URL,
     },
     featureList: [
-      "macOS 菜单栏 Codex 额度摘要",
-      "OpenAI 官方 OAuth PKCE 登录",
-      "5 小时与周额度详情",
-      "Credits 与重置券展示",
-      "Keychain Token 存储",
+      "macOS 菜单栏任务状态与额度窗口",
+      "任务运行时主动展示的 Pet 与状态摘要浮窗",
+      "auth.openai.com OAuth PKCE 登录",
+      "Codex 多任务活动、元数据与截断状态摘要",
+      "Codex Pet 发现、安装、选择同步与重启提示",
+      "主/次级额度、重置券与订阅周期",
+      "本地陪伴时间统计",
+      "Application Support 本地 Token 文件（0600）",
       "本地快照缓存",
+      "设置内检查并安装 GitHub Release 更新",
     ],
     isAccessibleForFree: true,
-    license: "https://github.com/xseven77/Codexling",
   };
 
   const webSite = {

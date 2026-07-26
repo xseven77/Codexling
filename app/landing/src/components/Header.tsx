@@ -8,9 +8,9 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const nav = [
   { href: "#features", label: "功能" },
-  { href: "#how-it-works", label: "原理" },
-  { href: "#github", label: "GitHub" },
-  { href: "#releases", label: "Releases" },
+  { href: "#how-it-works", label: "怎么工作" },
+  { href: "#github", label: "源码" },
+  { href: "#releases", label: "版本" },
 ];
 
 function MenuIcon({ open }: { open: boolean }) {

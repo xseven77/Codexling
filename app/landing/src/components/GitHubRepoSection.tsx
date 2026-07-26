@@ -1,26 +1,36 @@
+import {
+  Apple,
+  Box,
+  FileText,
+  Folder,
+  GitBranch,
+  LockKeyhole,
+  PackageOpen,
+} from "lucide-react";
 import type { GitHubRepo } from "@/lib/github";
 import { formatRelative } from "@/lib/github";
 
 const tree = [
   { name: "app/Codexling", type: "dir" },
+  { name: "app/landing", type: "dir" },
   { name: "docs", type: "dir" },
+  { name: "docker/landing", type: "dir" },
   { name: "README.md", type: "file" },
   { name: "PROJECT.md", type: "file" },
-  { name: "ui-concepts.html", type: "file" },
-];
+] as const;
 
 export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
   return (
     <section id="github" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
       <div className="mb-8 max-w-2xl sm:mb-10">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-accent">
-          Open Source
+        <p className="text-sm font-medium tracking-[0.16em] text-accent">
+          源码与文档
         </p>
         <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl">
-          GitHub 仓库预览
+          源码、文档和发布都在 GitHub
         </h2>
         <p className="mt-4 text-base text-muted sm:text-lg">
-          仿 GitHub 仓库页的信息架构，展示项目结构、语言与最近更新时间。
+          仓库里有原生 App、官网源码、部署配置和实现文档。
         </p>
       </div>
 
@@ -28,7 +38,7 @@ export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
         <div className="border-b border-[var(--github-border)] px-4 py-4 sm:px-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-wrap items-center gap-2 text-[var(--github-text)]">
-              <span className="text-[var(--github-muted)]">📁</span>
+              <GitBranch aria-hidden="true" className="text-[var(--github-muted)]" size={18} />
               <a
                 href={repo.url}
                 target="_blank"
@@ -44,7 +54,7 @@ export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
 
             <div className="flex flex-wrap gap-2 text-xs sm:text-sm">
               <span className="rounded-md border border-[var(--github-border)] px-3 py-1.5 text-[var(--github-muted)]">
-                ★ Star {repo.stars}
+                Star {repo.stars}
               </span>
               <span className="rounded-md border border-[var(--github-border)] px-3 py-1.5 text-[var(--github-muted)]">
                 Fork {repo.forks}
@@ -61,7 +71,7 @@ export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
           </div>
 
           <p className="mt-3 max-w-3xl text-sm text-[var(--github-muted)]">
-            {repo.description}
+            A native macOS menu bar app for Codex tasks, Pets, and usage.
           </p>
 
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--github-muted)] sm:gap-3">
@@ -77,45 +87,65 @@ export function GitHubRepoSection({ repo }: { repo: GitHubRepo }) {
               About
             </div>
             <p className="mt-3 text-sm leading-6 text-[var(--github-text)]">
-              macOS menu bar app for Codex usage. Built with SwiftUI, OAuth PKCE, and
-              Keychain token storage.
+              Task status, Pets, usage limits, reset credits, and subscription details
+              at a glance.
             </p>
-            <div className="mt-4 space-y-2 text-sm text-[var(--github-muted)]">
-              <div>🔒 Official OpenAI login only</div>
-              <div>📦 DMG + ZIP releases</div>
-              <div>🍎 macOS 13+</div>
+            <div className="mt-4 space-y-3 text-sm text-[var(--github-muted)]">
+              <div className="flex items-center gap-2">
+                <LockKeyhole aria-hidden="true" size={15} />
+                Official OpenAI OAuth PKCE
+              </div>
+              <div className="flex items-center gap-2">
+                <PackageOpen aria-hidden="true" size={15} />
+                DMG + ZIP releases
+              </div>
+              <div className="flex items-center gap-2">
+                <Apple aria-hidden="true" size={15} />
+                macOS 14+
+              </div>
             </div>
           </aside>
 
           <div className="p-4 sm:p-5">
             <div className="mb-4 flex flex-col gap-1 text-sm text-[var(--github-muted)] sm:flex-row sm:items-center sm:justify-between">
               <span>README.md</span>
-              <span>Latest commit · {formatRelative(repo.updatedAt)}</span>
+              <span>Repository updated · {formatRelative(repo.updatedAt)}</span>
             </div>
 
             <div className="overflow-hidden rounded-xl border border-[var(--github-border)]">
-              {tree.map((item) => (
-                <div
-                  key={item.name}
-                  className="flex items-center justify-between border-b border-[var(--github-border)] px-4 py-3 last:border-b-0"
-                >
-                  <div className="flex items-center gap-3 text-sm text-[var(--github-text)]">
-                    <span>{item.type === "dir" ? "📁" : "📄"}</span>
-                    <span>{item.name}</span>
+              {tree.map((item) => {
+                const Icon = item.type === "dir" ? Folder : FileText;
+
+                return (
+                  <div
+                    key={item.name}
+                    className="flex items-center justify-between border-b border-[var(--github-border)] px-4 py-3 last:border-b-0"
+                  >
+                    <div className="flex items-center gap-3 text-sm text-[var(--github-text)]">
+                      <Icon
+                        aria-hidden="true"
+                        className="text-[var(--github-muted)]"
+                        size={16}
+                      />
+                      <span>{item.name}</span>
+                    </div>
+                    <span className="text-xs text-[var(--github-muted)]">
+                      {item.type === "dir" ? "folder" : "file"}
+                    </span>
                   </div>
-                  <span className="text-xs text-[var(--github-muted)]">
-                    {item.type === "dir" ? "folder" : "file"}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="mt-5 rounded-xl border border-[var(--github-border)] bg-[#161b22] p-5 text-sm leading-7 text-[var(--github-text)]">
-              <h3 className="text-lg font-semibold text-white">Codexling</h3>
+              <h3 className="flex items-center gap-2 text-lg font-semibold text-white">
+                <Box aria-hidden="true" size={18} />
+                Codexling
+              </h3>
               <p className="mt-3 text-[var(--github-muted)]">
-                Show Codex short-window and weekly usage in the macOS menu bar. Click to
-                open a detail panel with credits, reset coupons, expiration times, and
-                refresh status.
+                See task status and usage in the menu bar. Open the main window for
+                parallel tasks, your current Pet, daily companion time, reset credits,
+                and subscription details.
               </p>
               <pre className="mt-4 overflow-x-auto rounded-lg bg-[#0d1117] p-4 text-xs text-[#7ee787]">
 {`cd app/Codexling

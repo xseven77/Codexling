@@ -4,10 +4,10 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { THEME_STORAGE_KEY } from "@/lib/theme/constants";
 
@@ -32,39 +32,43 @@ function resolveTheme(theme: ThemeName): "light" | "dark" {
   return theme === "system" ? getSystemTheme() : theme;
 }
 
-function applyToDocument(theme: ThemeName): "light" | "dark" {
+function applyToDocument(theme: ThemeName) {
   const resolved = resolveTheme(theme);
   const root = document.documentElement;
   root.classList.toggle("dark", resolved === "dark");
   root.style.colorScheme = resolved === "dark" ? "dark" : "light";
-  return resolved;
+}
+
+function readStoredTheme(): ThemeName {
+  if (typeof window === "undefined") return "system";
+  try {
+    const raw = localStorage.getItem(THEME_STORAGE_KEY);
+    return raw === "light" || raw === "dark" || raw === "system"
+      ? raw
+      : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function subscribeToSystemTheme(onChange: () => void) {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeName>("system");
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
+  const [theme, setThemeState] = useState<ThemeName>(readStoredTheme);
+  const systemTheme = useSyncExternalStore(
+    subscribeToSystemTheme,
+    getSystemTheme,
+    (): "light" => "light",
+  );
+  const resolvedTheme = theme === "system" ? systemTheme : theme;
 
   useLayoutEffect(() => {
-    try {
-      const raw = localStorage.getItem(THEME_STORAGE_KEY);
-      const next: ThemeName =
-        raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
-      setThemeState(next);
-      setResolvedTheme(applyToDocument(next));
-    } catch {
-      setResolvedTheme(applyToDocument("system"));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      setResolvedTheme(applyToDocument("system"));
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [theme]);
+    applyToDocument(theme);
+  }, [theme, systemTheme]);
 
   const setTheme = useCallback((next: ThemeName) => {
     setThemeState(next);
@@ -73,7 +77,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } catch {
       /* ignore */
     }
-    setResolvedTheme(applyToDocument(next));
   }, []);
 
   const value = useMemo(

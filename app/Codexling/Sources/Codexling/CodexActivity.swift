@@ -113,6 +113,10 @@ struct CodexActivitySnapshot: Equatable, Sendable {
         updatedAt: Date()
     )
 
+    var keepsHoverPanelVisible: Bool {
+        activeTaskCount > 0
+    }
+
     var hoverSubtitle: String {
         let cleanDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanDetail.isEmpty { return cleanDetail }

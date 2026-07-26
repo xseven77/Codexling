@@ -39,7 +39,7 @@ const FALLBACK_REPO: GitHubRepo = {
   name: "Codexling",
   fullName: "xseven77/Codexling",
   description:
-    "macOS status bar app for viewing Codex usage limits through the official OpenAI login flow.",
+    "A native macOS menu bar app for Codex tasks, Pets, and usage.",
   stars: 0,
   forks: 0,
   language: "Swift",
@@ -96,7 +96,7 @@ export async function getRepo(): Promise<GitHubRepo> {
     fullName: data.full_name,
     description:
       data.description ??
-      "macOS status bar app for viewing Codex usage limits through the official OpenAI login flow.",
+      "A native macOS menu bar app for Codex tasks, Pets, and usage.",
     stars: data.stargazers_count,
     forks: data.forks_count,
     language: data.language ?? "Swift",
@@ -124,7 +124,7 @@ export async function getReleases(): Promise<GitHubRelease[]> {
   };
 
   const data = await fetchJson<ApiRelease[]>(
-    `${GITHUB_API}/repos/${REPO}/releases`,
+    `${GITHUB_API}/repos/${REPO}/releases?per_page=100`,
   );
   if (!data?.length) return FALLBACK_RELEASES;
 

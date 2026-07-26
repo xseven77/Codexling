@@ -1,36 +1,59 @@
-# Codexling 流体玻璃主题
+# Codexling 主题与窗口材质
 
-状态栏下拉窗口与 Pet hover 卡片共用同一种根玻璃：macOS 26 直接使用无 tint、无实色底的系统 `.glassEffect(in:)`，让系统负责折射、高光和动态材质；旧系统统一回退为 `ultraThinMaterial`、白色细描边和轻阴影。整块窗口不按额度健康色染色或生成彩色渐变，余额颜色仅用于额度数字和进度条。
+## 当前产品决策
 
-> 当前产品决策：状态栏下拉窗口与 Pet hover 继续使用上述流体玻璃；独立窗口恢复为传统不透明 `windowBackgroundColor`，SwiftUI 根视图同步使用 `codexBackground`，因此不会透出后方窗口。两种窗口仍共同支持浅色、暗色与跟随系统。
+Codexling 当前只有两类承载面：
 
-popover 不再固定为 720pt：优先采用当前内容的自然高度，最小值与独立窗口的最小内容高度一致为 760pt，最大值为屏幕 `visibleFrame` 高度减 28pt；若小屏幕可用高度不足 760pt，视窗上限优先。设置页使用 `ViewThatFits`，内容能放入视窗时不创建滚动容器；只有超出视窗时才回退到可滚动布局，并从底层 `NSScrollView` 关闭滚动条显示。
+1. 独立 dashboard / 设置窗口。
+2. 状态栏 Pet hover 卡片。
 
-最小高度同时应用于 SwiftUI 根容器并使用顶部对齐，避免只放大 `NSPopover` 外壳时自然高度内容被宿主垂直居中、在顶部产生大块空白。
+点击状态栏胶囊直接打开独立窗口，不再打开用量 `NSPopover`。
 
-紧凑下拉布局与独立窗口都使用弹性 `Spacer` 将 footer 固定在底部；popover 高度改用 SwiftUI intrinsic content size 测量，在 intrinsic 测量中 Spacer 的最小高度为 0，因此不会把自然高度错误撑到视窗上限。
+## 独立窗口
 
-## 覆盖范围
+独立窗口使用传统不透明的 `NSWindow`：
 
-主状态栏弹窗、设置页、分离窗口、顶部栏、底部操作栏、信息卡片与按钮共享同一套主题策略。
+- `window.isOpaque = true`
+- `window.backgroundColor = .windowBackgroundColor`
+- SwiftUI 根视图使用 `Color.codexBackground`
+- 支持浅色、暗色和跟随系统
 
-## macOS 26 及以上
+窗口不会透出后方内容。macOS 26 上，局部按钮或卡片可以使用系统 glass interaction，但根窗口仍是不透明背景。
 
-- AppKit 的 `NSPopover` 与 `NSWindow` 使用透明承载层。
-- SwiftUI 根视图使用系统原生 `.clear` `glassEffect`，并叠加由当前额度健康色驱动的轻量渐变：充足为绿、注意为橙、紧张为红、未登录为中性。渐变从顶部两侧向主体和底部衰减；主下拉弹窗与分离窗口共用同一组件和实时额度状态。
-- 信息卡片使用独立的原生玻璃表面，交互按钮使用 `interactive()` 玻璃反馈。
-- 顶部栏和底部栏只叠加轻微明暗渐变，不再绘制不透明背景，因此仍属于同一块根级玻璃。
-- 浅色、暗色和跟随系统由 `preferredColorScheme` 与 `NSAppearance` 同步驱动；文字、分隔线和 tint 使用动态语义色。
-- “跟随系统”保存并观察系统当前有效外观；应用更新周期检测到系统浅色/暗色变化后，会主动刷新 SwiftUI 根配色和 AppKit 窗口，而不是依赖可选配色的隐式传播。
+dashboard 使用固定内容尺寸：
 
-## macOS 14–15 回退
+- 已登录：约 `579×510pt`
+- 未登录：约 `579×440pt`
+- 屏幕高度不足时，上限为 `visibleFrame.height - 32pt`
 
-旧系统不具备原生 Liquid Glass API，继续使用动态卡片材质与现有浅色、暗色语义色，保证可读性和功能兼容。
+设置窗口按实际内容高度测量：
+
+- 宽度范围 `579–680pt`
+- 高度最小 `400pt`
+- 高度上限 `visibleFrame.height - 32pt`
+- 内容超过当前窗口时启用滚动
+- 调整尺寸时锚定窗口顶边，避免路由切换时上下跳动
+
+## Hover 卡片
+
+状态栏 hover 卡片使用透明、非激活式 `NSPanel`：
+
+- macOS 26 及以上使用系统 `.glassEffect(in:)`
+- macOS 14–15 回退到 `ultraThinMaterial`
+- Pet 与任务摘要共享一块玻璃，不叠加不透明根卡片
+- 面板不抢键盘焦点；状态栏与卡片之间使用安全三角区保持交互
+
+## 主题同步
+
+- `AppThemePreference` 支持跟随系统、浅色和暗色。
+- SwiftUI 使用解析后的 `preferredColorScheme`。
+- AppKit 窗口使用对应 `NSAppearance`。
+- 跟随系统时，`applicationDidUpdate` 检测有效外观变化并刷新已有窗口。
 
 ## 验证要求
 
-- 浅色主题：根背景透明、玻璃高光清晰、深色文字对比充足。
-- 暗色主题：玻璃保持环境透射，文字与控件切换到浅色语义色。
-- 主弹窗和分离窗口表现一致。
-- 切换主题后无需重启，窗口与弹窗立即更新。
-- 设置页隐藏滚动指示条，但保留触控板、鼠标滚轮和键盘滚动；主弹窗与分离窗口的最大高度按当前屏幕 `visibleFrame` 动态计算，并预留窗口阴影/箭头空间，永不依赖可能超出视窗的固定最小高度。
+- 独立窗口在浅色与暗色下均保持不透明和可读。
+- hover 卡片在 macOS 26 使用原生玻璃，在旧系统正确回退。
+- 切换主题后无需重启。
+- dashboard 不允许手动拉伸；设置窗口可在约束范围内缩放并正确滚动。
+- 小屏幕上所有窗口都不超过当前屏幕可视区域。

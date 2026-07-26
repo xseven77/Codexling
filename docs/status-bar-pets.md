@@ -2,31 +2,31 @@
 
 ## 1. 目标
 
-Codexling 在 macOS 状态栏用前置圆灯表达 Codex 任务状态，用胶囊背景表达额度健康度；当前 Pet 的动画统一显示在主窗口和悬停卡片中。两个信号独立计算，避免任务告警和额度告警相互伪装。
+Codexling 在 macOS 状态栏用前置圆灯表达 Codex 任务状态，用文字展示有效额度窗口；胶囊背景默认为中性，用户也可固定颜色或选择跟随额度健康度。当前 Pet 的动画统一显示在主窗口和悬停卡片中。
 
 本功能包含：
 
 - 兼容 Codex 内置 Pet 与 `~/.codex/pets` 自定义 Pet。
-- 设置页发现、预览、选择、刷新和持久化 Pet。
+- 设置页发现、预览、选择、刷新和持久化 Pet，并与 Codex 的当前选择双向同步。
 - 设置页将自动刷新置于状态栏配置之前，并以横向分隔线区分两个配置区域。
 - 按 Codex spritesheet 原始帧时长播放动画。
 - 根据本地 Codex 任务事件显示空闲、思考、执行、检查、等待确认、完成和中止状态。
-- 活动文件默认只读末尾 4 MB；若窗口内没有任务开始/完成/中止事件，则按需向前扩展，避免长任务把 `task_started` 挤出读取窗口后被误判为空闲。
+- 每个 rollout 默认只读末尾 4 MB；只有最近线程在窗口内没有任务开始/完成/中止事件时会按需向前扩展，避免长任务把 `task_started` 挤出读取窗口后被误判为空闲。
 - 鼠标悬停状态栏时显示当前执行情况文案和活跃任务数。
 - 状态栏 hover 卡片使用 120ms 触发延迟，在过滤快速掠过的同时减少等待感。
 - macOS 26 及以上的悬停卡片使用系统原生 `glassEffect`；旧系统回退到 `ultraThinMaterial`。透明承载面板不再叠加实色卡片。左侧 Pet 直接融入整块玻璃并同步播放动画，不使用独立灰色背景；右侧展示执行状态与活跃任务数。
 - 活跃时右侧优先显示 Codex 线程标题与最新的用户可见执行摘要，效果对应 Codex 的“任务标题 · 当前步骤”；空闲或数据不可用时回退到通用状态文案。
 - 状态栏不再设置系统 tooltip，避免它与自定义悬停卡片重复或互相遮挡。
-- 主窗口 Pet 始终跟随任务状态动画；Pet 开关只控制悬停卡片，状态栏始终保留任务状态圆灯。
-- 状态栏按钮启用紧凑图文布局，7pt 任务圆灯与执行/额度文字之间使用 8pt 间距。
+- 主窗口与 hover 卡片中的 Pet 始终跟随任务状态动画；旧 `petsEnabled` 偏好已不再控制当前 UI，状态栏始终保留任务状态圆灯。
+- 状态栏按钮启用紧凑图文布局，8pt 任务圆灯与执行/额度文字之间使用 8pt 间距。
 - 状态栏不再显示 Pet 图片；状态文字省略重复的 `Codex` 前缀，执行时显示“思考中 · 周 8%”一类摘要，空闲时只显示额度。
 - 胶囊背景提供 `automatic`、`neutral`、`green`、`yellow`、`red`、`gray` 枚举。自动模式按主额度健康度映射绿、黄、红、灰；设置页也可以选择固定颜色。
-- 胶囊背景默认值为 `automatic`，旧版任务状态固定色偏好迁移为“跟随额度”。
+- 胶囊背景默认值为 `neutral`；用户可选择 `automatic` 跟随额度。旧版任务状态固定色值（如 `blue`、`purple`、`cyan`、`amber`）不属于新枚举，读取时会回退为 `neutral`。
 - 状态栏背景按额度余量使用绿、黄、红、灰或固定中性，带细白描边和极轻投影。不在 `NSStatusBarButton` 内嵌视觉材质视图，避免 AppKit 合成层遮住按钮内容。
-- 胶囊实际绘制高度为 20pt；左侧 7pt 圆灯严格映射八类任务状态，悬停卡片继续使用原有 Pet 帧与样式。
+- 胶囊实际绘制高度为 24pt；左侧 8pt 圆灯严格映射八类任务状态，悬停卡片继续使用当前 Pet 帧。
 - 状态项采用自绘内容布局，绕开 `NSStatusBarButton` 强制边距：左侧 7.5pt、圆灯到文字 8pt、右侧 10pt，并按当前状态文案宽度动态计算长度。
-- 禁用 `NSStatusBarButton` 默认的大胶囊按压高亮；点击态由自绘视图以同样的 R7 轮廓叠加 16% 白色高光，避免点击前后圆角跳变。
-- 自绘视图使用 `NSClickGestureRecognizer` 触发原有 popover action，按下/释放事件只维护视觉状态；同时实现 accessibility press，避免覆盖系统按钮后点击事件丢失。
+- 禁用 `NSStatusBarButton` 默认的大胶囊按压高亮；点击时由自绘视图在当前胶囊轮廓内播放 Material ripple。
+- 自绘视图通过 `mouseDown` / `mouseUp` 和本地鼠标事件监听维护按压、命中与 action；accessibility press 在主队列异步复用同一完成路径，避免覆盖系统按钮后点击事件丢失。
 - 状态与额度之间使用细空格包围中点，减少等宽字体造成的松散占位。
 
 ## 2. 已确认的 Codex Pet 来源
@@ -131,7 +131,7 @@ spriteVersionNumber：2
 Codexling 的播放器与 Codex 当前播放器保持一致：
 
 - 非空闲状态动画连续播放三遍，然后进入慢速 idle 循环。
-- idle 每帧时长放大 6 倍，减少菜单栏视觉干扰。
+- idle 每帧时长放大 6 倍，减少主窗口和悬停卡片持续动画造成的视觉干扰。
 - macOS 开启“减少动态效果”后只显示当前状态首帧。
 - v1 9 行图集仍可播放标准状态；v2 额外保留方向帧兼容空间。
 
@@ -154,7 +154,9 @@ Codexling 的播放器与 Codex 当前播放器保持一致：
 - 用户可见的 `agent_message`，且 `phase = commentary`
 - 工具调用名称、调用 ID 与结束事件
 
-不会读取或展示模型内部 reasoning，也不会展示工具原始参数、完整命令、用户提示词、Token 或环境变量。
+界面不会展示模型内部 reasoning、工具原始参数、完整命令、Token 或环境变量。Provider
+会在本机只读解析 thread 名称、rollout 事件元数据和用户可见 commentary，并只展示截断后的状态摘要；
+这些本地任务内容不会上传到 Codexling 服务。
 
 ### 4.1 状态归并
 
@@ -181,21 +183,17 @@ Codexling 的播放器与 Codex 当前播放器保持一致：
 状态栏格式：
 
 ```text
-[Pet] Codex · 周 19%
-[Pet] Codex 工作中 · 周 19%
-[Pet] Codex 等待确认 · 周 19%
-[Pet] Codex 已完成 · 周 19%
+● 周 19%
+● 工作中·周 19%
+● 等待确认·周 19%
+● 已完成·周 19%
 ```
 
-Pet 关闭或加载失败时回退：
+有主、次两个有效额度窗口时会同时显示，例如 `● 工作中·5h 42%·周 77%`。状态栏始终使用任务圆灯，不显示 Pet 图片。
 
-```text
-● Codex 周 19%
-```
+状态栏按钮点击后打开独立 dashboard；旧的 popover/分离窗口选择偏好已经移除。
 
-状态栏按钮保留原有点击行为，点击仍打开用量弹窗。
-
-鼠标悬停 220 ms 后显示非激活式 `NSPanel`：
+鼠标悬停 120 ms 后显示非激活式 `NSPanel`：
 
 ```text
 Codex 正在工作
@@ -208,26 +206,32 @@ Codex 正在工作
 - 不抢键盘焦点。
 - 不阻断状态栏点击。
 - 点击状态栏前自动关闭。
-- 同步提供系统 tooltip 作为无障碍和降级路径。
+- 状态栏不设置系统 tooltip，避免与自定义卡片重复；自绘胶囊提供 accessibility press。
 - 文案优先使用用户已可见的 commentary；否则显示经过映射的通用工具状态。
+- 鼠标从胶囊移向卡片时使用安全三角区，避免跨越间隙时卡片过早关闭。
 
 ## 6. 设置页
 
-设置页新增“状态与 Pets”区域，其中“胶囊背景色”位于 Pet 开关之前：
+设置页的“状态栏与 Pet”区域包含：
 
-- 显示/关闭悬停卡片中的动画 Pet；主窗口继续播放，状态栏任务圆灯不变。
-- 无论动画是否开启，都显示任务状态、额度摘要和配置的胶囊背景。
+- “胶囊提醒色”：`neutral`、`automatic`、绿、黄、红、灰。
+- “活动状态流光”：非空闲状态下控制状态栏 wave。
 - 展示当前 Pet 首帧、名称、来源、版本和动画行数。
-- 按“Codex 内置 / 自定义”分组选择。
+- 按“Codex 内置 / 自定义”分组网格选择。
 - 显示两类 Pet 的发现数量。
-- “重新扫描”用于 Codex 更新或新增自定义 Pet 后刷新。
+- 支持打开 `~/.codex/pets` 和重新扫描。
+- 在 Codexling 选择 Pet 会写入 Codex 配置并提示重启；Codex 配置变化会被实时监控并同步回来。
 
 持久化键：
 
 ```text
 codexling.petsEnabled
 codexling.selectedPetID
+codexling.petBackgroundColor
+codexling.statusBarWaveEnabled
 ```
+
+`codexling.petsEnabled` 仅为旧版本兼容键，当前设置页不再暴露对应开关。
 
 ## 7. 代码结构
 
@@ -238,7 +242,9 @@ Sources/Codexling/
 │   ├── AsarArchive
 │   ├── PetSpriteSheet
 │   ├── PetAnimationContract
-│   └── PetAnimationPlayer
+│   ├── PetAnimationPlayer
+│   ├── CodexPetSelectionSync
+│   └── CodexPetSelectionMonitor
 ├── CodexActivity.swift
 │   ├── CodexActivityEventParser
 │   ├── CodexActivityService
@@ -247,6 +253,9 @@ Sources/Codexling/
 │   ├── 状态栏任务圆灯渲染
 │   ├── StatusHoverTrackingView
 │   └── PetHoverPanelController
+├── CompanionStores.swift
+│   ├── PetFrameStore
+│   └── CompanionStatsStore
 ├── AppSettings.swift
 └── SettingsViews.swift
 ```
@@ -271,8 +280,11 @@ Codexling 不把 Codex 内置 Pet 放入自身安装包，也不上传或重新�
 
 - Codex v2 动画行、帧数和帧时长。
 - 等待用户和任务完成状态解析。
+- 最近线程的 4 MB 活动读取扩展、多任务聚合、线程元数据与清理、截断后的状态摘要。
 - ASAR 索引和文件提取。
 - 从当前安装的 ChatGPT/Codex 中发现全部 9 个内置 Pet。
+- Codex Pet 选择读写、配置文件原子替换后的实时监控。
+- 状态栏胶囊点击、hover 安全三角区、额度文字和偏好迁移。
 - Debug/Release 构建。
 - `.app`、`.zip`、`.dmg` 打包与 codesign 校验。
 - 启动打包后的 `.app`，检查设置页选择、状态栏动画和悬停状态。

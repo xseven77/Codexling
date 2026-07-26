@@ -18,6 +18,7 @@ final class StatusBarController: NSObject {
     private var hoverSafeTriangle: HoverSafeTriangle?
     private var hoverSafeTriangleTimer: Timer?
     private var hoverSafeTriangleDeadline: Date?
+    private var keepsHoverPanelVisibleForTasks = false
 
     init(
         store: UsageSnapshotStore,
@@ -51,7 +52,7 @@ final class StatusBarController: NSObject {
             )
         }
         hoverPanel.onClick = { [weak self] in
-            self?.hideHoverPanel()
+            self?.hideHoverPanelUnlessTaskIsActive()
             actions.openDetachedWindow()
         }
 
@@ -96,7 +97,7 @@ final class StatusBarController: NSObject {
             view.autoresizingMask = [.width, .height]
             view.onClick = { [weak self] in
                 guard let self else { return }
-                self.hideHoverPanel()
+                self.hideHoverPanelUnlessTaskIsActive()
                 self.actions.openDetachedWindow()
             }
             view.onMouseEntered = { [weak self] in self?.scheduleHoverPanel() }
@@ -126,7 +127,8 @@ final class StatusBarController: NSObject {
         let snapshot = store.snapshot
         let quotaText = statusBarQuotaText(snapshot: snapshot, isLoggedIn: store.isLoggedIn)
 
-        let activityState = activityStore.snapshot.state
+        let activity = activityStore.snapshot
+        let activityState = activity.state
         let health = QuotaHealthLevel.from(
             window: snapshot.primaryWindow,
             isLoggedIn: store.isLoggedIn
@@ -156,7 +158,12 @@ final class StatusBarController: NSObject {
             statusItem.length = capsuleView.preferredWidth
         }
 
-        updateHoverContent(button: button)
+        updateHoverContent(
+            button: button,
+            activity: activity,
+            showsWave: showsWave
+        )
+        synchronizeHoverPanelVisibility(for: activity, relativeTo: button)
 
     }
 
@@ -168,18 +175,22 @@ final class StatusBarController: NSObject {
         hoverPanel.updatePetFrame(image)
     }
 
-    private func updateHoverContent(button: NSStatusBarButton) {
-        guard store.isLoggedIn else {
+    private func updateHoverContent(
+        button: NSStatusBarButton,
+        activity: CodexActivitySnapshot,
+        showsWave: Bool
+    ) {
+        guard store.isLoggedIn || activity.keepsHoverPanelVisible else {
             hoverPanel.update(
                 title: "登录以查看 Codex 用量",
                 detail: "连接 ChatGPT 账号后，即可查看额度与任务状态",
-                meta: "点击打开窗口并登录"
+                meta: "点击打开窗口并登录",
+                showsWave: false
             )
             button.toolTip = nil
             return
         }
 
-        let activity = activityStore.snapshot
         let countText = activity.activeTaskCount > 0
             ? "\(activity.activeTaskCount) 个活跃任务"
             : "没有活跃任务"
@@ -187,9 +198,27 @@ final class StatusBarController: NSObject {
         hoverPanel.update(
             title: activity.hoverDisplayTitle,
             detail: activity.hoverSubtitle,
-            meta: "\(stateText) · \(countText)"
+            meta: "\(stateText) · \(countText)",
+            showsWave: showsWave
         )
         button.toolTip = nil
+    }
+
+    private func synchronizeHoverPanelVisibility(
+        for activity: CodexActivitySnapshot,
+        relativeTo button: NSStatusBarButton
+    ) {
+        let wasKeptVisible = keepsHoverPanelVisibleForTasks
+        keepsHoverPanelVisibleForTasks = activity.keepsHoverPanelVisible
+
+        if keepsHoverPanelVisibleForTasks {
+            pendingHoverWorkItem?.cancel()
+            pendingHoverWorkItem = nil
+            cancelHoverPanelHide()
+            hoverPanel.show(relativeTo: button)
+        } else if wasKeptVisible {
+            hideHoverPanel()
+        }
     }
 
     private func scheduleHoverPanel() {
@@ -210,10 +239,17 @@ final class StatusBarController: NSObject {
         hoverPanel.hide()
     }
 
+    private func hideHoverPanelUnlessTaskIsActive() {
+        guard !keepsHoverPanelVisibleForTasks else { return }
+        hideHoverPanel()
+    }
+
     private func scheduleHoverPanelHide(
         from departurePoint: NSPoint? = nil,
         toward targetFrame: NSRect? = nil
     ) {
+        guard !keepsHoverPanelVisibleForTasks else { return }
+
         if let departurePoint, let targetFrame, hoverPanel.isVisible {
             beginSafeTriangleTracking(from: departurePoint, toward: targetFrame)
             return
@@ -263,6 +299,8 @@ final class StatusBarController: NSObject {
     }
 
     private func evaluateSafeTrianglePointer() {
+        guard !keepsHoverPanelVisibleForTasks else { return }
+
         let pointer = NSEvent.mouseLocation
         if pointerIsInsidePersistentHoverRegion(pointer) {
             return
@@ -1029,10 +1067,11 @@ private final class PetHoverPanelController {
         panel.contentView = hostingView
     }
 
-    func update(title: String, detail: String, meta: String) {
+    func update(title: String, detail: String, meta: String, showsWave: Bool) {
         model.title = title
         model.detail = detail
         model.meta = meta
+        model.showsWave = showsWave
     }
 
     func updatePetFrame(_ image: NSImage?) {
@@ -1072,6 +1111,7 @@ private final class PetHoverViewModel {
     var detail = ""
     var meta = ""
     var petFrame: NSImage?
+    var showsWave = false
     @ObservationIgnored var onMouseEntered: (() -> Void)?
     @ObservationIgnored var onMouseExited: (() -> Void)?
     @ObservationIgnored var onClick: (() -> Void)?
@@ -1111,16 +1151,26 @@ private struct PetHoverContentView: View {
 
     @ViewBuilder
     private var glassSurface: some View {
-        if #available(macOS 26.0, *) {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        Group {
+            if #available(macOS 26.0, *) {
+                animatedCardContent
+                    .glassEffect(in: .rect(cornerRadius: 16))
+            } else {
+                animatedCardContent
+                    .background(.ultraThinMaterial, in: shape)
+                    .overlay {
+                        shape.stroke(Color.white.opacity(0.42), lineWidth: 0.8)
+                    }
+            }
+        }
+        .clipShape(shape)
+    }
+
+    private var animatedCardContent: some View {
+        ZStack {
+            HoverActivityWave(isVisible: model.showsWave)
             cardContent
-                .glassEffect(in: .rect(cornerRadius: 16))
-        } else {
-            let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-            cardContent
-                .background(.ultraThinMaterial, in: shape)
-                .overlay {
-                    shape.stroke(Color.white.opacity(0.42), lineWidth: 0.8)
-                }
         }
     }
 
@@ -1157,6 +1207,67 @@ private struct PetHoverContentView: View {
         }
         .padding(.horizontal, 13)
         .frame(width: cardSize.width, height: cardSize.height)
+    }
+}
+
+private struct HoverActivityWave: View {
+    let isVisible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if isVisible {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
+                GeometryReader { proxy in
+                    let duration = 3.6
+                    let progress = reduceMotion
+                        ? 0.5
+                        : timeline.date.timeIntervalSinceReferenceDate
+                            .truncatingRemainder(dividingBy: duration) / duration
+                    let waveWidth = max(330, proxy.size.width * 1.08)
+                    let travelWidth = proxy.size.width + waveWidth * 2
+                    let centerX = -waveWidth + travelWidth * CGFloat(progress)
+                    let inverseSurfaceColor = Color.primary
+                    let trailGradient = LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: inverseSurfaceColor.opacity(0.002), location: 0.12),
+                            .init(color: inverseSurfaceColor.opacity(0.005), location: 0.28),
+                            .init(color: inverseSurfaceColor.opacity(0.010), location: 0.44),
+                            .init(color: inverseSurfaceColor.opacity(0.018), location: 0.60),
+                            .init(color: inverseSurfaceColor.opacity(0.028), location: 0.74),
+                            .init(color: inverseSurfaceColor.opacity(0.040), location: 0.86),
+                            .init(color: inverseSurfaceColor.opacity(0.052), location: 0.95),
+                            .init(color: inverseSurfaceColor.opacity(0.058), location: 1)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    let waveShape = UnevenRoundedRectangle(
+                        topLeadingRadius: 0,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 16,
+                        topTrailingRadius: 16,
+                        style: .continuous
+                    )
+
+                    ZStack {
+                        Rectangle()
+                            .fill(trailGradient)
+                            .blur(radius: 9)
+
+                        Rectangle()
+                            .fill(trailGradient)
+                            .opacity(0.42)
+                            .blur(radius: 2.5)
+                    }
+                    .frame(width: waveWidth, height: proxy.size.height)
+                    .compositingGroup()
+                    .clipShape(waveShape)
+                    .position(x: centerX, y: proxy.size.height / 2)
+                }
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 

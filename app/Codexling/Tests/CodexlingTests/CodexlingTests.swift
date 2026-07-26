@@ -151,12 +151,17 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusCapsulePressInvokesClickAction() {
+    func testStatusCapsulePressInvokesClickAction() async {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
         var clickCount = 0
-        view.onClick = { clickCount += 1 }
+        let pressed = expectation(description: "accessibility press finishes asynchronously")
+        view.onClick = {
+            clickCount += 1
+            pressed.fulfill()
+        }
 
         XCTAssertTrue(view.accessibilityPerformPress())
+        await fulfillment(of: [pressed], timeout: 1)
         XCTAssertEqual(clickCount, 1)
     }
 
@@ -238,18 +243,19 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testDetachedWindowHeightNeverExceedsVisibleViewport() {
-        let maximum = DetachedWindowMetrics.maximumContentHeight(for: NSScreen.main)
+    func testDetachedWindowHeightsRespectVisibleViewport() {
+        let dashboardMaximum = DetachedWindowMetrics.maximumContentHeight(for: NSScreen.main)
         if let visibleHeight = NSScreen.main?.visibleFrame.height {
-            XCTAssertLessThanOrEqual(maximum, visibleHeight - 32)
+            XCTAssertLessThanOrEqual(dashboardMaximum, visibleHeight - 32)
         }
 
         let clamped = DetachedWindowMetrics.clampSettingsContentSize(
             NSSize(width: 460, height: 10_000),
             screen: NSScreen.main
         )
+        let settingsMaximum = DetachedWindowMetrics.maximumSettingsWindowHeight(for: NSScreen.main)
         XCTAssertGreaterThanOrEqual(clamped.width, DetachedWindowMetrics.dashboardWidth)
-        XCTAssertLessThanOrEqual(clamped.height, maximum)
+        XCTAssertLessThanOrEqual(clamped.height, settingsMaximum)
     }
 
     func testQuotaHealthColorThresholdsDriveRootGradient() {

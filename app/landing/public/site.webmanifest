@@ -1,7 +1,7 @@
 {
   "name": "Codexling",
   "short_name": "Codexling",
-  "description": "macOS 菜单栏 Codex 额度工具",
+  "description": "macOS 菜单栏 Codex 任务状态、主动浮窗与额度工具",
   "icons": [
     {
       "src": "/brand/icon-192.png",
