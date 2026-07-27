@@ -46,8 +46,7 @@
   --preview-ticket-back: #eef1f0;
   --preview-ticket-mid: #f7f8f7;
   --preview-ticket-face: #fffef7;
-  --preview-green-soft: rgba(40, 192, 78, 0.12);
-  --preview-status-pill: #17a967;
+  --preview-green-soft: rgba(40, 192, 78, 0.1);
   --preview-green: #28c04e;
   --preview-blue: #007aef;
   --preview-pink: #ff5f5f;
@@ -103,8 +102,7 @@
   --preview-ticket-back: #262a29;
   --preview-ticket-mid: #2b2e2d;
   --preview-ticket-face: #292a27;
-  --preview-green-soft: rgba(40, 192, 78, 0.14);
-  --preview-status-pill: #168c58;
+  --preview-green-soft: rgba(40, 192, 78, 0.1);
   --preview-green: #28c04e;
   --preview-blue: #007aef;
   --preview-pink: #ff5f5f;
@@ -136,7 +134,8 @@ body {
   }
 
   .animate-float,
-  .animate-pulse-soft {
+  .animate-pulse-soft,
+  .status-capsule-wave {
     animation: none;
   }
 }
@@ -163,6 +162,32 @@ body {
   background: var(--card);
   backdrop-filter: blur(20px);
   border: 1px solid var(--border);
+}
+
+.status-neutral-capsule {
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.status-capsule-wave {
+  position: absolute;
+  inset-block: 0;
+  left: -76%;
+  width: 76%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 0, 0, 0.012) 45%,
+    rgba(0, 0, 0, 0.045)
+  );
+  animation: status-capsule-wave 1.8s linear infinite;
+}
+
+@keyframes status-capsule-wave {
+  to {
+    transform: translateX(232%);
+  }
 }
 
 @keyframes float {

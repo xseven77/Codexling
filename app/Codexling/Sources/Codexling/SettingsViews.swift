@@ -76,7 +76,10 @@ struct SettingsView: View {
             showToast("胶囊提醒色：\(color.title)")
         }
         .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
-            showToast("活动状态流光已\(enabled ? "开启" : "关闭")")
+            showToast("活动状态 Wave 已\(enabled ? "开启" : "关闭")")
+        }
+        .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
+            showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
         }
         .onChange(of: updater.phase) { oldPhase, phase in
             guard oldPhase != phase else { return }
@@ -395,7 +398,7 @@ struct SettingsView: View {
                 VStack(spacing: 0) {
                 SettingsInlineRow(
                     title: "胶囊提醒色",
-                    subtitle: "按额度余量切换：充足绿、偏低黄、紧张红、未知灰"
+                    subtitle: "只改变文字：充足绿、偏低黄、紧张红、未知灰"
                 ) {
                     HStack(spacing: 8) {
                         petBackgroundPreview
@@ -409,10 +412,38 @@ struct SettingsView: View {
                 SettingsRowDivider()
 
                 SettingsInlineRow(
-                    title: "活动状态流光",
-                    subtitle: "非空闲时，在状态栏胶囊和任务浮窗内显示活动流光"
+                    title: "胶囊透明度",
+                    subtitle: "调整状态栏胶囊纯白背景的透明程度"
+                ) {
+                    SettingsPercentageSlider(value: $settings.statusBarOpacityPercent)
+                }
+                SettingsRowDivider()
+
+                SettingsInlineRow(
+                    title: "活动状态 Wave",
+                    subtitle: "非空闲时，从状态栏圆灯向外扩散并驱动任务浮窗动画"
                 ) {
                     SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
+                }
+                SettingsRowDivider()
+
+                SettingsInlineRow(
+                    title: "任务浮窗自动展开",
+                    subtitle: "Codex 开始工作时自动显示；关闭后仍可悬停胶囊查看"
+                ) {
+                    SettingsSwitch(isOn: $settings.autoOpenTaskHoverEnabled)
+                }
+                SettingsRowDivider()
+
+                SettingsInlineRow(
+                    title: "任务浮窗显示器",
+                    subtitle: "选择执行任务时自动出现的浮窗位置"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.taskHoverDisplayMode,
+                        options: TaskHoverDisplayMode.allCases,
+                        title: \.title
+                    )
                 }
                 }
                 .settingsGroupSurface()
@@ -726,13 +757,19 @@ struct SettingsView: View {
     private var petBackgroundPreview: some View {
         if settings.petBackgroundColor == .automatic {
             HStack(spacing: 5) {
-                SettingsColorDot(color: .codexGreen)
-                SettingsColorDot(color: .codexAmber)
-                SettingsColorDot(color: .codexRed)
-                SettingsColorDot(color: .codexMuted)
+                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.green.foregroundColor(for: settings.resolvedColorScheme)))
+                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.yellow.foregroundColor(for: settings.resolvedColorScheme)))
+                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.red.foregroundColor(for: settings.resolvedColorScheme)))
+                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.gray.foregroundColor(for: settings.resolvedColorScheme)))
             }
         } else {
-            SettingsColorDot(color: Color(nsColor: settings.petBackgroundColor.nsColor))
+            SettingsColorDot(
+                color: Color(
+                    nsColor: settings.petBackgroundColor.foregroundColor(
+                        for: settings.resolvedColorScheme
+                    )
+                )
+            )
         }
     }
 
@@ -1112,6 +1149,24 @@ private struct SettingsColorDot: View {
     }
 }
 
+private struct SettingsPercentageSlider: View {
+    @Binding var value: Double
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Slider(value: $value, in: 0...50, step: 1)
+                .frame(width: 108)
+                .tint(Color.accentColor)
+                .accessibilityLabel("胶囊透明度")
+
+            Text("\(Int(value.rounded()))%")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.codexInk.opacity(0.82))
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+}
+
 private struct SettingsSwitch: View {
     @Binding var isOn: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -1135,7 +1190,7 @@ private struct SettingsSwitch: View {
             .contentShape(Capsule())
         }
         .buttonStyle(SettingsSwitchButtonStyle())
-        .accessibilityLabel("活动状态流光")
+        .accessibilityLabel("活动状态 Wave")
         .accessibilityValue(isOn ? "已开启" : "已关闭")
         .accessibilityAddTraits(.isButton)
     }

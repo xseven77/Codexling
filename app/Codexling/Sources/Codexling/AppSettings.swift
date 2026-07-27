@@ -118,27 +118,36 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
         }
     }
 
-    var nsColor: NSColor {
-        switch self {
-        case .automatic, .neutral:
-            NSColor.white.withAlphaComponent(0.18)
-        case .green:
-            NSColor(red: 0.016, green: 0.627, blue: 0.361, alpha: 1)
-        case .yellow:
-            NSColor(red: 0.851, green: 0.608, blue: 0.000, alpha: 1)
-        case .red:
-            NSColor(red: 0.867, green: 0.271, blue: 0.341, alpha: 1)
-        case .gray:
-            NSColor(red: 0.475, green: 0.510, blue: 0.498, alpha: 1)
-        }
-    }
-
-    var foregroundColor: NSColor {
+    func foregroundColor(for colorScheme: ColorScheme) -> NSColor {
         switch self {
         case .automatic, .neutral:
             .labelColor
-        case .green, .yellow, .red, .gray:
-            .white
+        case .green:
+            QuotaHealthLevel.green.nsColor
+        case .yellow:
+            QuotaHealthLevel.yellow.nsColor
+        case .red:
+            QuotaHealthLevel.red.nsColor
+        case .gray:
+            colorScheme == .dark
+                ? NSColor(red: 0.620, green: 0.645, blue: 0.680, alpha: 1)
+                : NSColor(red: 0.357, green: 0.397, blue: 0.447, alpha: 1)
+        }
+    }
+
+    var foregroundColor: NSColor { foregroundColor(for: .light) }
+}
+
+enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
+    case primary
+    case current
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .primary: "主显示器"
+        case .current: "当前高亮显示器"
         }
     }
 }
@@ -158,6 +167,9 @@ final class AppSettingsStore {
         static let selectedPetID = "codexling.selectedPetID"
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
+        static let autoOpenTaskHoverEnabled = "codexling.autoOpenTaskHoverEnabled"
+        static let taskHoverDisplayMode = "codexling.taskHoverDisplayMode"
+        static let statusBarOpacityPercent = "codexling.statusBarOpacityPercent"
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
         static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
     }
@@ -215,6 +227,30 @@ final class AppSettingsStore {
         didSet {
             guard statusBarWaveEnabled != oldValue else { return }
             defaults.set(statusBarWaveEnabled, forKey: Keys.statusBarWaveEnabled)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var autoOpenTaskHoverEnabled: Bool {
+        didSet {
+            guard autoOpenTaskHoverEnabled != oldValue else { return }
+            defaults.set(autoOpenTaskHoverEnabled, forKey: Keys.autoOpenTaskHoverEnabled)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var taskHoverDisplayMode: TaskHoverDisplayMode {
+        didSet {
+            guard taskHoverDisplayMode != oldValue else { return }
+            defaults.set(taskHoverDisplayMode.rawValue, forKey: Keys.taskHoverDisplayMode)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var statusBarOpacityPercent: Double {
+        didSet {
+            guard statusBarOpacityPercent != oldValue else { return }
+            defaults.set(statusBarOpacityPercent, forKey: Keys.statusBarOpacityPercent)
             onPetSettingsChanged?()
         }
     }
@@ -283,6 +319,13 @@ final class AppSettingsStore {
         let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
         petBackgroundColor = backgroundRaw.flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
         statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
+        autoOpenTaskHoverEnabled =
+            defaults.object(forKey: Keys.autoOpenTaskHoverEnabled) as? Bool ?? true
+        taskHoverDisplayMode = defaults.string(forKey: Keys.taskHoverDisplayMode)
+            .flatMap(TaskHoverDisplayMode.init(rawValue:)) ?? .primary
+        let savedOpacityPercent =
+            defaults.object(forKey: Keys.statusBarOpacityPercent) as? Double ?? 20
+        statusBarOpacityPercent = min(max(savedOpacityPercent, 0), 50)
         let savedCornerPercent = defaults.object(forKey: Keys.statusBarCornerPercent) as? Double ?? 50
         statusBarCornerPercent = min(max(savedCornerPercent, 20), 50)
         windowAlwaysOnTop = defaults.object(forKey: Keys.windowAlwaysOnTop) as? Bool ?? false
@@ -305,6 +348,9 @@ final class AppSettingsStore {
             Keys.selectedPetID,
             Keys.petBackgroundColor,
             Keys.statusBarWaveEnabled,
+            Keys.autoOpenTaskHoverEnabled,
+            Keys.taskHoverDisplayMode,
+            Keys.statusBarOpacityPercent,
             Keys.statusBarCornerPercent,
             Keys.windowAlwaysOnTop
         ]

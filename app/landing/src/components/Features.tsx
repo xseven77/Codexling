@@ -19,7 +19,7 @@ const features: Feature[] = [
   {
     title: "状态随时看",
     description:
-      "圆点显示任务状态，旁边直接给出当前额度窗口。胶囊可保持中性，也可随额度变化。",
+      "圆点独立显示任务状态，文字直接给出当前额度窗口；固定中性底不会跟随状态或壁纸翻色。",
     icon: Activity,
   },
   {
@@ -55,7 +55,7 @@ const features: Feature[] = [
   {
     title: "常用设置都在 App 里",
     description:
-      "主题、额度刷新、状态栏流光、窗口置顶和版本更新都能在 App 中完成。",
+      "主题、额度刷新、状态栏 Wave、窗口置顶和版本更新都能在 App 中完成。",
     icon: RefreshCw,
   },
 ];

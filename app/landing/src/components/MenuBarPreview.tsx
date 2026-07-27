@@ -4,6 +4,10 @@ import Image from "next/image";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 const MOBILE_PREVIEW_WIDTH = 560;
+const quotaHealthChipSurface =
+  "border border-[color:var(--preview-green)]/25 bg-[var(--preview-green-soft)] text-[var(--preview-green)]";
+const statusBarNeutralChipSurface =
+  "status-neutral-capsule text-[var(--preview-menubar-fg)]";
 
 function Ring({
   percent,
@@ -175,9 +179,12 @@ export function MenuBarPreview() {
               <span>文件</span>
             </div>
             <div className="flex min-w-0 items-center justify-end gap-2">
-              <span className="inline-flex h-6 min-w-[120px] max-w-[190px] items-center justify-center gap-1.5 truncate rounded-full bg-[var(--preview-status-pill)] px-2.5 text-[10px] font-bold tracking-[0.01em] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48),0_1px_3px_rgba(0,0,0,0.14)] [text-shadow:0_1px_1px_rgba(0,0,0,0.22)]">
-                <span className="h-2 w-2 shrink-0 rounded-full bg-[#7c3cff] shadow-[0_0_0_1px_white,0_0_5px_rgba(255,255,255,0.95)]" />
-                <span className="truncate">思考中 · 周 95%</span>
+              <span
+                className={`relative inline-flex h-6 min-w-[108px] max-w-[172px] items-center justify-center gap-2 overflow-hidden truncate rounded-full px-2.5 font-mono text-[9.5px] font-medium tabular-nums ${statusBarNeutralChipSurface}`}
+              >
+                <span className="status-capsule-wave" />
+                <span className="relative z-10 h-2 w-2 shrink-0 rounded-full bg-[#7c3cff] shadow-[0_0_0_1px_rgba(255,255,255,0.72),0_0_4px_rgba(124,60,255,0.35)]" />
+                <span className="relative z-10 truncate">思考中·周 95%</span>
               </span>
               <span className="shrink-0">Wed 17:57</span>
             </div>
@@ -238,7 +245,9 @@ export function MenuBarPreview() {
                   正在处理 1 个任务
                 </h3>
               </div>
-              <div className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-[color:var(--preview-green)]/25 bg-[var(--preview-green-soft)] px-2.5 text-[10px] font-bold text-[var(--preview-green)]">
+              <div
+                className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[10px] font-bold ${quotaHealthChipSurface}`}
+              >
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--preview-green)]" />
                 本周 95%
               </div>

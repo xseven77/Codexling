@@ -8,7 +8,7 @@ export function Hero() {
       <div className="hero-glow absolute inset-0 opacity-70" />
       <div className="grid-bg absolute inset-0 opacity-20" />
 
-      <div className="relative mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20 lg:py-24">
+      <div className="relative mx-auto max-w-6xl px-4 pb-14 pt-28 sm:px-6 sm:pb-20 sm:pt-32 lg:pb-24 lg:pt-36">
         <div className="mx-auto max-w-5xl text-center">
           <div className="mb-5 inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-surface/80 px-3 py-1 text-xs text-muted backdrop-blur sm:mb-6">
             <span className="h-2 w-2 shrink-0 rounded-full bg-accent animate-pulse-soft" />
@@ -27,7 +27,7 @@ export function Hero() {
           </h1>
 
           <p className="mx-auto mt-5 max-w-2xl text-base leading-7 text-muted sm:mt-6 sm:text-lg sm:leading-8">
-            任务状态与额度常驻菜单栏。需要时，悬停即可展开 Pet 与摘要；
+            任务圆灯与额度文字常驻中性透明胶囊。需要时，悬停即可展开 Pet 与摘要；
             Codex 开始工作后，动态浮窗会主动跟进，直到任务告一段落。
           </p>
 

@@ -2,6 +2,22 @@ import AppKit
 import CoreText
 import SwiftUI
 
+enum ActivityWaveTiming {
+    static let duration: TimeInterval = 3.6
+    static let capsuleDuration: TimeInterval = duration / 2
+
+    static func progress(at time: TimeInterval) -> CGFloat {
+        CGFloat(time.truncatingRemainder(dividingBy: duration) / duration)
+    }
+
+    static func capsuleProgress(at time: TimeInterval) -> CGFloat {
+        CGFloat(
+            time.truncatingRemainder(dividingBy: capsuleDuration)
+                / capsuleDuration
+        )
+    }
+}
+
 @MainActor
 final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
@@ -11,6 +27,7 @@ final class StatusBarController: NSObject {
     private let frameStore: PetFrameStore
     private let companionStatsStore: CompanionStatsStore
     private let actions: UsageActions
+    private let openDetachedWindowFromStatusItem: (NSScreen?) -> Void
     private let hoverPanel = PetHoverPanelController()
     private var capsuleView: StatusCapsuleView?
     private var pendingHoverWorkItem: DispatchWorkItem?
@@ -18,7 +35,9 @@ final class StatusBarController: NSObject {
     private var hoverSafeTriangle: HoverSafeTriangle?
     private var hoverSafeTriangleTimer: Timer?
     private var hoverSafeTriangleDeadline: Date?
-    private var keepsHoverPanelVisibleForTasks = false
+    private var taskHoverPresentation = TaskHoverPresentationState()
+    private var isKeepingTaskHoverVisible = false
+    private var lastStatusItemOpenTimestamp: TimeInterval = -.infinity
 
     init(
         store: UsageSnapshotStore,
@@ -26,7 +45,8 @@ final class StatusBarController: NSObject {
         activityStore: CodexActivityStore,
         frameStore: PetFrameStore,
         companionStatsStore: CompanionStatsStore,
-        actions: UsageActions
+        actions: UsageActions,
+        openDetachedWindowFromStatusItem: @escaping (NSScreen?) -> Void
     ) {
         self.store = store
         self.settings = settings
@@ -34,6 +54,7 @@ final class StatusBarController: NSObject {
         self.frameStore = frameStore
         self.companionStatsStore = companionStatsStore
         self.actions = actions
+        self.openDetachedWindowFromStatusItem = openDetachedWindowFromStatusItem
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -52,8 +73,15 @@ final class StatusBarController: NSObject {
             )
         }
         hoverPanel.onClick = { [weak self] in
-            self?.hideHoverPanelUnlessTaskIsActive()
-            actions.openDetachedWindow()
+            guard let self else { return }
+            self.hideHoverPanelUnlessTaskIsActive()
+            self.openDetachedWindowFromStatusItem(self.statusItem.button?.window?.screen)
+        }
+        hoverPanel.onClose = { [weak self] in
+            guard let self else { return }
+            self.taskHoverPresentation.dismiss()
+            self.isKeepingTaskHoverVisible = false
+            self.hideHoverPanel()
         }
 
         statusItem.isVisible = true
@@ -77,8 +105,9 @@ final class StatusBarController: NSObject {
             return
         }
 
-        button.target = nil
-        button.action = nil
+        button.target = self
+        button.action = #selector(handleStatusItemAction(_:))
+        button.sendAction(on: .leftMouseUp)
         button.image = nil
         button.attributedTitle = NSAttributedString(string: "")
         button.isBordered = false
@@ -96,9 +125,7 @@ final class StatusBarController: NSObject {
             let view = StatusCapsuleView(frame: button.bounds)
             view.autoresizingMask = [.width, .height]
             view.onClick = { [weak self] in
-                guard let self else { return }
-                self.hideHoverPanelUnlessTaskIsActive()
-                self.actions.openDetachedWindow()
+                self?.openFromStatusItem()
             }
             view.onMouseEntered = { [weak self] in self?.scheduleHoverPanel() }
             view.onMouseExited = { [weak self] in
@@ -114,6 +141,19 @@ final class StatusBarController: NSObject {
             button.addSubview(view)
             capsuleView = view
         }
+    }
+
+    @objc
+    private func handleStatusItemAction(_ sender: Any?) {
+        openFromStatusItem()
+    }
+
+    private func openFromStatusItem() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastStatusItemOpenTimestamp > 0.12 else { return }
+        lastStatusItemOpenTimestamp = now
+        hideHoverPanelUnlessTaskIsActive()
+        openDetachedWindowFromStatusItem(statusItem.button?.window?.screen)
     }
 
     func refreshStatusTitle() {
@@ -141,6 +181,11 @@ final class StatusBarController: NSObject {
         let compactText = activityState.statusBarText.map {
             "\($0)·\(quotaText)"
         } ?? quotaText
+        let reservedText = statusCapsuleReservedText(
+            snapshot: snapshot,
+            isLoggedIn: store.isLoggedIn,
+            showsActivity: activityState.statusBarText != nil
+        )
 
         // The final design reserves the leading dot for task state. Pet
         // animation remains available in the main window and hover card.
@@ -148,7 +193,10 @@ final class StatusBarController: NSObject {
         capsuleView?.update(
             background: background,
             text: compactText,
-            foregroundColor: background.foregroundColor,
+            reservedText: reservedText,
+            backgroundOpacity: CGFloat(settings.statusBarOpacityPercent / 100),
+            colorScheme: settings.resolvedColorScheme,
+            foregroundColor: background.foregroundColor(for: settings.resolvedColorScheme),
             showsPet: false,
             indicatorColor: activityState.statusNSColor,
             showsWave: showsWave,
@@ -208,17 +256,24 @@ final class StatusBarController: NSObject {
         for activity: CodexActivitySnapshot,
         relativeTo button: NSStatusBarButton
     ) {
-        let wasKeptVisible = keepsHoverPanelVisibleForTasks
-        keepsHoverPanelVisibleForTasks = activity.keepsHoverPanelVisible
+        taskHoverPresentation.update(hasActiveTasks: activity.keepsHoverPanelVisible)
+        hoverPanel.setTaskActive(taskHoverPresentation.hasActiveTasks)
+        let shouldKeepVisible = taskHoverPresentation.shouldAutoPresent(
+            isEnabled: settings.autoOpenTaskHoverEnabled
+        )
 
-        if keepsHoverPanelVisibleForTasks {
+        if shouldKeepVisible {
             pendingHoverWorkItem?.cancel()
             pendingHoverWorkItem = nil
             cancelHoverPanelHide()
-            hoverPanel.show(relativeTo: button)
-        } else if wasKeptVisible {
+            let preferredScreen = settings.taskHoverDisplayMode == .primary
+                ? NSScreen.screens.first
+                : button.window?.screen
+            hoverPanel.show(relativeTo: button, preferredScreen: preferredScreen)
+        } else if isKeepingTaskHoverVisible {
             hideHoverPanel()
         }
+        isKeepingTaskHoverVisible = shouldKeepVisible
     }
 
     private func scheduleHoverPanel() {
@@ -240,7 +295,7 @@ final class StatusBarController: NSObject {
     }
 
     private func hideHoverPanelUnlessTaskIsActive() {
-        guard !keepsHoverPanelVisibleForTasks else { return }
+        guard !isKeepingTaskHoverVisible else { return }
         hideHoverPanel()
     }
 
@@ -248,7 +303,7 @@ final class StatusBarController: NSObject {
         from departurePoint: NSPoint? = nil,
         toward targetFrame: NSRect? = nil
     ) {
-        guard !keepsHoverPanelVisibleForTasks else { return }
+        guard !isKeepingTaskHoverVisible else { return }
 
         if let departurePoint, let targetFrame, hoverPanel.isVisible {
             beginSafeTriangleTracking(from: departurePoint, toward: targetFrame)
@@ -299,7 +354,7 @@ final class StatusBarController: NSObject {
     }
 
     private func evaluateSafeTrianglePointer() {
-        guard !keepsHoverPanelVisibleForTasks else { return }
+        guard !isKeepingTaskHoverVisible else { return }
 
         let pointer = NSEvent.mouseLocation
         if pointerIsInsidePersistentHoverRegion(pointer) {
@@ -347,6 +402,31 @@ func statusBarQuotaText(snapshot: CodexUsageSnapshot, isLoggedIn: Bool) -> Strin
     }
 
     return "\(statusBarWindowLabel(snapshot.weekly.label)) \(snapshot.weekly.percentText)"
+}
+
+func statusCapsuleReservedText(
+    snapshot: CodexUsageSnapshot,
+    isLoggedIn: Bool,
+    showsActivity: Bool
+) -> String {
+    let quotaText: String
+    if !isLoggedIn {
+        quotaText = "未登录"
+    } else if !snapshot.hasShortWindow && !snapshot.hasWeeklyWindow {
+        quotaText = "无额度"
+    } else if snapshot.hasShortWindow {
+        let primaryText = "\(statusBarWindowLabel(snapshot.primaryWindow.label)) 99%"
+        quotaText = snapshot.hasWeeklyWindow
+            ? "\(primaryText)·\(statusBarWindowLabel(snapshot.weekly.label)) 99%"
+            : primaryText
+    } else {
+        quotaText = "\(statusBarWindowLabel(snapshot.weekly.label)) 99%"
+    }
+
+    // Active labels use a compact three-CJK-character vocabulary. Reserving a
+    // representative label keeps state transitions stable without leaving a
+    // conspicuous empty tail.
+    return showsActivity ? "思考中·\(quotaText)" : quotaText
 }
 
 func statusBarWindowLabel(_ label: String) -> String {
@@ -406,6 +486,44 @@ struct HoverSafeTriangle {
     private func signedArea(_ point: CGPoint, _ first: CGPoint, _ second: CGPoint) -> CGFloat {
         (point.x - second.x) * (first.y - second.y)
             - (first.x - second.x) * (point.y - second.y)
+    }
+}
+
+struct TaskHoverPresentationState {
+    private(set) var hasActiveTasks = false
+    private(set) var isDismissed = false
+
+    mutating func update(hasActiveTasks: Bool) {
+        if !hasActiveTasks {
+            isDismissed = false
+        } else if !self.hasActiveTasks {
+            isDismissed = false
+        }
+        self.hasActiveTasks = hasActiveTasks
+    }
+
+    mutating func dismiss() {
+        guard hasActiveTasks else { return }
+        isDismissed = true
+    }
+
+    func shouldAutoPresent(isEnabled: Bool) -> Bool {
+        hasActiveTasks && isEnabled && !isDismissed
+    }
+}
+
+enum PetHoverCloseButtonLayout {
+    static let size: CGFloat = 26
+    static let edgeInset: CGFloat = 10
+    static let activeContentTrailingPadding = size + edgeInset * 2
+
+    static func frame(in cardSize: NSSize) -> NSRect {
+        NSRect(
+            x: cardSize.width - edgeInset - size,
+            y: cardSize.height - edgeInset - size,
+            width: size,
+            height: size
+        )
     }
 }
 
@@ -488,11 +606,14 @@ final class StatusCapsuleView: NSView {
     var onMouseEntered: (() -> Void)?
     var onMouseExited: (() -> Void)?
     var petImage: NSImage? {
-        didSet { needsDisplay = true }
+        didSet { invalidateCapsuleDisplay() }
     }
 
     private var background = StatusBarPetBackgroundColor.neutral
+    private var colorScheme = ColorScheme.light
     private var text = ""
+    private var reservedText = ""
+    private var backgroundOpacity: CGFloat = 0.20
     private var foregroundColor = NSColor.labelColor
     private var showsPet = true
     private var indicatorColor: NSColor?
@@ -502,14 +623,18 @@ final class StatusCapsuleView: NSView {
     private var lastClickTimestamp: TimeInterval = -.infinity
     private var trackingAreaReference: NSTrackingArea?
     private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
+    private var pointerWasInsideCapsule = false
     private var waveTimer: Timer?
-    private var waveStartTime = ProcessInfo.processInfo.systemUptime
+    var activityWaveProgressForTesting: CGFloat?
     private var materialRipples: [CapsuleMaterialRipple] = []
     private var materialRippleTimer: Timer?
 
     var preferredWidth: CGFloat {
-        let textWidth = ceil(attributedText.size().width)
-        let indicatorWidth = showsPet ? StatusPetBadgeRenderer.size.width : Self.dotSize
+        let textWidth = ceil(max(attributedText.size().width, attributedReservedText.size().width))
+        let indicatorWidth = showsPet && petImage != nil
+            ? StatusPetBadgeRenderer.size.width
+            : Self.dotSize
         return indicatorPadding
             + indicatorWidth
             + Self.indicatorTextGap
@@ -527,9 +652,31 @@ final class StatusCapsuleView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Status-bar buttons do not reliably forward hover and press events to
+        // a click-through subview. Keep the capsule as the event target so its
+        // tracking area and mouse handlers work even while the app is inactive.
+        bounds.contains(point) ? self : nil
+    }
+
+    var usesThemeLockedNeutralSurfaceForTesting: Bool {
+        true
+    }
+
+    var activeMaterialRippleCountForTesting: Int {
+        materialRipples.count
+    }
+
+    var activityWaveOriginForTesting: NSPoint {
+        activityWaveOrigin
+    }
+
     func update(
         background: StatusBarPetBackgroundColor,
         text: String,
+        reservedText: String,
+        backgroundOpacity: CGFloat = 0.20,
+        colorScheme: ColorScheme = .light,
         foregroundColor: NSColor,
         showsPet: Bool,
         indicatorColor: NSColor?,
@@ -537,7 +684,10 @@ final class StatusCapsuleView: NSView {
         cornerRatio: CGFloat
     ) {
         self.background = background
+        self.colorScheme = colorScheme
         self.text = text
+        self.reservedText = reservedText
+        self.backgroundOpacity = min(max(backgroundOpacity, 0), 1)
         self.foregroundColor = foregroundColor
         self.showsPet = showsPet
         self.indicatorColor = indicatorColor
@@ -548,12 +698,11 @@ final class StatusCapsuleView: NSView {
             updateWaveAnimation()
         }
         setAccessibilityLabel("Codex \(text)")
-        needsDisplay = true
+        invalidateCapsuleDisplay()
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-
         let outerRect = NSRect(
             x: 0.25,
             y: bounds.midY - Self.capsuleHeight / 2 + 0.25,
@@ -565,13 +714,9 @@ final class StatusCapsuleView: NSView {
             xRadius: outerRect.height * cornerRatio,
             yRadius: outerRect.height * cornerRatio
         )
-        background.nsColor.setFill()
-        outerPath.fill()
+        drawNeutralSurface(in: outerPath)
         drawMaterialRipples(clippedTo: outerPath)
         drawWave(clippedTo: outerPath)
-        NSColor.white.withAlphaComponent(background == .neutral ? 0.14 : 0.30).setStroke()
-        outerPath.lineWidth = background == .neutral ? 0.45 : 0.55
-        outerPath.stroke()
 
         let indicatorWidth: CGFloat
         if showsPet, let petImage {
@@ -639,7 +784,26 @@ final class StatusCapsuleView: NSView {
         }
     }
 
+    private func invalidateCapsuleDisplay() {
+        needsDisplay = true
+    }
+
+    private func drawNeutralSurface(in outerPath: NSBezierPath) {
+        // A single translucent neutral fill keeps the wallpaper visible
+        // without introducing a gradient, reflection, or glass-like shading.
+        NSColor.white.withAlphaComponent(backgroundOpacity).setFill()
+        outerPath.fill()
+    }
+
     private var attributedText: NSAttributedString {
+        attributedText(for: text)
+    }
+
+    private var attributedReservedText: NSAttributedString {
+        attributedText(for: reservedText)
+    }
+
+    private func attributedText(for text: String) -> NSAttributedString {
         let result = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -668,7 +832,7 @@ final class StatusCapsuleView: NSView {
     }
 
     private var indicatorPadding: CGFloat {
-        if showsPet {
+        if showsPet, petImage != nil {
             // Match the leading inset to the centered top and bottom insets.
             return max(0, (bounds.height - StatusPetBadgeRenderer.size.height) / 2)
         }
@@ -680,9 +844,10 @@ final class StatusCapsuleView: NSView {
         if window == nil {
             stopMaterialRippleTimer()
             materialRipples.removeAll()
-            removeLocalMouseMonitor()
+            removeMouseMonitors()
         } else {
-            installLocalMouseMonitor()
+            installMouseMonitors()
+            updateMonitoredHoverState()
         }
         updateWaveAnimation()
     }
@@ -694,20 +859,19 @@ final class StatusCapsuleView: NSView {
     private func updateWaveAnimation() {
         waveTimer?.invalidate()
         waveTimer = nil
-        waveStartTime = ProcessInfo.processInfo.systemUptime
 
         guard showsWave, window != nil else {
-            needsDisplay = true
+            invalidateCapsuleDisplay()
             return
         }
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            needsDisplay = true
+            invalidateCapsuleDisplay()
             return
         }
 
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.needsDisplay = true
+                self?.invalidateCapsuleDisplay()
             }
         }
         waveTimer = timer
@@ -721,23 +885,25 @@ final class StatusCapsuleView: NSView {
         let progress: CGFloat
         if reducedMotion {
             progress = 0.5
+        } else if let activityWaveProgressForTesting {
+            progress = min(1, max(0, activityWaveProgressForTesting))
         } else {
-            let elapsed = ProcessInfo.processInfo.systemUptime - waveStartTime
-            progress = CGFloat(elapsed.truncatingRemainder(dividingBy: 1.8) / 1.8)
+            progress = ActivityWaveTiming.capsuleProgress(
+                at: Date.timeIntervalSinceReferenceDate
+            )
         }
-
-        let waveWidth: CGFloat = 48
-        let travelWidth = bounds.width + waveWidth * 2
-        let centerX = bounds.minX - waveWidth + travelWidth * progress
 
         NSGraphicsContext.saveGraphicsState()
         outerPath.addClip()
 
+        let waveWidth = max(72, bounds.width * 1.08)
+        let travelWidth = bounds.width + waveWidth * 2
+        let centerX = bounds.minX - waveWidth + travelWidth * progress
         let waveRect = NSRect(
             x: centerX - waveWidth / 2,
-            y: bounds.minY + 2,
+            y: bounds.midY - Self.capsuleHeight / 2 + 0.25,
             width: waveWidth,
-            height: max(1, bounds.height - 4)
+            height: Self.capsuleHeight - 0.5
         )
         let wavePath = NSBezierPath(
             roundedRect: waveRect,
@@ -746,22 +912,25 @@ final class StatusCapsuleView: NSView {
         )
         wavePath.addClip()
 
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.white.withAlphaComponent(0.08)
-        shadow.shadowBlurRadius = 4
-        shadow.shadowOffset = .zero
-        shadow.set()
-        let gradient = NSGradient(colorsAndLocations:
-            (NSColor.white.withAlphaComponent(0), 0),
-            (NSColor.white.withAlphaComponent(0.04), 0.30),
-            (NSColor.white.withAlphaComponent(0.17), 0.66),
-            (NSColor.white.withAlphaComponent(0.08), 1)
-        )
-        gradient?.draw(
+        let ink = materialInkColor
+        NSGradient(
+            colorsAndLocations:
+                (ink.withAlphaComponent(0), 0),
+                (ink.withAlphaComponent(ink.alphaComponent * 0.18), 0.44),
+                (ink.withAlphaComponent(ink.alphaComponent * 0.52), 0.74),
+                (ink.withAlphaComponent(ink.alphaComponent), 1)
+        )?.draw(
             in: waveRect,
             angle: 0
         )
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private var activityWaveOrigin: NSPoint {
+        NSPoint(
+            x: indicatorPadding + Self.dotSize / 2,
+            y: bounds.midY
+        )
     }
 
     private func drawMaterialRipples(clippedTo outerPath: NSBezierPath) {
@@ -775,7 +944,6 @@ final class StatusCapsuleView: NSView {
         }
 
         let diameter = hypot(bounds.width, bounds.height) * 2.05
-        let ink = materialInkColor
 
         NSGraphicsContext.saveGraphicsState()
         outerPath.addClip()
@@ -783,9 +951,6 @@ final class StatusCapsuleView: NSView {
         for ripple in materialRipples {
             let elapsed = now - ripple.startTime
             let expandLinear = min(1, max(0, elapsed / CapsuleMaterialRipple.expandDuration))
-            let expandEased = 1 - pow(1 - expandLinear, 3)
-            let scale = 0.04 + (1.0 - 0.04) * CGFloat(expandEased)
-
             let fadeLinear = min(
                 1,
                 max(0, (elapsed - CapsuleMaterialRipple.fadeDelay) / CapsuleMaterialRipple.fadeDuration)
@@ -793,31 +958,44 @@ final class StatusCapsuleView: NSView {
             let fadeEased = fadeLinear * fadeLinear
             let opacity = 1.0 - fadeEased
 
-            let size = diameter * scale
-            let rect = NSRect(
-                x: ripple.origin.x - size / 2,
-                y: ripple.origin.y - size / 2,
-                width: size,
-                height: size
+            drawMaterialRipple(
+                at: ripple.origin,
+                expandProgress: CGFloat(expandLinear),
+                opacity: CGFloat(opacity),
+                diameter: diameter
             )
-            ink.withAlphaComponent(ink.alphaComponent * CGFloat(opacity)).setFill()
-            NSBezierPath(ovalIn: rect).fill()
         }
 
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    private func drawMaterialRipple(
+        at origin: NSPoint,
+        expandProgress: CGFloat,
+        opacity: CGFloat,
+        diameter: CGFloat
+    ) {
+        let clampedProgress = min(1, max(0, expandProgress))
+        let expandEased = 1 - pow(1 - clampedProgress, 3)
+        let scale = 0.04 + 0.96 * expandEased
+        let size = diameter * scale
+        let rect = NSRect(
+            x: origin.x - size / 2,
+            y: origin.y - size / 2,
+            width: size,
+            height: size
+        )
+        let ink = materialInkColor
+        ink.withAlphaComponent(
+            ink.alphaComponent * min(1, max(0, opacity))
+        ).setFill()
+        NSBezierPath(ovalIn: rect).fill()
+    }
+
     private var materialInkColor: NSColor {
-        switch background {
-        case .automatic, .neutral:
-            // Match the translucent white capsule fill.
-            return NSColor.white.withAlphaComponent(0.28)
-        case .green, .yellow, .red, .gray:
-            // Same hue as the capsule, lightened so the blot reads on a solid fill.
-            let base = background.nsColor
-            let ink = base.blended(withFraction: 0.42, of: .white) ?? base
-            return ink.withAlphaComponent(0.32)
-        }
+        colorScheme == .dark
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.black.withAlphaComponent(0.10)
     }
 
     override func updateTrackingAreas() {
@@ -836,11 +1014,11 @@ final class StatusCapsuleView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onMouseEntered?()
+        setMonitoredHoverState(isInside: true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        onMouseExited?()
+        setMonitoredHoverState(isInside: false)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -865,21 +1043,33 @@ final class StatusCapsuleView: NSView {
 
     /// NSStatusBarButton often swallows subview mouseDown. A local monitor still
     /// sees the press so the material wave can start on click.
-    private func installLocalMouseMonitor() {
+    private func installMouseMonitors() {
         guard localMouseMonitor == nil else { return }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseUp]
+            matching: [.leftMouseDown, .leftMouseUp, .mouseMoved, .leftMouseDragged]
         ) { [weak self] event in
             self?.handleLocalMouseEvent(event)
             return event
         }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged]
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.updateMonitoredHoverState()
+            }
+        }
     }
 
-    private func removeLocalMouseMonitor() {
+    private func removeMouseMonitors() {
         if let localMouseMonitor {
             NSEvent.removeMonitor(localMouseMonitor)
             self.localMouseMonitor = nil
         }
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+        pointerWasInsideCapsule = false
     }
 
     private func handleLocalMouseEvent(_ event: NSEvent) {
@@ -893,8 +1083,27 @@ final class StatusCapsuleView: NSView {
                 shouldClick: isPointerInside(for: event),
                 timestamp: event.timestamp
             )
+        case .mouseMoved, .leftMouseDragged:
+            updateMonitoredHoverState()
         default:
             break
+        }
+    }
+
+    private func updateMonitoredHoverState() {
+        guard let window else { return }
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let localPoint = convert(windowPoint, from: nil)
+        setMonitoredHoverState(isInside: bounds.contains(localPoint))
+    }
+
+    private func setMonitoredHoverState(isInside: Bool) {
+        guard pointerWasInsideCapsule != isInside else { return }
+        pointerWasInsideCapsule = isInside
+        if isInside {
+            onMouseEntered?()
+        } else {
+            onMouseExited?()
         }
     }
 
@@ -961,7 +1170,7 @@ final class StatusCapsuleView: NSView {
     private func tickMaterialRipples() {
         let now = ProcessInfo.processInfo.systemUptime
         materialRipples.removeAll { now - $0.startTime >= CapsuleMaterialRipple.lifetime }
-        needsDisplay = true
+        invalidateCapsuleDisplay()
         if materialRipples.isEmpty {
             stopMaterialRippleTimer()
             display()
@@ -1024,6 +1233,11 @@ private final class PetHoverPanelController {
         set { model.onClick = newValue }
     }
 
+    var onClose: (() -> Void)? {
+        get { model.onClose }
+        set { model.onClose = newValue }
+    }
+
     var isVisible: Bool { panel.isVisible }
 
     var interactionFrame: NSRect {
@@ -1078,18 +1292,29 @@ private final class PetHoverPanelController {
         model.petFrame = image
     }
 
-    func show(relativeTo button: NSStatusBarButton) {
+    func setTaskActive(_ isActive: Bool) {
+        model.isTaskActive = isActive
+    }
+
+    func show(relativeTo button: NSStatusBarButton, preferredScreen: NSScreen? = nil) {
         guard let window = button.window else { return }
         let rectInWindow = button.convert(button.bounds, to: nil)
         let anchor = window.convertToScreen(rectInWindow)
         let size = panel.frame.size
-        let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        var x = anchor.midX - size.width / 2
+        let sourceScreen = window.screen
+        let targetScreen = preferredScreen ?? sourceScreen ?? NSScreen.main
+        let screenFrame = targetScreen?.visibleFrame ?? .zero
+        let usesAnchorScreen = targetScreen === sourceScreen
+        var x = usesAnchorScreen
+            ? anchor.midX - size.width / 2
+            : screenFrame.maxX - size.width - 8
         x = min(max(x, screenFrame.minX + 8), screenFrame.maxX - size.width - 8)
         // Anchor the visible card—not its transparent shadow canvas—to the
         // actual menu-bar edge. The status button's local vertical bounds can
         // vary by OS version and previously produced a much larger visual gap.
-        let menuBarBottom = window.frame.minY
+        let menuBarBottom = usesAnchorScreen
+            ? window.frame.minY
+            : screenFrame.maxY
         let y = menuBarBottom
             - Self.cardGapFromMenuBar
             - Self.cardSize.height
@@ -1112,25 +1337,59 @@ private final class PetHoverViewModel {
     var meta = ""
     var petFrame: NSImage?
     var showsWave = false
+    var isTaskActive = false
     @ObservationIgnored var onMouseEntered: (() -> Void)?
     @ObservationIgnored var onMouseExited: (() -> Void)?
     @ObservationIgnored var onClick: (() -> Void)?
+    @ObservationIgnored var onClose: (() -> Void)?
 }
 
 private struct PetHoverContentView: View {
     @Bindable var model: PetHoverViewModel
     let cardSize: NSSize
     let shadowInset: CGFloat
+    @State private var isHovered = false
 
     var body: some View {
-        Button {
-            model.onClick?()
-        } label: {
-            glassSurface
-                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        ZStack(alignment: .topTrailing) {
+            Button {
+                model.onClick?()
+            } label: {
+                glassSurface
+                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(CodexPressableCardStyle(cornerRadius: 16))
+
+            if model.isTaskActive && isHovered {
+                Button {
+                    model.onClose?()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(Color.codexInk.opacity(0.72))
+                        .frame(
+                            width: PetHoverCloseButtonLayout.size,
+                            height: PetHoverCloseButtonLayout.size
+                        )
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.7)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help("关闭本次任务浮窗")
+                .accessibilityLabel("关闭任务浮窗")
+                .padding(.top, PetHoverCloseButtonLayout.edgeInset)
+                .padding(.trailing, PetHoverCloseButtonLayout.edgeInset)
+                .transition(.opacity.combined(with: .scale(scale: 0.88)))
+                .zIndex(1)
+            }
         }
-        .buttonStyle(CodexPressableCardStyle(cornerRadius: 16))
         .onHover { isHovered in
+            withAnimation(.easeOut(duration: 0.14)) {
+                self.isHovered = isHovered
+            }
             if isHovered {
                 NSCursor.pointingHand.set()
                 model.onMouseEntered?()
@@ -1205,7 +1464,13 @@ private struct PetHoverContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 13)
+        .padding(.leading, 13)
+        .padding(
+            .trailing,
+            model.isTaskActive
+                ? PetHoverCloseButtonLayout.activeContentTrailingPadding
+                : 13
+        )
         .frame(width: cardSize.width, height: cardSize.height)
     }
 }
@@ -1218,14 +1483,14 @@ private struct HoverActivityWave: View {
         if isVisible {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
                 GeometryReader { proxy in
-                    let duration = 3.6
                     let progress = reduceMotion
-                        ? 0.5
-                        : timeline.date.timeIntervalSinceReferenceDate
-                            .truncatingRemainder(dividingBy: duration) / duration
+                        ? CGFloat(0.5)
+                        : ActivityWaveTiming.progress(
+                            at: timeline.date.timeIntervalSinceReferenceDate
+                        )
                     let waveWidth = max(330, proxy.size.width * 1.08)
                     let travelWidth = proxy.size.width + waveWidth * 2
-                    let centerX = -waveWidth + travelWidth * CGFloat(progress)
+                    let centerX = -waveWidth + travelWidth * progress
                     let inverseSurfaceColor = Color.primary
                     let trailGradient = LinearGradient(
                         stops: [

@@ -99,6 +99,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private let onClose: (() -> Void)?
     private var contentMode: DetachedWindowContentMode = .dashboard(isLoggedIn: true)
     private var isProgrammaticResize = false
+    private var isRelocatingToScreen = false
     private var settingsMeasuredContentHeight: CGFloat?
     private var pinHostingView: NSHostingView<WindowPinButton>!
 
@@ -172,9 +173,41 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.center()
     }
 
-    func show() {
+    func show(on screen: NSScreen? = nil) {
+        if let screen, window.screen !== screen {
+            moveToCenter(of: screen)
+        }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+    }
+
+    private func moveToCenter(of screen: NSScreen) {
+        let targetSize: NSSize
+        switch contentMode {
+        case let .dashboard(isLoggedIn):
+            targetSize = DetachedWindowMetrics.fixedDashboardContentSize(
+                isLoggedIn: isLoggedIn,
+                screen: screen
+            )
+        case .settings:
+            targetSize = DetachedWindowMetrics.clampSettingsContentSize(
+                window.frame.size,
+                screen: screen
+            )
+        }
+
+        let visibleFrame = screen.visibleFrame
+        let centeredFrame = NSRect(
+            x: visibleFrame.midX - targetSize.width / 2,
+            y: visibleFrame.midY - targetSize.height / 2,
+            width: targetSize.width,
+            height: targetSize.height
+        )
+
+        isRelocatingToScreen = true
+        window.setFrame(centeredFrame, display: false)
+        isRelocatingToScreen = false
+        applyContentSizeLimits(for: contentMode)
     }
 
     func refreshThemeAppearance() {
@@ -352,7 +385,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
-        guard notification.object is NSWindow else { return }
+        guard notification.object is NSWindow, !isRelocatingToScreen else { return }
         applyContentSizeLimits(for: contentMode)
         applyContentLayout(contentMode)
     }

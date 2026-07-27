@@ -61,6 +61,32 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(StatusBarPetBackgroundColor.neutral.resolved(for: .red), .neutral)
     }
 
+    func testStatusCapsuleReminderColorOnlyDefinesForeground() {
+        XCTAssertNotEqual(
+            StatusBarPetBackgroundColor.green.foregroundColor(for: .light),
+            StatusBarPetBackgroundColor.yellow.foregroundColor(for: .light)
+        )
+        XCTAssertNotEqual(
+            StatusBarPetBackgroundColor.yellow.foregroundColor(for: .light),
+            StatusBarPetBackgroundColor.red.foregroundColor(for: .light)
+        )
+        XCTAssertNotEqual(
+            StatusBarPetBackgroundColor.gray.foregroundColor(for: .light),
+            StatusBarPetBackgroundColor.gray.foregroundColor(for: .dark)
+        )
+    }
+
+    @MainActor
+    func testStatusCapsuleUsesThemeLockedNeutralSurface() {
+        let view = StatusCapsuleView(
+            frame: NSRect(x: 0, y: 0, width: 120, height: 26)
+        )
+        XCTAssertTrue(
+            view.usesThemeLockedNeutralSurfaceForTesting,
+            "状态栏胶囊必须使用不随壁纸明暗翻转的主题中性色"
+        )
+    }
+
     @MainActor
     func testPetBackgroundDefaultsToNeutralAndListsItFirst() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
@@ -200,6 +226,80 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
+    func testStatusCapsuleHoverCallbacksRemainConnected() throws {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        var entries = 0
+        var exits = 0
+        view.onMouseEntered = { entries += 1 }
+        view.onMouseExited = { exits += 1 }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 20, y: 12),
+            modifierFlags: [],
+            timestamp: 10,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 0,
+            pressure: 0
+        ))
+
+        view.mouseEntered(with: event)
+        view.mouseExited(with: event)
+
+        XCTAssertEqual(entries, 1)
+        XCTAssertEqual(exits, 1)
+    }
+
+    @MainActor
+    func testStatusCapsuleReceivesPointerEvents() {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+
+        XCTAssertTrue(view.hitTest(NSPoint(x: 40, y: 12)) === view)
+        XCTAssertNil(view.hitTest(NSPoint(x: 140, y: 12)))
+    }
+
+    @MainActor
+    func testStatusCapsulePressCreatesMaterialRipple() throws {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 40, y: 12),
+            modifierFlags: [],
+            timestamp: 10,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        view.mouseDown(with: event)
+
+        XCTAssertEqual(view.activeMaterialRippleCountForTesting, 1)
+    }
+
+    @MainActor
+    func testStatusCapsuleActivityWaveStartsAtTaskIndicator() {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+
+        XCTAssertEqual(view.activityWaveOriginForTesting.x, 11.5, accuracy: 0.001)
+        XCTAssertEqual(view.activityWaveOriginForTesting.y, 12, accuracy: 0.001)
+    }
+
+    func testStatusCapsuleRunsTwicePerHoverWaveOnTheSharedTimeline() {
+        XCTAssertEqual(ActivityWaveTiming.duration, 3.6)
+        XCTAssertEqual(ActivityWaveTiming.capsuleDuration, 1.8)
+        XCTAssertEqual(ActivityWaveTiming.progress(at: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.progress(at: 1.8), 0.5, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.progress(at: 3.6), 0, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 0.9), 0.5, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 1.8), 0, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 3.6), 0, accuracy: 0.001)
+    }
+
+    @MainActor
     func testPetBackgroundSelectionPersists() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -227,6 +327,70 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
+    func testTaskHoverAutoOpenDefaultsOnAndPersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(settings.autoOpenTaskHoverEnabled)
+
+        settings.autoOpenTaskHoverEnabled = false
+        XCTAssertFalse(AppSettingsStore(defaults: defaults).autoOpenTaskHoverEnabled)
+    }
+
+    @MainActor
+    func testTaskHoverDisplayDefaultsToPrimaryAndPersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.taskHoverDisplayMode, .primary)
+
+        settings.taskHoverDisplayMode = .current
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).taskHoverDisplayMode, .current)
+    }
+
+    func testTaskHoverDismissalLastsUntilActiveTasksEnd() {
+        var state = TaskHoverPresentationState()
+        state.update(hasActiveTasks: true)
+        XCTAssertTrue(state.shouldAutoPresent(isEnabled: true))
+
+        state.dismiss()
+        XCTAssertFalse(state.shouldAutoPresent(isEnabled: true))
+        state.update(hasActiveTasks: true)
+        XCTAssertFalse(state.shouldAutoPresent(isEnabled: true))
+
+        state.update(hasActiveTasks: false)
+        state.update(hasActiveTasks: true)
+        XCTAssertTrue(state.shouldAutoPresent(isEnabled: true))
+        XCTAssertFalse(state.shouldAutoPresent(isEnabled: false))
+    }
+
+    func testTaskHoverCloseButtonStaysInsideCardAndClearOfContent() {
+        let cardSize = NSSize(width: 340, height: 112)
+        let cardBounds = NSRect(origin: .zero, size: cardSize)
+        let closeFrame = PetHoverCloseButtonLayout.frame(in: cardSize)
+        let contentMaxX =
+            cardSize.width - PetHoverCloseButtonLayout.activeContentTrailingPadding
+
+        XCTAssertTrue(cardBounds.contains(closeFrame))
+        XCTAssertEqual(
+            cardBounds.maxX - closeFrame.maxX,
+            PetHoverCloseButtonLayout.edgeInset
+        )
+        XCTAssertEqual(
+            cardBounds.maxY - closeFrame.maxY,
+            PetHoverCloseButtonLayout.edgeInset
+        )
+        XCTAssertGreaterThanOrEqual(
+            closeFrame.minX - contentMaxX,
+            PetHoverCloseButtonLayout.edgeInset
+        )
+    }
+
+    @MainActor
     func testStatusBarCornerPercentDefaultsPersistsAndClamps() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -240,6 +404,22 @@ final class CodexlingTests: XCTestCase {
 
         defaults.set(90.0, forKey: "codexling.statusBarCornerPercent")
         XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarCornerPercent, 50)
+    }
+
+    @MainActor
+    func testStatusBarOpacityDefaultsToTwentyPersistsAndClamps() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.statusBarOpacityPercent, 20)
+
+        settings.statusBarOpacityPercent = 45
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarOpacityPercent, 45)
+
+        defaults.set(140.0, forKey: "codexling.statusBarOpacityPercent")
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).statusBarOpacityPercent, 50)
     }
 
     @MainActor
@@ -410,6 +590,282 @@ final class CodexlingTests: XCTestCase {
 
         XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: true), "无额度")
         XCTAssertEqual(statusBarQuotaText(snapshot: snapshot, isLoggedIn: false), "未登录")
+    }
+
+    @MainActor
+    func testStatusCapsuleReservesStableWidthForEachQuotaLayout() {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 71, total: 100, resetsAt: "")
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "")
+        XCTAssertEqual(
+            statusCapsuleReservedText(snapshot: snapshot, isLoggedIn: true, showsActivity: false),
+            "5h 99%"
+        )
+
+        snapshot.shortWindow = nil
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 51, total: 100, resetsAt: "")
+        XCTAssertEqual(
+            statusCapsuleReservedText(snapshot: snapshot, isLoggedIn: true, showsActivity: false),
+            "周 99%"
+        )
+
+        snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 71, total: 100, resetsAt: "")
+        XCTAssertEqual(
+            statusCapsuleReservedText(snapshot: snapshot, isLoggedIn: true, showsActivity: false),
+            "5h 99%·周 99%"
+        )
+        XCTAssertEqual(
+            statusCapsuleReservedText(snapshot: snapshot, isLoggedIn: true, showsActivity: true),
+            "思考中·5h 99%·周 99%"
+        )
+
+        if let outputPath = ProcessInfo.processInfo.environment["CODEXLING_CAPSULE_DEBUG_OUTPUT"] {
+            try? renderStatusCapsuleDebugGallery(to: outputPath)
+        }
+    }
+
+    @MainActor
+    func testEveryActivityStateUsesTheExpectedCompactCapsuleWidth() {
+        let expectedLabels: [CodexActivityState: String?] = [
+            .unavailable: nil,
+            .idle: nil,
+            .thinking: "思考中",
+            .executing: "工作中",
+            .reviewing: "检查中",
+            .waitingForUser: "待确认",
+            .completed: "已完成",
+            .interrupted: "已中止",
+        ]
+        XCTAssertEqual(CodexActivityState.allCases.count, expectedLabels.count)
+
+        var widths: [CGFloat] = []
+        for state in CodexActivityState.allCases {
+            XCTAssertEqual(state.statusBarText, expectedLabels[state] ?? nil)
+            guard let statusText = state.statusBarText else { continue }
+            XCTAssertEqual(statusText.count, 3, "\(state.rawValue) 不应超过三个字符")
+
+            let capsule = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 1, height: 26))
+            capsule.update(
+                background: .neutral,
+                text: "\(statusText)·周 90%",
+                reservedText: "思考中·周 99%",
+                foregroundColor: StatusBarPetBackgroundColor.neutral.foregroundColor,
+                showsPet: false,
+                indicatorColor: .systemGreen,
+                showsWave: false,
+                cornerRatio: 0.5
+            )
+            widths.append(capsule.preferredWidth)
+        }
+
+        XCTAssertEqual(Set(widths).count, 1, "所有有文案的活动状态必须保持相同胶囊宽度")
+
+        if let outputPath = ProcessInfo.processInfo.environment[
+            "CODEXLING_CAPSULE_COLOR_DEBUG_OUTPUT"
+        ] {
+            try? renderStatusCapsuleColorAndIndicatorGallery(to: outputPath)
+        }
+    }
+
+    @MainActor
+    private func renderStatusCapsuleDebugGallery(to outputPath: String) throws {
+        var cases: [(String, String, String)] = [
+            ("仅周 · 单位数", "周 9%", "周 99%"),
+            ("仅周 · 常态", "周 90%", "周 99%"),
+            ("仅周 · 满额", "周 100%", "周 99%"),
+            ("仅 5h", "5h 90%", "5h 99%"),
+            ("双额度", "5h 90%·周 90%", "5h 99%·周 99%"),
+        ]
+        cases.append(contentsOf: CodexActivityState.allCases.map { state in
+            let text = state.statusBarText.map { "\($0)·周 90%" } ?? "周 90%"
+            let reserved = state.statusBarText == nil ? "周 99%" : "思考中·周 99%"
+            return ("状态 · \(state.rawValue)", text, reserved)
+        })
+        cases.append(
+            ("状态 + 双额度", "工作中·5h 90%·周 90%", "思考中·5h 99%·周 99%")
+        )
+        let rowHeight: CGFloat = 44
+        let canvasSize = NSSize(width: 470, height: rowHeight * CGFloat(cases.count) + 20)
+        let image = NSImage(size: canvasSize)
+
+        image.lockFocus()
+        NSColor(calibratedWhite: 0.94, alpha: 1).setFill()
+        NSRect(origin: .zero, size: canvasSize).fill()
+
+        for (index, item) in cases.enumerated() {
+            let y = canvasSize.height - 20 - rowHeight * CGFloat(index + 1)
+            item.0.draw(
+                at: NSPoint(x: 16, y: y + 13),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            )
+
+            let capsule = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 1, height: 26))
+            capsule.update(
+                background: .neutral,
+                text: item.1,
+                reservedText: item.2,
+                foregroundColor: StatusBarPetBackgroundColor.neutral.foregroundColor,
+                showsPet: false,
+                indicatorColor: .systemGreen,
+                showsWave: false,
+                cornerRatio: 0.5
+            )
+            capsule.frame.size.width = capsule.preferredWidth
+            guard let representation = capsule.bitmapImageRepForCachingDisplay(in: capsule.bounds) else {
+                continue
+            }
+            capsule.cacheDisplay(in: capsule.bounds, to: representation)
+            representation.draw(
+                in: NSRect(
+                    x: 150,
+                    y: y + 8,
+                    width: capsule.bounds.width,
+                    height: capsule.bounds.height
+                )
+            )
+        }
+        image.unlockFocus()
+
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try png.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+    }
+
+    @MainActor
+    private func renderStatusCapsuleColorAndIndicatorGallery(to outputPath: String) throws {
+        let backgrounds: [(String, StatusBarPetBackgroundColor)] = [
+            ("健康绿", .green),
+            ("提醒黄", .yellow),
+            ("告警红", .red),
+            ("未知灰", .gray),
+        ]
+        let states = CodexActivityState.allCases
+        let columnWidth: CGFloat = 220
+        let rowHeight: CGFloat = 47
+        let canvasSize = NSSize(
+            width: 132 + columnWidth * CGFloat(backgrounds.count),
+            height: 100 + rowHeight * CGFloat(states.count)
+        )
+        let image = NSImage(size: canvasSize)
+
+        image.lockFocus()
+        NSGradient(colors: [
+            NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1),
+            NSColor(srgbRed: 0.98, green: 0.98, blue: 0.97, alpha: 1),
+        ])?.draw(
+            from: NSPoint(x: canvasSize.width / 2, y: 0),
+            to: NSPoint(x: canvasSize.width / 2, y: canvasSize.height),
+            options: []
+        )
+
+        "固定中性底 × 提醒文字色 × 任务圆灯".draw(
+            at: NSPoint(x: 20, y: canvasSize.height - 34),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 18, weight: .bold),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+
+        for (column, background) in backgrounds.enumerated() {
+            background.0.draw(
+                at: NSPoint(
+                    x: 132 + CGFloat(column) * columnWidth + 72,
+                    y: canvasSize.height - 64
+                ),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                    .foregroundColor: background.1.foregroundColor,
+                ]
+            )
+        }
+
+        for (row, state) in states.enumerated() {
+            let rowY = canvasSize.height - 94 - rowHeight * CGFloat(row + 1)
+            state.rawValue.draw(
+                at: NSPoint(x: 20, y: rowY + 9),
+                withAttributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            )
+
+            for (column, background) in backgrounds.enumerated() {
+                let statusText = state.statusBarText
+                let text = statusText.map { "\($0)·周 82%" } ?? "周 82%"
+                let reservedText = statusText == nil ? "周 99%" : "思考中·周 99%"
+                let capsule = StatusCapsuleView(
+                    frame: NSRect(x: 0, y: 0, width: 1, height: 26)
+                )
+                capsule.update(
+                    background: background.1,
+                    text: text,
+                    reservedText: reservedText,
+                    foregroundColor: background.1.foregroundColor,
+                    showsPet: false,
+                    indicatorColor: state.statusNSColor,
+                    showsWave: false,
+                    cornerRatio: 0.5
+                )
+                capsule.frame.size.width = capsule.preferredWidth
+
+                let x = 132
+                    + CGFloat(column) * columnWidth
+                    + (columnWidth - capsule.bounds.width) / 2
+                let scale: CGFloat = 2
+                guard let representation = NSBitmapImageRep(
+                    bitmapDataPlanes: nil,
+                    pixelsWide: Int(capsule.bounds.width * scale),
+                    pixelsHigh: Int(capsule.bounds.height * scale),
+                    bitsPerSample: 8,
+                    samplesPerPixel: 4,
+                    hasAlpha: true,
+                    isPlanar: false,
+                    colorSpaceName: .deviceRGB,
+                    bytesPerRow: 0,
+                    bitsPerPixel: 0
+                ) else {
+                    continue
+                }
+                representation.size = capsule.bounds.size
+                if let bitmapContext = NSGraphicsContext(bitmapImageRep: representation) {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = bitmapContext
+                    NSColor.clear.setFill()
+                    capsule.bounds.fill(using: .copy)
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+                capsule.cacheDisplay(in: capsule.bounds, to: representation)
+                let targetRect = NSRect(
+                    x: x,
+                    y: rowY + 3,
+                    width: capsule.bounds.width,
+                    height: capsule.bounds.height
+                )
+                NSGraphicsContext.saveGraphicsState()
+                let capsuleClipRect = targetRect.insetBy(dx: 0.5, dy: 0.5)
+                NSBezierPath(
+                    roundedRect: capsuleClipRect,
+                    xRadius: capsuleClipRect.height / 2,
+                    yRadius: capsuleClipRect.height / 2
+                ).addClip()
+                representation.draw(in: targetRect)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        image.unlockFocus()
+
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try png.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
     }
 
     func testDetailWindowFallsBackToThePrimaryWindow() throws {

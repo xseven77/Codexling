@@ -3,7 +3,7 @@ import Foundation
 import Observation
 import SQLite3
 
-enum CodexActivityState: String, Sendable {
+enum CodexActivityState: String, CaseIterable, Sendable {
     case unavailable
     case idle
     case thinking
@@ -24,7 +24,7 @@ enum CodexActivityState: String, Sendable {
         case .reviewing:
             "检查中"
         case .waitingForUser:
-            "等待确认"
+            "待确认"
         case .completed:
             "已完成"
         case .interrupted:

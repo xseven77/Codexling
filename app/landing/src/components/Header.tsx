@@ -36,6 +36,7 @@ function MenuIcon({ open }: { open: boolean }) {
 
 export function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
     document.body.style.overflow = menuOpen ? "hidden" : "";
@@ -44,104 +45,132 @@ export function Header() {
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    const updateScrolled = () => setScrolled(window.scrollY > 24);
+    updateScrolled();
+    window.addEventListener("scroll", updateScrolled, { passive: true });
+    return () => window.removeEventListener("scroll", updateScrolled);
+  }, []);
+
   const closeMenu = () => setMenuOpen(false);
+  const elevated = scrolled || menuOpen;
 
   return (
-    <header className="sticky top-0 z-50 border-b border-border/80 bg-background/70 backdrop-blur-xl supports-[padding:max(0px)]:pt-[env(safe-area-inset-top)]">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:h-16 sm:px-6">
-        <Link href="/" className="flex min-w-0 items-center gap-2.5 sm:gap-3">
-          <Image
-            src="/brand/codexling-logo.webp"
-            alt="Codexling"
-            width={32}
-            height={32}
-            className="shrink-0 rounded-[8px]"
-          />
-          <span className="truncate text-sm font-semibold tracking-tight">Codexling</span>
-        </Link>
-
-        <nav className="hidden items-center gap-8 md:flex" aria-label="主导航">
-          {nav.map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              className="text-sm text-muted transition-colors hover:text-foreground"
-            >
-              {item.label}
-            </a>
-          ))}
-        </nav>
-
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          <ThemeToggle />
-          <a
-            href="https://github.com/xseven77/Codexling"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden rounded-full border border-border px-4 py-2 text-sm transition-colors hover:bg-foreground/5 sm:inline-flex"
-          >
-            GitHub
-          </a>
-          <a
-            href={GITHUB_RELEASES_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 sm:inline-flex"
-          >
-            下载
-          </a>
-          <button
-            type="button"
-            className="inline-flex size-9 items-center justify-center rounded-[10px] border border-border text-foreground transition-colors hover:bg-foreground/5 md:hidden"
-            aria-expanded={menuOpen}
-            aria-controls="mobile-nav"
-            aria-label={menuOpen ? "关闭菜单" : "打开菜单"}
-            onClick={() => setMenuOpen((v) => !v)}
-          >
-            <MenuIcon open={menuOpen} />
-          </button>
-        </div>
-      </div>
-
-      {menuOpen ? (
+    <header className="fixed inset-x-0 top-0 z-50 supports-[padding:max(0px)]:pt-[env(safe-area-inset-top)]">
+      <div className="mx-auto max-w-[1180px] px-3 pt-2.5 sm:px-5 sm:pt-3">
         <div
-          id="mobile-nav"
-          className="border-t border-border/80 bg-background/95 backdrop-blur-xl md:hidden"
+          className={[
+            "flex h-14 items-center justify-between gap-3 rounded-[18px] px-3 sm:h-[58px] sm:px-4",
+            "transition-[background-color,border-color,box-shadow,backdrop-filter] duration-300 ease-out",
+            elevated
+              ? "border border-black/[0.07] bg-background/78 shadow-[0_12px_36px_rgba(15,23,42,0.09),0_1px_0_rgba(255,255,255,0.5)_inset] backdrop-blur-2xl dark:border-white/[0.1] dark:shadow-[0_14px_42px_rgba(0,0,0,0.38)]"
+              : "border border-transparent bg-transparent shadow-none",
+          ].join(" ")}
         >
-          <nav className="mx-auto flex max-w-6xl flex-col px-4 py-3 sm:px-6" aria-label="移动端导航">
+          <Link
+            href="/"
+            className="group flex min-w-0 items-center gap-2.5 rounded-full pr-2 sm:gap-3"
+          >
+            <span className="relative grid size-9 shrink-0 place-items-center rounded-[11px] bg-background/55 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] ring-1 ring-black/[0.05] backdrop-blur-md transition-transform duration-200 group-hover:scale-[1.04] dark:ring-white/[0.09]">
+              <Image
+                src="/brand/codexling-logo.webp"
+                alt="Codexling"
+                width={29}
+                height={29}
+                className="rounded-[7px]"
+              />
+            </span>
+            <span className="truncate text-sm font-semibold tracking-[-0.015em]">
+              Codexling
+            </span>
+          </Link>
+
+          <nav
+            className="hidden items-center rounded-full bg-background/25 p-1 backdrop-blur-sm md:flex"
+            aria-label="主导航"
+          >
             {nav.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
-                className="rounded-xl px-3 py-3.5 text-base text-foreground transition-colors active:bg-foreground/5"
-                onClick={closeMenu}
+                className="rounded-full px-3.5 py-2 text-[13px] font-medium text-muted transition-[color,background-color] hover:bg-background/65 hover:text-foreground"
               >
                 {item.label}
               </a>
             ))}
-            <div className="mt-2 flex flex-col gap-2 border-t border-border/70 pt-3">
-              <a
-                href="https://github.com/xseven77/Codexling"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-xl border border-border px-4 py-3 text-center text-sm transition-colors active:bg-foreground/5"
-                onClick={closeMenu}
-              >
-                GitHub 仓库
-              </a>
-              <a
-                href={GITHUB_RELEASES_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-xl bg-foreground px-4 py-3 text-center text-sm font-medium text-background"
-                onClick={closeMenu}
-              >
-                前往下载
-              </a>
-            </div>
           </nav>
+
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <ThemeToggle />
+            <a
+              href="https://github.com/xseven77/Codexling"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden rounded-full px-3.5 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-background/60 hover:text-foreground sm:inline-flex"
+            >
+              GitHub
+            </a>
+            <a
+              href={GITHUB_RELEASES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden rounded-full bg-foreground px-4 py-2 text-[13px] font-medium text-background shadow-sm transition-[transform,opacity] hover:scale-[1.02] hover:opacity-90 active:scale-[0.98] sm:inline-flex"
+            >
+              下载
+            </a>
+            <button
+              type="button"
+              className="inline-flex size-9 items-center justify-center rounded-[11px] bg-background/45 text-foreground ring-1 ring-black/[0.06] backdrop-blur-md transition-colors hover:bg-background/75 dark:ring-white/[0.1] md:hidden"
+              aria-expanded={menuOpen}
+              aria-controls="mobile-nav"
+              aria-label={menuOpen ? "关闭菜单" : "打开菜单"}
+              onClick={() => setMenuOpen((v) => !v)}
+            >
+              <MenuIcon open={menuOpen} />
+            </button>
+          </div>
         </div>
-      ) : null}
+
+        {menuOpen ? (
+          <div
+            id="mobile-nav"
+            className="mt-2 overflow-hidden rounded-[18px] border border-black/[0.07] bg-background/92 p-2 shadow-[0_18px_50px_rgba(15,23,42,0.14)] backdrop-blur-2xl dark:border-white/[0.1] dark:shadow-[0_22px_60px_rgba(0,0,0,0.48)] md:hidden"
+          >
+            <nav className="flex flex-col" aria-label="移动端导航">
+              {nav.map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  className="rounded-[12px] px-3.5 py-3 text-[15px] font-medium text-foreground transition-colors active:bg-foreground/5"
+                  onClick={closeMenu}
+                >
+                  {item.label}
+                </a>
+              ))}
+              <div className="mt-1 grid grid-cols-2 gap-2 border-t border-border/70 pt-2">
+                <a
+                  href="https://github.com/xseven77/Codexling"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-[12px] border border-border px-4 py-3 text-center text-sm font-medium transition-colors active:bg-foreground/5"
+                  onClick={closeMenu}
+                >
+                  GitHub
+                </a>
+                <a
+                  href={GITHUB_RELEASES_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-[12px] bg-foreground px-4 py-3 text-center text-sm font-medium text-background"
+                  onClick={closeMenu}
+                >
+                  前往下载
+                </a>
+              </div>
+            </nav>
+          </div>
+        ) : null}
+      </div>
     </header>
   );
 }

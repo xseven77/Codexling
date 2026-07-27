@@ -24,6 +24,8 @@ pnpm start
 - 包管理使用 **pnpm**（见 `pnpm-lock.yaml`）
 - 下载入口跳转到 GitHub Releases，不在本站托管安装包
 - 生产域名：`https://codexling.qiizo.cn`
+- 首页 App preview 中，菜单栏胶囊使用固定透明中性色，额度健康色只作用于文字；
+  左侧圆灯独立表达任务状态。主窗口右上角额度胶囊继续使用自己的健康色表面。
 
 ## Docker
 

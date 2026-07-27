@@ -74,7 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activityStore: activityStore,
             frameStore: frameStore,
             companionStatsStore: companionStatsStore,
-            actions: actions
+            actions: actions,
+            openDetachedWindowFromStatusItem: { [weak self] screen in
+                self?.openDetachedWindow(on: screen)
+            }
         )
         startAutoRefreshTimer()
         activityStore.start()
@@ -178,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func openDetachedWindow() {
+    private func openDetachedWindow(on screen: NSScreen? = nil) {
         guard let actions else { return }
         settingsStore.syncPetSelectionFromCodex()
 
@@ -200,14 +203,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Present first. Changing activation policy can synchronously ask Dock
         // and WindowServer to re-register the app, which made a capsule click
         // feel delayed when the app was in menu-bar-only mode.
-        windowController?.show()
+        windowController?.show(on: screen)
         NSApp.activate(ignoringOtherApps: true)
 
         guard NSApp.activationPolicy() != .regular else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.windowController != nil else { return }
             NSApp.setActivationPolicy(.regular)
-            self.windowController?.show()
+            self.windowController?.show(on: screen)
             NSApp.activate(ignoringOtherApps: true)
         }
     }
