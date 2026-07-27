@@ -72,6 +72,9 @@ struct SettingsView: View {
         .onChange(of: settings.autoRefreshInterval) { _, interval in
             showToast("自动刷新：\(interval.title)")
         }
+        .onChange(of: settings.dashboardOrientation) { _, orientation in
+            showToast("主界面布局：\(orientation.title)")
+        }
         .onChange(of: settings.petBackgroundColor) { _, color in
             showToast("胶囊提醒色：\(color.title)")
         }
@@ -340,6 +343,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 themeSection
                 SettingsRowDivider()
+                orientationSection
+                SettingsRowDivider()
                 refreshSection
             }
             .settingsGroupSurface()
@@ -374,6 +379,19 @@ struct SettingsView: View {
             SettingsMenuPicker(
                 selection: $settings.theme,
                 options: AppThemePreference.allCases,
+                title: \.title
+            )
+        }
+    }
+
+    private var orientationSection: some View {
+        SettingsInlineRow(
+            title: "主界面布局",
+            subtitle: "横向：宠物在左侧；竖向：宠物移到顶部，窗口收窄到 330pt"
+        ) {
+            SettingsMenuPicker(
+                selection: $settings.dashboardOrientation,
+                options: DashboardOrientation.allCases,
                 title: \.title
             )
         }

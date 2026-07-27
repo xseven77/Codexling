@@ -315,6 +315,7 @@ README.md
 - [当前项目状态与技术边界](PROJECT.md)
 - [总体方案](docs/codexling方案.md)
 - [状态栏与 Pets](docs/status-bar-pets.md)
+- [主界面布局方向（横向 / 竖向）](docs/dashboard-orientation.md)
 - [陪伴式 UI 实现记录](docs/ui-refresh-implementation-plan.md)
 - [流体玻璃主题与窗口边界](docs/liquid-glass-theme.md)
 - [Pet 与 companion 状态同步](docs/pet-companion-state-plan.md)

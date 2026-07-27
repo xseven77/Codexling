@@ -138,6 +138,28 @@ enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
     var foregroundColor: NSColor { foregroundColor(for: .light) }
 }
 
+/// 主界面的排布方向。竖向把宠物移到顶部，窗口收窄到 330pt。
+enum DashboardOrientation: String, CaseIterable, Identifiable {
+    case horizontal
+    case vertical
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .horizontal: "横向"
+        case .vertical: "竖向"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .horizontal: "rectangle.split.2x1"
+        case .vertical: "rectangle.split.1x2"
+        }
+    }
+}
+
 enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
     case primary
     case current
@@ -172,6 +194,7 @@ final class AppSettingsStore {
         static let statusBarOpacityPercent = "codexling.statusBarOpacityPercent"
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
         static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
+        static let dashboardOrientation = "codexling.dashboardOrientation"
     }
 
     private let defaults: UserDefaults
@@ -270,6 +293,14 @@ final class AppSettingsStore {
         }
     }
 
+    var dashboardOrientation: DashboardOrientation {
+        didSet {
+            guard dashboardOrientation != oldValue else { return }
+            defaults.set(dashboardOrientation.rawValue, forKey: Keys.dashboardOrientation)
+            onDashboardOrientationChanged?(dashboardOrientation)
+        }
+    }
+
     private(set) var availablePets: [CodexPet] = []
     private(set) var isCodexlingPetInstalled = false
     private(set) var codexlingPetInstallationError: String?
@@ -287,6 +318,7 @@ final class AppSettingsStore {
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
+    var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
@@ -329,6 +361,8 @@ final class AppSettingsStore {
         let savedCornerPercent = defaults.object(forKey: Keys.statusBarCornerPercent) as? Double ?? 50
         statusBarCornerPercent = min(max(savedCornerPercent, 20), 50)
         windowAlwaysOnTop = defaults.object(forKey: Keys.windowAlwaysOnTop) as? Bool ?? false
+        dashboardOrientation = defaults.string(forKey: Keys.dashboardOrientation)
+            .flatMap(DashboardOrientation.init(rawValue:)) ?? .horizontal
         // The status capsule now has one behavior: open the detached window.
         // Remove the retired popover preference so older installations cannot
         // retain an unreachable mode.
@@ -352,7 +386,8 @@ final class AppSettingsStore {
             Keys.taskHoverDisplayMode,
             Keys.statusBarOpacityPercent,
             Keys.statusBarCornerPercent,
-            Keys.windowAlwaysOnTop
+            Keys.windowAlwaysOnTop,
+            Keys.dashboardOrientation
         ]
         for key in keys where defaults.object(forKey: key) == nil {
             let suffix = key.replacingOccurrences(of: "codexling.", with: "")

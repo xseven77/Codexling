@@ -11,10 +11,11 @@ struct DetachedUsageWindowView: View {
     let actions: UsageActions
     let onContentLayoutChanged: (DetachedWindowContentMode) -> Void
     let onSettingsMeasuredHeight: (CGFloat) -> Void
+    var onDashboardMeasuredHeight: (CGFloat) -> Void = { _ in }
     @State private var showsSettings = false
 
     private var dashboardContentMode: DetachedWindowContentMode {
-        .dashboard(isLoggedIn: store.isLoggedIn)
+        .dashboard(isLoggedIn: store.isLoggedIn, orientation: settings.dashboardOrientation)
     }
 
     var body: some View {
@@ -28,7 +29,9 @@ struct DetachedUsageWindowView: View {
                     onLogout: {
                         actions.disconnect()
                         showsSettings = false
-                        onContentLayoutChanged(.dashboard(isLoggedIn: false))
+                        onContentLayoutChanged(
+                            .dashboard(isLoggedIn: false, orientation: settings.dashboardOrientation)
+                        )
                     },
                     onClose: {
                         showsSettings = false
@@ -49,7 +52,8 @@ struct DetachedUsageWindowView: View {
                     onOpenSettings: {
                         showsSettings = true
                         onContentLayoutChanged(.settings)
-                    }
+                    },
+                    onMeasuredContentHeightChange: onDashboardMeasuredHeight
                 )
             }
         }
@@ -65,6 +69,10 @@ struct DetachedUsageWindowView: View {
             onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: store.isLoggedIn) { _, _ in
+            guard !showsSettings else { return }
+            onContentLayoutChanged(dashboardContentMode)
+        }
+        .onChange(of: settings.dashboardOrientation) { _, _ in
             guard !showsSettings else { return }
             onContentLayoutChanged(dashboardContentMode)
         }
@@ -772,6 +780,54 @@ struct CodexMaterialWaveToken: Identifiable, Equatable {
     let location: CGPoint
 }
 
+extension Array where Element == CodexMaterialWaveToken {
+    /// 开启「减弱动态效果」时不生成波纹；点击行为本身不受影响。
+    mutating func spawnWave(at location: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        append(CodexMaterialWaveToken(location: location))
+    }
+}
+
+/// 涟漪渲染层：铺满所在区域，按对角线算出足以覆盖整块的直径。
+/// 放在 `background` 里波纹在内容之下，放在 `overlay` 里则在内容之上。
+struct CodexMaterialWaveLayer: View {
+    @Binding var ripples: [CodexMaterialWaveToken]
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+
+    var body: some View {
+        GeometryReader { geometry in
+            let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
+            ZStack {
+                ForEach(ripples) { ripple in
+                    CodexMaterialWave(
+                        origin: ripple.location,
+                        diameter: coverDiameter,
+                        ink: ink
+                    ) {
+                        ripples.removeAll { $0.id == ripple.id }
+                    }
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// 只认「按下到抬起几乎没有位移」的点击，避免拖动窗口时误触发。
+func codexMaterialTapGesture(
+    in space: String,
+    maximumTravel: CGFloat = 10,
+    perform action: @escaping (CGPoint) -> Void
+) -> some Gesture {
+    DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
+        .onEnded { value in
+            let travel = hypot(value.translation.width, value.translation.height)
+            guard travel < maximumTravel else { return }
+            action(value.startLocation)
+        }
+}
+
 /// Soft Material blot: expands from the tap point, then dissolves.
 struct CodexMaterialWave: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -917,7 +973,6 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
     @ViewBuilder var label: () -> Label
 
     @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var ripples: [CodexMaterialWaveToken] = []
     @State private var boardSize: CGSize = .zero
     @State private var didSpawnForTouch = false
@@ -943,21 +998,7 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
                         }
                 }
             }
-            .overlay {
-                let waveSize = resolvedBoardSize
-                ZStack {
-                    ForEach(ripples) { ripple in
-                        CodexMaterialWave(
-                            origin: ripple.location,
-                            diameter: hypot(waveSize.width, waveSize.height) * 2.05,
-                            ink: ink
-                        ) {
-                            ripples.removeAll { $0.id == ripple.id }
-                        }
-                    }
-                }
-                .allowsHitTesting(false)
-            }
+            .overlay { CodexMaterialWaveLayer(ripples: $ripples, ink: ink) }
             .clipShape(shape)
             .contentShape(shape)
             .accessibilityAction(.default) {
@@ -991,12 +1032,12 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
     }
 
     private func spawnRipple(at origin: CGPoint) {
-        guard !reduceMotion else { return }
+        // 尺寸还没测出来时按钮中心起波，避免波纹从左上角冒出来。
         let size = resolvedBoardSize
         let point = boardSize == .zero
             ? CGPoint(x: size.width / 2, y: size.height / 2)
             : origin
-        ripples.append(CodexMaterialWaveToken(location: point))
+        ripples.spawnWave(at: point)
     }
 }
 

@@ -1309,6 +1309,65 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
+    func testDashboardOrientationDefaultsToHorizontalAndPersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.dashboardOrientation, .horizontal)
+
+        var notified: DashboardOrientation?
+        settings.onDashboardOrientationChanged = { notified = $0 }
+        settings.dashboardOrientation = .vertical
+
+        XCTAssertEqual(notified, .vertical)
+        XCTAssertEqual(defaults.string(forKey: "codexling.dashboardOrientation"), "vertical")
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(restored.dashboardOrientation, .vertical)
+    }
+
+    func testVerticalDashboardKeepsNarrowWidthAndFollowsMeasuredHeight() {
+        let horizontal = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: true,
+            orientation: .horizontal
+        )
+        XCTAssertEqual(horizontal.width, DetachedWindowMetrics.dashboardWidth)
+        XCTAssertEqual(horizontal.height, DetachedWindowMetrics.loggedInDashboardHeight)
+
+        let unmeasured = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: true,
+            orientation: .vertical
+        )
+        XCTAssertEqual(unmeasured.width, DetachedWindowMetrics.verticalDashboardWidth)
+        XCTAssertEqual(unmeasured.height, DetachedWindowMetrics.verticalProvisionalHeight)
+
+        let measured = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: true,
+            orientation: .vertical,
+            measuredHeight: 638.4
+        )
+        XCTAssertEqual(measured.width, DetachedWindowMetrics.verticalDashboardWidth)
+        XCTAssertEqual(measured.height, 639)
+
+        // 内容过矮时不塌陷，未登录时复用登录页高度。
+        let clamped = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: true,
+            orientation: .vertical,
+            measuredHeight: 40
+        )
+        XCTAssertEqual(clamped.height, DetachedWindowMetrics.verticalMinHeight)
+
+        let loggedOut = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: false,
+            orientation: .vertical,
+            measuredHeight: 900
+        )
+        XCTAssertEqual(loggedOut.height, DetachedWindowMetrics.loginDashboardHeight)
+    }
+
+    @MainActor
     func testPetInteractionRemainsAvailableWhileCodexIsWorking() {
         let pet = CodexPet(
             id: "custom:test",

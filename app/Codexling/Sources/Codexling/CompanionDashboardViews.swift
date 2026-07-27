@@ -11,13 +11,20 @@ struct CompanionDashboardView: View {
     let layout: UsagePanelLayout
     let showsDetachedButton: Bool
     let onOpenSettings: () -> Void
+    /// 竖向布局的内容自然高度；窗口据此调整，横向布局不使用。
+    var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
 
     @State private var selectedTaskID: String?
 
     var body: some View {
         Group {
             if store.isLoggedIn {
-                dashboard
+                switch settings.dashboardOrientation {
+                case .horizontal:
+                    dashboard
+                case .vertical:
+                    verticalDashboard
+                }
             } else {
                 CompanionLoginView(
                     isAuthenticating: store.snapshot.refreshState == "授权中",
@@ -27,6 +34,12 @@ struct CompanionDashboardView: View {
             }
         }
         .foregroundStyle(Color.codexInk)
+        // 两种方向共用同一份任务选中态：被选中的任务消失后回退到第一个。
+        .onChange(of: activityStore.snapshot.activeTasks.map(\.id)) { _, ids in
+            if let selectedTaskID, !ids.contains(selectedTaskID) {
+                self.selectedTaskID = ids.first
+            }
+        }
     }
 
     private var dashboard: some View {
@@ -84,11 +97,6 @@ struct CompanionDashboardView: View {
         }
         .frame(minHeight: 473, maxHeight: .infinity)
         .background(Color.codexCard)
-        .onChange(of: activityStore.snapshot.activeTasks.map(\.id)) { _, ids in
-            if let selectedTaskID, !ids.contains(selectedTaskID) {
-                self.selectedTaskID = ids.first
-            }
-        }
     }
 
     private var quotaSection: some View {
@@ -110,6 +118,390 @@ struct CompanionDashboardView: View {
                 .padding(.top, 4)
         }
         .padding(.top, 18)
+    }
+
+    // MARK: - 竖向布局
+
+    private var verticalDashboard: some View {
+        VStack(spacing: 0) {
+            CompanionPetHeader(
+                activity: activityStore.snapshot,
+                settings: settings,
+                frameStore: frameStore,
+                todayMinutes: companionStatsStore.todayMinutes
+            )
+
+            CompanionAccountRow(snapshot: store.snapshot)
+
+            VStack(alignment: .leading, spacing: 0) {
+                ActivityHeading(
+                    activity: activityStore.snapshot,
+                    usage: store.snapshot,
+                    isLoggedIn: store.isLoggedIn,
+                    isCompact: true
+                )
+
+                if store.snapshot.showsSubscriptionExpiryReminder,
+                   let message = store.snapshot.subscriptionExpiryReminderMessage {
+                    SubscriptionExpiryReminderBanner(message: message)
+                        .padding(.top, 11)
+                }
+
+                TaskStackView(
+                    snapshot: activityStore.snapshot,
+                    selectedTaskID: $selectedTaskID
+                )
+                .padding(.top, 15)
+
+                verticalQuotaSection
+            }
+            .padding(.top, 13)
+            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            SyncFooterView(
+                snapshot: store.snapshot,
+                isRefreshing: store.snapshot.refreshState == "刷新中",
+                actions: actions,
+                showsDetachedButton: showsDetachedButton,
+                isCompact: true,
+                onOpenSettings: onOpenSettings
+            )
+            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+            .padding(.bottom, 14)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.codexCard)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: DashboardMeasuredContentHeightKey.self,
+                    value: geometry.size.height
+                )
+            }
+        }
+        .onPreferenceChange(DashboardMeasuredContentHeightKey.self) { height in
+            guard height > 1 else { return }
+            onMeasuredContentHeightChange(height)
+        }
+    }
+
+    private var verticalQuotaSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("额度")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 6)
+                if let nextReset = store.snapshot.detailWindow?.resetsAt {
+                    Text("额度重置：\(UsageDateFormat.dateAndTime(nextReset))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                }
+            }
+
+            VerticalQuotaRowsView(snapshot: store.snapshot, isLoggedIn: store.isLoggedIn)
+
+            ResetCouponSummaryView(coupons: store.snapshot.resetCoupons)
+                .padding(.top, 2)
+        }
+        .padding(.top, 14)
+    }
+}
+
+enum DashboardMeasuredContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 横向侧栏与竖向头部共用的账号文案，避免两套布局各写一份降级规则。
+extension CodexUsageSnapshot {
+    var companionAccountName: String {
+        if let name = accountName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return accountEmail.split(separator: "@").first.map(String.init) ?? "Codex"
+    }
+
+    var companionPlanBadgeText: String {
+        planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+enum CompanionCopy {
+    static func todayDuration(minutes: Int) -> String {
+        guard minutes >= 60 else { return "\(minutes) 分钟" }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0
+            ? "\(hours) 小时"
+            : "\(hours) 小时 \(remainder) 分钟"
+    }
+}
+
+/// 陪伴胶囊：Pet 名 + 当前活动状态，横竖两版只有高度不同。
+private struct CompanionStatusCapsule: View {
+    let activity: CodexActivitySnapshot
+    let petName: String?
+    let height: CGFloat
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(activity.state.statusColor)
+                .frame(width: 8, height: 8)
+            Text("\(petName ?? "Pet") · \(activity.state.companionText)")
+                .lineLimit(1)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .padding(.horizontal, 10)
+        .frame(height: height)
+        .background(Color.codexCard.opacity(0.92), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.7))
+    }
+}
+
+/// Pet 承载区的点击交互：涟漪 + 随机动作 + 无障碍，侧栏与顶部形象区共用。
+private struct CompanionPetInteraction: ViewModifier {
+    let space: String
+    let frameStore: PetFrameStore
+    @Binding var ripples: [CodexMaterialWaveToken]
+    /// 通过辅助功能触发时没有点击位置，用这个点代替。
+    let fallbackRippleLocation: CGPoint
+
+    private var isInteractive: Bool { frameStore.canPlayIdleInteraction }
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .coordinateSpace(name: space)
+            .gesture(
+                codexMaterialTapGesture(in: space) { location in
+                    play(rippleAt: location)
+                }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(isInteractive ? .isButton : [])
+            .accessibilityHint(isInteractive ? "点击播放随机动作" : "")
+            .accessibilityAction(.default) {
+                play(rippleAt: fallbackRippleLocation)
+            }
+    }
+
+    private func play(rippleAt location: CGPoint) {
+        guard isInteractive else { return }
+        ripples.spawnWave(at: location)
+        frameStore.playRandomIdleAction()
+    }
+}
+
+private extension View {
+    func companionPetInteraction(
+        space: String,
+        frameStore: PetFrameStore,
+        ripples: Binding<[CodexMaterialWaveToken]>,
+        fallbackRippleLocation: CGPoint
+    ) -> some View {
+        modifier(
+            CompanionPetInteraction(
+                space: space,
+                frameStore: frameStore,
+                ripples: ripples,
+                fallbackRippleLocation: fallbackRippleLocation
+            )
+        )
+    }
+}
+
+/// 竖向布局的顶部形象区：宠物、状态胶囊与陪伴时长，保留点击涟漪与随机动作。
+private struct CompanionPetHeader: View {
+    private static let headerSpace = "companionPetHeader"
+    /// 让出无标题栏窗口左上角的交通灯与右上角的置顶按钮。
+    private static let chromeTopPadding: CGFloat = 34
+
+    let activity: CodexActivitySnapshot
+    @Bindable var settings: AppSettingsStore
+    @Bindable var frameStore: PetFrameStore
+    let todayMinutes: Int
+    @State private var ripples: [CodexMaterialWaveToken] = []
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color.codexSidebarTop, Color.codexSidebarBottom],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            // Wave sits on the header background, beneath pet and chrome.
+            CodexMaterialWaveLayer(ripples: $ripples)
+
+            VStack(spacing: 0) {
+                InteractivePetStage(
+                    frameStore: frameStore,
+                    settings: settings,
+                    activity: activity
+                )
+                .frame(width: 132, height: 132)
+                .allowsHitTesting(false)
+
+                CompanionStatusCapsule(
+                    activity: activity,
+                    petName: settings.selectedPet?.displayName,
+                    height: 28
+                )
+
+                Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.top, 8)
+            }
+            .padding(.top, Self.chromeTopPadding)
+            .padding(.bottom, 14)
+            .padding(.horizontal, 12)
+            .zIndex(1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .companionPetInteraction(
+            space: Self.headerSpace,
+            frameStore: frameStore,
+            ripples: $ripples,
+            fallbackRippleLocation: CGPoint(x: 146, y: 110)
+        )
+        .clipped()
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.codexLine.opacity(0.72)).frame(height: 1)
+        }
+    }
+}
+
+/// 竖向布局的账号行：把侧栏那块两行账号信息压成一条。
+private struct CompanionAccountRow: View {
+    let snapshot: CodexUsageSnapshot
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(snapshot.companionAccountName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                    if !snapshot.companionPlanBadgeText.isEmpty {
+                        Text(snapshot.companionPlanBadgeText)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.codexGreen.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                Text(snapshot.accountEmail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let summaryLine = snapshot.subscriptionCompactSummaryLine {
+                ChatGPTBillingCompactLink(
+                    title: summaryLine,
+                    emphasizesExpiry: snapshot.showsSubscriptionExpiryReminder
+                ) {
+                    openURL(ChatGPTWebLinks.billingPage)
+                }
+            } else {
+                ChatGPTBillingCompactLink(title: "订阅与账单") {
+                    openURL(ChatGPTWebLinks.billingPage)
+                }
+            }
+        }
+        .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+        .frame(height: 46)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.codexLine.opacity(0.72)).frame(height: 0.7)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
+    }
+}
+
+/// 竖向布局的额度：330pt 放不下两张并排环卡，改成单行横条。
+private struct VerticalQuotaRowsView: View {
+    let snapshot: CodexUsageSnapshot
+    let isLoggedIn: Bool
+
+    private var primaryHealth: QuotaHealthLevel {
+        QuotaHealthLevel.from(window: snapshot.primaryWindow, isLoggedIn: isLoggedIn)
+    }
+
+    var body: some View {
+        VStack(spacing: 7) {
+            if snapshot.hasShortWindow, let short = snapshot.shortWindow {
+                VerticalQuotaRow(window: short, tint: primaryHealth.color)
+            }
+            if snapshot.hasWeeklyWindow {
+                VerticalQuotaRow(
+                    window: snapshot.weekly,
+                    tint: snapshot.hasShortWindow ? Color.codexBlue : primaryHealth.color
+                )
+            }
+            if !snapshot.hasShortWindow, !snapshot.hasWeeklyWindow {
+                Text("额度暂不可用")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Color.codexMist.opacity(0.55), in: RoundedRectangle(cornerRadius: 11))
+            }
+        }
+    }
+}
+
+private struct VerticalQuotaRow: View {
+    private static let trackWidth: CGFloat = 84
+
+    let window: UsageWindow
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(tint)
+                .frame(width: 7, height: 7)
+
+            Text(window.label == "周额度" ? "本周" : window.label)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+
+            Spacer(minLength: 6)
+
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.codexTrack)
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(Self.trackWidth * window.percent, window.percent > 0 ? 4 : 0))
+            }
+            .frame(width: Self.trackWidth, height: 5)
+
+            Text(window.percentText)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .frame(width: 38, alignment: .trailing)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 38)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.codexLine, lineWidth: 0.7))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(window.label) 剩余 \(window.percentText)，\(window.amountText)")
     }
 }
 
@@ -567,12 +959,9 @@ private struct ResetCouponStubSection: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .gesture(
-                        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
-                            .onEnded { value in
-                                let travel = hypot(value.translation.width, value.translation.height)
-                                guard travel < 10 else { return }
-                                onStubTap?(value.startLocation)
-                            }
+                        codexMaterialTapGesture(in: coordinateSpaceName) { location in
+                            onStubTap?(location)
+                        }
                     )
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
@@ -722,6 +1111,8 @@ private struct ResetCouponTicketCard: View {
                     Label("\(expiresAt) 到期", systemImage: "calendar.badge.clock")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
 
                 Spacer(minLength: 6)
@@ -762,21 +1153,7 @@ private struct ResetCouponTicketCard: View {
         }
         .overlay { innerHighlight }
         .overlay {
-            GeometryReader { geometry in
-                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
-                ZStack {
-                    ForEach(ripples) { ripple in
-                        CodexMaterialWave(
-                            origin: ripple.location,
-                            diameter: coverDiameter
-                        ) {
-                            ripples.removeAll { $0.id == ripple.id }
-                        }
-                    }
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-            .allowsHitTesting(false)
+            CodexMaterialWaveLayer(ripples: $ripples)
             .clipShape(ResetCouponTicketShape())
         }
         .coordinateSpace(name: Self.ticketSpace)
@@ -824,15 +1201,10 @@ private struct ResetCouponTicketCard: View {
             isDark: isDark,
             coordinateSpaceName: Self.ticketSpace,
             onStubTap: onSwitch == nil ? nil : { location in
-                spawnRipple(at: location)
+                ripples.spawnWave(at: location)
                 onSwitch?()
             }
         )
-    }
-
-    private func spawnRipple(at location: CGPoint) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     @ViewBuilder
@@ -894,26 +1266,6 @@ private struct CompanionSidebar: View {
     @State private var ripples: [CodexMaterialWaveToken] = []
     @Environment(\.openURL) private var openURL
 
-    private var accountName: String {
-        if let name = snapshot.accountName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            return name
-        }
-        return snapshot.accountEmail.split(separator: "@").first.map(String.init) ?? "Codex"
-    }
-
-    private var planBadgeText: String {
-        snapshot.planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private var todayDurationText: String {
-        guard todayMinutes >= 60 else { return "\(todayMinutes) 分钟" }
-        let hours = todayMinutes / 60
-        let minutes = todayMinutes % 60
-        return minutes == 0
-            ? "\(hours) 小时"
-            : "\(hours) 小时 \(minutes) 分钟"
-    }
-
     var body: some View {
         ZStack {
             LinearGradient(
@@ -923,21 +1275,7 @@ private struct CompanionSidebar: View {
             )
 
             // Wave sits on the sidebar background, beneath pet and chrome.
-            GeometryReader { geometry in
-                let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
-                ZStack {
-                    ForEach(ripples) { ripple in
-                        CodexMaterialWave(
-                            origin: ripple.location,
-                            diameter: coverDiameter
-                        ) {
-                            ripples.removeAll { $0.id == ripple.id }
-                        }
-                    }
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-            .allowsHitTesting(false)
+            CodexMaterialWaveLayer(ripples: $ripples)
 
             petView
                 .frame(width: 145, height: 218)
@@ -955,26 +1293,12 @@ private struct CompanionSidebar: View {
                 .padding(.horizontal, 16)
                 .frame(width: DetachedWindowMetrics.sidebarWidth, alignment: .leading)
         }
-        .contentShape(Rectangle())
-        .coordinateSpace(name: Self.sidebarSpace)
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.sidebarSpace))
-                .onEnded { value in
-                    guard frameStore.canPlayIdleInteraction else { return }
-                    let travel = hypot(value.translation.width, value.translation.height)
-                    guard travel < 10 else { return }
-                    spawnRipple(at: value.startLocation)
-                    frameStore.playRandomIdleAction()
-                }
+        .companionPetInteraction(
+            space: Self.sidebarSpace,
+            frameStore: frameStore,
+            ripples: $ripples,
+            fallbackRippleLocation: CGPoint(x: 94, y: 220)
         )
-        .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(frameStore.canPlayIdleInteraction ? .isButton : [])
-        .accessibilityHint(frameStore.canPlayIdleInteraction ? "点击播放随机动作" : "")
-        .accessibilityAction(.default) {
-            guard frameStore.canPlayIdleInteraction else { return }
-            spawnRipple(at: CGPoint(x: 94, y: 220))
-            frameStore.playRandomIdleAction()
-        }
         .clipped()
         .overlay(alignment: .trailing) {
             Rectangle().fill(Color.codexLine.opacity(0.72)).frame(width: 1)
@@ -983,20 +1307,13 @@ private struct CompanionSidebar: View {
 
     private var sidebarFooter: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(activity.state.statusColor)
-                    .frame(width: 8, height: 8)
-                Text("\(settings.selectedPet?.displayName ?? "Pet") · \(activity.state.companionText)")
-                    .lineLimit(1)
-            }
-            .font(.system(size: 11, weight: .semibold))
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(Color.codexCard.opacity(0.92), in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.7))
+            CompanionStatusCapsule(
+                activity: activity,
+                petName: settings.selectedPet?.displayName,
+                height: 30
+            )
 
-            Text("今天一起工作 \(todayDurationText)")
+            Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.codexMuted)
                 .padding(.top, 9)
@@ -1008,12 +1325,12 @@ private struct CompanionSidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(accountName)
+                    Text(snapshot.companionAccountName)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.codexInk)
                         .lineLimit(1)
-                    if !planBadgeText.isEmpty {
-                        Text(planBadgeText)
+                    if !snapshot.companionPlanBadgeText.isEmpty {
+                        Text(snapshot.companionPlanBadgeText)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(Color.codexGreen)
                             .padding(.horizontal, 4)
@@ -1052,7 +1369,7 @@ private struct CompanionSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("当前账号 \(accountName)")
+        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
     }
 
     private var petView: some View {
@@ -1061,11 +1378,6 @@ private struct CompanionSidebar: View {
             settings: settings,
             activity: activity
         )
-    }
-
-    private func spawnRipple(at location: CGPoint) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        ripples.append(CodexMaterialWaveToken(location: location))
     }
 }
 
@@ -1130,12 +1442,14 @@ private struct ActivityHeading: View {
     let activity: CodexActivitySnapshot
     let usage: CodexUsageSnapshot
     let isLoggedIn: Bool
+    var isCompact = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text(activity.dashboardTitle)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: isCompact ? 17 : 20, weight: .semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(isCompact ? 0.85 : 1)
             Spacer(minLength: 4)
             QuotaAtAGlanceChip(usage: usage, isLoggedIn: isLoggedIn)
         }
@@ -1237,32 +1551,15 @@ private struct TaskStackView: View {
             taskCard
                 .contentShape(cardShape)
                 .overlay {
-                    GeometryReader { geometry in
-                        let coverDiameter = hypot(geometry.size.width, geometry.size.height) * 2.05
-                        ZStack {
-                            ForEach(ripples) { ripple in
-                                CodexMaterialWave(
-                                    origin: ripple.location,
-                                    diameter: coverDiameter
-                                ) {
-                                    ripples.removeAll { $0.id == ripple.id }
-                                }
-                            }
-                        }
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                    }
-                    .allowsHitTesting(false)
+                    CodexMaterialWaveLayer(ripples: $ripples)
                     .clipShape(cardShape)
                 }
                 .coordinateSpace(name: Self.cardSpace)
                 .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cardSpace))
-                        .onEnded { value in
-                            let travel = hypot(value.translation.width, value.translation.height)
-                            guard travel < 10 else { return }
-                            spawnRipple(at: value.startLocation)
-                            cycleTask()
-                        }
+                    codexMaterialTapGesture(in: Self.cardSpace) { location in
+                        ripples.spawnWave(at: location)
+                        cycleTask()
+                    }
                 )
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isButton)
@@ -1349,11 +1646,6 @@ private struct TaskStackView: View {
                 .fill(Color.codexLine)
                 .frame(height: 0.7)
         }
-    }
-
-    private func spawnRipple(at location: CGPoint) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        ripples.append(CodexMaterialWaveToken(location: location))
     }
 
     private var displayState: CodexActivityState { displayedTask?.state ?? snapshot.state }
@@ -1467,6 +1759,7 @@ private struct SyncFooterView: View {
     let isRefreshing: Bool
     let actions: UsageActions
     let showsDetachedButton: Bool
+    var isCompact = false
     let onOpenSettings: () -> Void
 
     @State private var showQuitConfirmation = false
@@ -1475,33 +1768,46 @@ private struct SyncFooterView: View {
         !["成功", "预览数据", "刷新中", "授权中"].contains(snapshot.refreshState)
     }
 
+    /// 竖版底部只剩约 90pt，同步文案必须缩写，完整内容留在 tooltip。
     private var syncText: String {
-        if isRefreshing {
-            return "正在刷新…"
-        }
         let lastSuccess = UsageDateFormat.syncTime(snapshot.fetchedAt)
-        return hasRefreshError
-            ? "\(snapshot.refreshState) · 上次成功：\(lastSuccess)"
-            : "上次同步：\(lastSuccess)"
+        guard isCompact else {
+            if isRefreshing { return "正在刷新…" }
+            return hasRefreshError
+                ? "\(snapshot.refreshState) · 上次成功：\(lastSuccess)"
+                : "上次同步：\(lastSuccess)"
+        }
+
+        if isRefreshing { return "刷新中…" }
+        if hasRefreshError { return snapshot.refreshState }
+        let short = lastSuccess.hasPrefix("今天 ") ? String(lastSuccess.dropFirst(3)) : lastSuccess
+        return "同步 \(short)"
+    }
+
+    private var syncHelpText: String {
+        if hasRefreshError {
+            return "\(snapshot.refreshState) · 上次成功：\(UsageDateFormat.syncTime(snapshot.fetchedAt))"
+        }
+        return "上次同步：\(UsageDateFormat.syncTime(snapshot.fetchedAt))"
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: isCompact ? 4 : 6) {
             Text(syncText)
-                .font(.system(size: 11))
+                .font(.system(size: isCompact ? 10 : 11))
                 .foregroundStyle(hasRefreshError ? Color.codexRed : Color.codexMuted)
                 .lineLimit(1)
-                .help(hasRefreshError ? snapshot.refreshState : syncText)
-            Spacer(minLength: 4)
-            HStack(spacing: 5) {
+                .help(syncHelpText)
+            Spacer(minLength: 3)
+            HStack(spacing: isCompact ? 3 : 5) {
                 Button(action: onOpenSettings) { Image(systemName: "gearshape") }
-                    .buttonStyle(DashboardIconButtonStyle(helpText: "设置"))
+                    .buttonStyle(DashboardIconButtonStyle(helpText: "设置", isCompact: isCompact))
                 Button(action: actions.openUsagePage) { Image(systemName: "arrow.up.right.square") }
-                    .buttonStyle(DashboardIconButtonStyle(helpText: "打开官方 Usage"))
+                    .buttonStyle(DashboardIconButtonStyle(helpText: "打开官方 Usage", isCompact: isCompact))
                     .contentShape(RoundedRectangle(cornerRadius: 8))
                 if showsDetachedButton {
                     Button(action: actions.openDetachedWindow) { Image(systemName: "rectangle.on.rectangle.angled") }
-                        .buttonStyle(DashboardIconButtonStyle(helpText: "打开分离窗口"))
+                        .buttonStyle(DashboardIconButtonStyle(helpText: "打开分离窗口", isCompact: isCompact))
                 }
             }
             Button {
@@ -1509,25 +1815,25 @@ private struct SyncFooterView: View {
             } label: {
                 Image(systemName: "power")
             }
-            .buttonStyle(DashboardIconButtonStyle(helpText: "关闭软件"))
+            .buttonStyle(DashboardIconButtonStyle(helpText: "关闭软件", isCompact: isCompact))
             .accessibilityLabel("关闭软件")
-            .padding(.leading, 2)
+            .padding(.leading, isCompact ? 1 : 2)
             Button(action: actions.refresh) {
                 if isRefreshing {
                     ProgressView()
                         .controlSize(.mini)
                         .tint(Color.codexOnPrimary)
-                        .frame(width: 48)
+                        .frame(width: isCompact ? 40 : 48)
                 } else {
-                    Text("立即刷新")
+                    Text(isCompact ? "刷新" : "立即刷新")
                 }
             }
-            .buttonStyle(DashboardRefreshButtonStyle())
+            .buttonStyle(DashboardRefreshButtonStyle(isCompact: isCompact))
             .disabled(isRefreshing)
-            .padding(.leading, 4)
+            .padding(.leading, isCompact ? 2 : 4)
         }
-        .padding(.top, 14)
-        .frame(height: 46, alignment: .bottom)
+        .padding(.top, isCompact ? 11 : 14)
+        .frame(height: isCompact ? 40 : 46, alignment: .bottom)
         .fixedSize(horizontal: false, vertical: true)
         .overlay(alignment: .top) { Rectangle().fill(Color.codexLine).frame(height: 0.7) }
         .alert("确认关闭软件？", isPresented: $showQuitConfirmation) {
@@ -1604,6 +1910,7 @@ private struct CompanionLoginView: View {
 
 private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
     var helpText: String = ""
+    var isCompact = false
 
     func makeBody(configuration: Configuration) -> some View {
         CodexMaterialWaveButtonBody(
@@ -1612,9 +1919,9 @@ private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
             ink: .adaptiveMint
         ) {
             configuration.label
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: isCompact ? 12 : 13, weight: .medium))
                 .foregroundStyle(Color.codexMuted)
-                .frame(width: 32, height: 32)
+                .frame(width: isCompact ? 28 : 32, height: isCompact ? 28 : 32)
                 .background(Color.codexMist.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
         }
         .help(helpText)
@@ -1622,6 +1929,7 @@ private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
 }
 
 private struct DashboardRefreshButtonStyle: PrimitiveButtonStyle {
+    var isCompact = false
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
@@ -1633,7 +1941,7 @@ private struct DashboardRefreshButtonStyle: PrimitiveButtonStyle {
             configuration.label
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.codexOnPrimary)
-                .frame(minWidth: 65, minHeight: 31)
+                .frame(minWidth: isCompact ? 52 : 65, minHeight: isCompact ? 28 : 31)
                 .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8))
                 .opacity(isEnabled ? 1 : 0.45)
         }
