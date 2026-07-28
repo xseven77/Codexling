@@ -118,6 +118,7 @@ enum DetachedWindowMetrics {
         }
     }
 
+    @MainActor
     static func dashboardFrameSize(
         for contentSize: NSSize,
         on window: NSWindow
@@ -125,6 +126,7 @@ enum DetachedWindowMetrics {
         window.frameRect(forContentRect: NSRect(origin: .zero, size: contentSize)).size
     }
 
+    @MainActor
     static func fixedDashboardFrameSize(
         isLoggedIn: Bool,
         orientation: DashboardOrientation = .horizontal,
