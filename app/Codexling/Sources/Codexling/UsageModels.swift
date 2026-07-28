@@ -33,6 +33,13 @@ struct ResetCoupon: Codable, Identifiable, Equatable, Sendable {
     var count: Int
     var expiresAt: String
     var source: String
+    var title: String?
+    var description: String?
+    var grantedAt: String?
+    var profileUserID: String?
+    var profileImageURL: String?
+    var status: String?
+    var resetType: String?
 }
 
 struct CodexUsageSnapshot: Codable, Equatable, Sendable {
@@ -411,8 +418,23 @@ extension CodexUsageSnapshot {
         weekly: UsageWindow(label: "周额度", remaining: 410, total: 1000, resetsAt: "2026-07-14 23:59:00"),
         credits: CreditBalance(balance: 123, expiresAt: "2027-07-01 00:00:00"),
         resetCoupons: [
-            ResetCoupon(name: "推荐重置券", count: 1, expiresAt: "2026-07-20 00:00:00", source: "推荐奖励"),
-            ResetCoupon(name: "活动重置券", count: 2, expiresAt: "2026-08-05 00:00:00", source: "活动奖励"),
+            ResetCoupon(
+                name: "重置券", count: 1, expiresAt: "2026-07-20 00:00:00", source: "Codex Team",
+                title: "Full reset",
+                description: "Thanks for using Codex! You've been granted one free rate limit reset.",
+                grantedAt: "2026-06-20 00:00:00",
+                profileUserID: "Codex Team",
+                status: "available",
+                resetType: "codex_rate_limits"
+            ),
+            ResetCoupon(
+                name: "重置券", count: 1, expiresAt: "2026-08-05 00:00:00", source: "Codex Team",
+                title: "Full reset",
+                grantedAt: "2026-07-05 00:00:00",
+                profileUserID: "Codex Team",
+                status: "available",
+                resetType: "codex_rate_limits"
+            ),
             ResetCoupon(name: "学生重置券", count: 1, expiresAt: "2026-09-01 00:00:00", source: "学生奖励")
         ],
         fetchedAt: Date(),

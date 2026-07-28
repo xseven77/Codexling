@@ -11,7 +11,7 @@ struct CompanionDashboardView: View {
     let layout: UsagePanelLayout
     let showsDetachedButton: Bool
     let onOpenSettings: () -> Void
-    /// 竖向布局的内容自然高度；窗口据此调整，横向布局不使用。
+    /// 竖向独立窗口上报内容自然高度。
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
 
     @State private var selectedTaskID: String?
@@ -33,8 +33,8 @@ struct CompanionDashboardView: View {
                 )
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color.codexInk)
-        // 两种方向共用同一份任务选中态：被选中的任务消失后回退到第一个。
         .onChange(of: activityStore.snapshot.activeTasks.map(\.id)) { _, ids in
             if let selectedTaskID, !ids.contains(selectedTaskID) {
                 self.selectedTaskID = ids.first
@@ -43,60 +43,115 @@ struct CompanionDashboardView: View {
     }
 
     private var dashboard: some View {
-        HStack(spacing: 0) {
+        Group {
+            if layout == .window {
+                horizontalDashboardWindowLayout
+            } else {
+                horizontalDashboardCompactLayout
+            }
+        }
+    }
+
+    /// 独立横版：`GeometryReader` 贴合 AppKit contentLayoutRect，避免 frame/content 偏差。
+    private var horizontalDashboardWindowLayout: some View {
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: 0) {
+                CompanionSidebar(
+                    snapshot: store.snapshot,
+                    activity: activityStore.snapshot,
+                    settings: settings,
+                    frameStore: frameStore,
+                    todayMinutes: companionStatsStore.todayMinutes,
+                    fillColumnHeight: true
+                )
+                .frame(width: DetachedWindowMetrics.sidebarWidth)
+
+                VStack(spacing: 0) {
+                    horizontalDashboardMainContent
+                        .layoutPriority(1)
+                    Spacer(minLength: 0)
+                    horizontalDashboardSyncFooter
+                        .layoutPriority(1)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(Color.codexCard.opacity(0.96))
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+            .background {
+                DashboardWindowChromeBackground()
+            }
+        }
+    }
+
+    private var horizontalDashboardCompactLayout: some View {
+        HStack(alignment: .top, spacing: 0) {
             CompanionSidebar(
                 snapshot: store.snapshot,
                 activity: activityStore.snapshot,
                 settings: settings,
                 frameStore: frameStore,
-                todayMinutes: companionStatsStore.todayMinutes
+                todayMinutes: companionStatsStore.todayMinutes,
+                expandsVertically: false
             )
             .frame(width: DetachedWindowMetrics.sidebarWidth)
 
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ActivityHeading(
-                        activity: activityStore.snapshot,
-                        usage: store.snapshot,
-                        isLoggedIn: store.isLoggedIn
-                    )
-
-                    if store.snapshot.showsSubscriptionExpiryReminder,
-                       let message = store.snapshot.subscriptionExpiryReminderMessage {
-                        SubscriptionExpiryReminderBanner(message: message)
-                            .padding(.top, 12)
-                    }
-
-                    TaskStackView(
-                        snapshot: activityStore.snapshot,
-                        selectedTaskID: $selectedTaskID
-                    )
-                    .padding(.top, 19)
-
-                    quotaSection
-                }
-                .padding(.top, layout == .window ? 40 : 25)
-                .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
-                .padding(.bottom, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Spacer(minLength: 0)
-
-                SyncFooterView(
-                    snapshot: store.snapshot,
-                    isRefreshing: store.snapshot.refreshState == "刷新中",
-                    actions: actions,
-                    showsDetachedButton: showsDetachedButton,
-                    onOpenSettings: onOpenSettings
-                )
-                .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
-                .padding(.bottom, 25)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(Color.codexCard.opacity(0.96))
+            horizontalDashboardRightColumn
         }
-        .frame(minHeight: 473, maxHeight: .infinity)
-        .background(Color.codexCard)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background {
+            DashboardWindowChromeBackground()
+                .ignoresSafeArea()
+        }
+    }
+
+    /// 右栏决定横版独立窗口高度；勿把侧栏 `maxHeight: .infinity` 算进测高。
+    private var horizontalDashboardRightColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            horizontalDashboardMainContent
+            horizontalDashboardSyncFooter
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(Color.codexCard.opacity(0.96))
+    }
+
+    private var horizontalDashboardMainContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ActivityHeading(
+                activity: activityStore.snapshot,
+                usage: store.snapshot,
+                isLoggedIn: store.isLoggedIn
+            )
+
+            if store.snapshot.showsSubscriptionExpiryReminder,
+               let message = store.snapshot.subscriptionExpiryReminderMessage {
+                SubscriptionExpiryReminderBanner(message: message)
+                    .padding(.top, 12)
+            }
+
+            TaskStackView(
+                snapshot: activityStore.snapshot,
+                selectedTaskID: $selectedTaskID
+            )
+            .padding(.top, 19)
+
+            quotaSection
+        }
+        .padding(.top, layout == .window ? 40 : 25)
+        .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var horizontalDashboardSyncFooter: some View {
+        SyncFooterView(
+            snapshot: store.snapshot,
+            isRefreshing: store.snapshot.refreshState == "刷新中",
+            actions: actions,
+            showsDetachedButton: showsDetachedButton,
+            onOpenSettings: onOpenSettings
+        )
+        .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
+        .padding(.bottom, layout == .window ? 25 : 16)
     }
 
     private var quotaSection: some View {
@@ -116,6 +171,7 @@ struct CompanionDashboardView: View {
 
             ResetCouponSummaryView(coupons: store.snapshot.resetCoupons)
                 .padding(.top, 4)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 18)
     }
@@ -123,6 +179,58 @@ struct CompanionDashboardView: View {
     // MARK: - 竖向布局
 
     private var verticalDashboard: some View {
+        Group {
+            if layout == .window {
+                verticalDashboardWindowLayout
+            } else {
+                verticalDashboardMeasureColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background {
+                        Color.codexCard.ignoresSafeArea()
+                    }
+            }
+        }
+        .onPreferenceChange(DashboardMeasuredContentHeightKey.self) { height in
+            guard layout == .window, height > 1 else { return }
+            onMeasuredContentHeightChange(height)
+        }
+        .onChange(of: verticalDashboardMeasureIdentity) { _, _ in
+            guard layout == .window else { return }
+            onMeasuredContentHeightChange(-1)
+        }
+    }
+
+    /// 竖向独立窗口：GeometryReader 贴 contentView；Spacer 压 footer；高度由 Preference 上报。
+    private var verticalDashboardWindowLayout: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                verticalDashboardHeaderStack
+                Spacer(minLength: 0)
+                verticalDashboardSyncFooter
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+            .background {
+                Color.codexCard
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            verticalDashboardMeasureColumn
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: DashboardMeasuredContentHeightKey.self,
+                            value: geometry.size.height
+                        )
+                    }
+                }
+                .opacity(0)
+                .allowsHitTesting(false)
+        }
+        .id(verticalDashboardMeasureIdentity)
+    }
+
+    private var verticalDashboardHeaderStack: some View {
         VStack(spacing: 0) {
             CompanionPetHeader(
                 activity: activityStore.snapshot,
@@ -159,33 +267,38 @@ struct CompanionDashboardView: View {
             .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-            SyncFooterView(
-                snapshot: store.snapshot,
-                isRefreshing: store.snapshot.refreshState == "刷新中",
-                actions: actions,
-                showsDetachedButton: showsDetachedButton,
-                isCompact: true,
-                onOpenSettings: onOpenSettings
-            )
-            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-            .padding(.bottom, 14)
+    private var verticalDashboardSyncFooter: some View {
+        SyncFooterView(
+            snapshot: store.snapshot,
+            isRefreshing: store.snapshot.refreshState == "刷新中",
+            actions: actions,
+            showsDetachedButton: showsDetachedButton,
+            isCompact: true,
+            onOpenSettings: onOpenSettings
+        )
+        .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+        .padding(.bottom, 14)
+    }
+
+    private var verticalDashboardMeasureIdentity: String {
+        [
+            String(store.snapshot.resetCoupons.count),
+            store.snapshot.showsSubscriptionExpiryReminder ? "1" : "0",
+            store.snapshot.hasShortWindow ? "1" : "0",
+            store.snapshot.hasWeeklyWindow ? "1" : "0",
+            String(activityStore.snapshot.activeTasks.count),
+        ].joined(separator: "-")
+    }
+
+    private var verticalDashboardMeasureColumn: some View {
+        VStack(spacing: 0) {
+            verticalDashboardHeaderStack
+            verticalDashboardSyncFooter
         }
-        .frame(maxWidth: .infinity, alignment: .top)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Color.codexCard)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: DashboardMeasuredContentHeightKey.self,
-                    value: geometry.size.height
-                )
-            }
-        }
-        .onPreferenceChange(DashboardMeasuredContentHeightKey.self) { height in
-            guard height > 1 else { return }
-            onMeasuredContentHeightChange(height)
-        }
+        .id(verticalDashboardMeasureIdentity)
     }
 
     private var verticalQuotaSection: some View {
@@ -206,6 +319,7 @@ struct CompanionDashboardView: View {
 
             ResetCouponSummaryView(coupons: store.snapshot.resetCoupons)
                 .padding(.top, 2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 14)
     }
@@ -216,6 +330,22 @@ enum DashboardMeasuredContentHeightKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// 独立窗口底色：侧栏渐变 + 主内容区 card 色，铺满窗口避免底部露白。
+struct DashboardWindowChromeBackground: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            LinearGradient(
+                colors: [Color.codexSidebarTop, Color.codexSidebarBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .frame(width: DetachedWindowMetrics.sidebarWidth)
+
+            Color.codexCard
+        }
     }
 }
 
@@ -533,729 +663,6 @@ private struct SubscriptionExpiryReminderBanner: View {
     }
 }
 
-private struct ResetCouponDisplayTicket: Identifiable {
-    let id: String
-    let name: String
-    let source: String
-    let expiresAt: String
-}
-
-private struct ResetCouponSummaryView: View {
-    let coupons: [ResetCoupon]
-
-    private var tickets: [ResetCouponDisplayTicket] {
-        coupons.flatMap { coupon in
-            (0..<coupon.count).map { copyIndex in
-                ResetCouponDisplayTicket(
-                    id: "\(coupon.id)-\(copyIndex)",
-                    name: coupon.name,
-                    source: coupon.source,
-                    expiresAt: coupon.expiresAt
-                )
-            }
-        }
-    }
-
-    var body: some View {
-        Group {
-            if tickets.isEmpty {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.codexMist.opacity(0.65))
-                            .frame(width: 34, height: 34)
-                            .rotationEffect(.degrees(-8))
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(Color.codexLine.opacity(0.55), style: StrokeStyle(lineWidth: 0.8, dash: [3, 2.5]))
-                            .frame(width: 34, height: 34)
-                            .rotationEffect(.degrees(-8))
-                        Image(systemName: "ticket")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Color.codexMuted.opacity(0.72))
-                            .rotationEffect(.degrees(-8))
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("重置券 0 张")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("当前没有可用重置券")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.codexMuted)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 11)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    LinearGradient(
-                        colors: [Color.codexCard.opacity(0.92), Color.codexMist.opacity(0.42)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.codexLine.opacity(0.85), lineWidth: 0.7)
-                )
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.35))
-                        .frame(height: 0.6)
-                        .padding(.horizontal, 12)
-                }
-            } else {
-                ResetCouponTicketDeck(
-                    tickets: tickets,
-                    formattedExpiration: formattedExpiration
-                )
-            }
-        }
-    }
-
-    private func formattedExpiration(_ value: String) -> String {
-        let input = DateFormatter()
-        input.locale = Locale(identifier: "en_US_POSIX")
-        input.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        guard let date = input.date(from: value) else { return value }
-
-        let output = DateFormatter()
-        output.locale = Locale(identifier: "zh_CN")
-        output.dateFormat = "M月d日 HH:mm"
-        return output.string(from: date)
-    }
-}
-
-private struct ResetCouponTicketDeck: View {
-    let tickets: [ResetCouponDisplayTicket]
-    let formattedExpiration: (String) -> String
-
-    @State private var selectedIndex = 0
-
-    private var selectedTicket: ResetCouponDisplayTicket {
-        tickets[selectedIndex]
-    }
-
-    /// 可见堆叠层数：1 张显示 1 层，2 张显示 2 层，3 张及以上最多 3 层。
-    private var visibleStackCount: Int {
-        min(ResetCouponTicketMetrics.maxStackLayers, tickets.count)
-    }
-
-    private var displayedBackLayerDepths: [Int] {
-        guard tickets.count > 1 else { return [] }
-        let backCount = visibleStackCount - 1
-        guard backCount > 0 else { return [] }
-        return Array(1...backCount)
-    }
-
-    private var restBackLayerDepths: [Int] {
-        guard tickets.count > 1 else { return [] }
-        return Array(1..<visibleStackCount)
-    }
-
-    private var deepestBackOffset: CGFloat {
-        CGFloat(restBackLayerDepths.last ?? 0) * ResetCouponTicketMetrics.stackOffsetY
-    }
-
-    private var deckHeight: CGFloat {
-        ResetCouponTicketMetrics.cardHeight + deepestBackOffset + (restBackLayerDepths.isEmpty ? 4 : 8)
-    }
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(displayedBackLayerDepths.reversed(), id: \.self) { depth in
-                ResetCouponStackLayer(depth: depth, totalBackLayers: restBackLayerDepths.count)
-                    .scaleEffect(
-                        1 - CGFloat(depth) * ResetCouponTicketMetrics.stackScaleStep,
-                        anchor: .topLeading
-                    )
-                    .offset(
-                        x: CGFloat(depth) * ResetCouponTicketMetrics.stackOffsetX,
-                        y: CGFloat(depth) * ResetCouponTicketMetrics.stackOffsetY
-                    )
-                    .zIndex(Double(depth))
-            }
-
-            ResetCouponDeckTicket(
-                ticket: selectedTicket,
-                position: selectedIndex + 1,
-                total: tickets.count,
-                formattedExpiration: formattedExpiration,
-                isFront: true,
-                onSwitch: tickets.count > 1 ? { cycleTicket() } : nil
-            )
-            .zIndex(Double(visibleStackCount + 1))
-        }
-        .padding(.bottom, restBackLayerDepths.isEmpty ? 6 : 8)
-        .frame(height: deckHeight, alignment: .top)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("重置券 \(tickets.count) 张，当前第 \(selectedIndex + 1) 张")
-        .onChange(of: tickets.map(\.id)) { _, ids in
-            if ids.isEmpty || selectedIndex >= ids.count {
-                selectedIndex = 0
-            }
-        }
-    }
-
-    private func cycleTicket() {
-        guard tickets.count > 1 else { return }
-        selectedIndex = (selectedIndex + 1) % tickets.count
-    }
-}
-
-private struct ResetCouponDeckTicket: View {
-    let ticket: ResetCouponDisplayTicket
-    let position: Int
-    let total: Int
-    let formattedExpiration: (String) -> String
-    let isFront: Bool
-    let onSwitch: (() -> Void)?
-
-    var body: some View {
-        ResetCouponTicketCard(
-            name: ticket.name,
-            source: ticket.source,
-            expiresAt: formattedExpiration(ticket.expiresAt),
-            position: position,
-            total: total,
-            stackDepth: 0,
-            isFront: isFront,
-            onSwitch: onSwitch
-        )
-    }
-}
-
-private enum ResetCouponTicketMetrics {
-    static let cardHeight: CGFloat = 82
-    static let stubWidth: CGFloat = 88
-    static let stubHorizontalPadding: CGFloat = 12
-    static let perforationNotchRadius: CGFloat = 4
-    static let maxStackLayers = 3
-    static let stackOffsetX: CGFloat = 2.5
-    static let stackOffsetY: CGFloat = 5
-    static let stackScaleStep: CGFloat = 0.016
-}
-
-private struct ResetCouponTicketShape: Shape {
-    var cornerRadius: CGFloat = 12
-    var edgeNotchRadius: CGFloat = 4.5
-    var perforationNotchRadius: CGFloat = ResetCouponTicketMetrics.perforationNotchRadius
-    var perforationInset: CGFloat = ResetCouponTicketMetrics.stubWidth
-
-    func path(in rect: CGRect) -> Path {
-        let perforationX = rect.maxX - perforationInset
-        var path = Path()
-
-        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
-        path.addLine(to: CGPoint(x: perforationX - perforationNotchRadius, y: rect.minY))
-        path.addArc(
-            center: CGPoint(x: perforationX, y: rect.minY),
-            radius: perforationNotchRadius,
-            startAngle: .degrees(180),
-            endAngle: .degrees(0),
-            clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY + cornerRadius),
-            radius: cornerRadius,
-            startAngle: .degrees(-90),
-            endAngle: .degrees(0),
-            clockwise: false
-        )
-
-        let rightNotchY = rect.midY
-        path.addLine(to: CGPoint(x: rect.maxX, y: rightNotchY - edgeNotchRadius))
-        path.addArc(
-            center: CGPoint(x: rect.maxX, y: rightNotchY),
-            radius: edgeNotchRadius,
-            startAngle: .degrees(-90),
-            endAngle: .degrees(90),
-            clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY - cornerRadius),
-            radius: cornerRadius,
-            startAngle: .degrees(0),
-            endAngle: .degrees(90),
-            clockwise: false
-        )
-
-        path.addLine(to: CGPoint(x: perforationX + perforationNotchRadius, y: rect.maxY))
-        path.addArc(
-            center: CGPoint(x: perforationX, y: rect.maxY),
-            radius: perforationNotchRadius,
-            startAngle: .degrees(0),
-            endAngle: .degrees(180),
-            clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
-        path.addArc(
-            center: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY - cornerRadius),
-            radius: cornerRadius,
-            startAngle: .degrees(90),
-            endAngle: .degrees(180),
-            clockwise: false
-        )
-
-        let leftNotchY = rect.midY
-        path.addLine(to: CGPoint(x: rect.minX, y: leftNotchY + edgeNotchRadius))
-        path.addArc(
-            center: CGPoint(x: rect.minX, y: leftNotchY),
-            radius: edgeNotchRadius,
-            startAngle: .degrees(90),
-            endAngle: .degrees(-90),
-            clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
-        path.addArc(
-            center: CGPoint(x: rect.minX + cornerRadius, y: rect.minY + cornerRadius),
-            radius: cornerRadius,
-            startAngle: .degrees(180),
-            endAngle: .degrees(-90),
-            clockwise: false
-        )
-
-        path.closeSubpath()
-        return path
-    }
-}
-
-private struct ResetCouponPaperTexture: View {
-    let isDark: Bool
-
-    var body: some View {
-        Canvas { context, size in
-            let lineColor = Color.black.opacity(isDark ? 0.06 : 0.018)
-            var y: CGFloat = 3
-            while y < size.height {
-                var line = Path()
-                line.move(to: CGPoint(x: 0, y: y))
-                line.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(line, with: .color(lineColor), lineWidth: 0.35)
-                y += 5.5
-            }
-
-            let speckColor = Color.black.opacity(isDark ? 0.05 : 0.012)
-            let specks: [(CGFloat, CGFloat)] = [
-                (0.12, 0.18), (0.28, 0.42), (0.46, 0.24), (0.63, 0.58),
-                (0.78, 0.31), (0.88, 0.72), (0.34, 0.81), (0.55, 0.67)
-            ]
-            for (xFactor, yFactor) in specks {
-                let rect = CGRect(
-                    x: size.width * xFactor,
-                    y: size.height * yFactor,
-                    width: 0.7,
-                    height: 0.7
-                )
-                context.fill(Path(ellipseIn: rect), with: .color(speckColor))
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-private struct ResetCouponPerforation: View {
-    let tone: Color
-    let isDark: Bool
-    var height: CGFloat = ResetCouponTicketMetrics.cardHeight
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .stroke(
-                    tone.opacity(isDark ? 0.18 : 0.10),
-                    style: StrokeStyle(lineWidth: 0.5, dash: [1.5, 3.5])
-                )
-                .frame(width: 0.5, height: height)
-
-            VStack(spacing: 4.2) {
-                ForEach(0..<perforationDotCount, id: \.self) { index in
-                    Circle()
-                        .fill(tone.opacity(index.isMultiple(of: 2) ? 0.82 : 0.58))
-                        .frame(width: 1.6, height: 1.6)
-                }
-            }
-            .frame(height: height - ResetCouponTicketMetrics.perforationNotchRadius * 2)
-        }
-        .frame(width: 2, height: height)
-        .allowsHitTesting(false)
-    }
-
-    private var perforationDotCount: Int {
-        max(7, Int((height - ResetCouponTicketMetrics.perforationNotchRadius * 2) / 5.8))
-    }
-}
-
-private struct ResetCouponStackLayer: View {
-    let depth: Int
-    let totalBackLayers: Int
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var isDark: Bool { colorScheme == .dark }
-
-    private var layerOpacity: Double {
-        switch totalBackLayers {
-        case 1: 0.92
-        case 2 where depth == 1: 0.88
-        default: depth == 1 ? 0.86 : 0.74
-        }
-    }
-
-    private var edgeOpacity: Double {
-        depth == totalBackLayers ? 0.58 : (depth == 1 ? 0.72 : 0.64)
-    }
-
-    private var surfaceTop: Color {
-        isDark
-            ? Color(red: 0.138, green: 0.145, blue: 0.148)
-            : Color(red: 0.972, green: 0.978, blue: 0.958)
-    }
-
-    private var surfaceBottom: Color {
-        isDark
-            ? Color(red: 0.108, green: 0.115, blue: 0.118)
-            : Color(red: 0.928, green: 0.942, blue: 0.932)
-    }
-
-    private var edge: Color {
-        isDark
-            ? Color(red: 0.240, green: 0.255, blue: 0.250)
-            : Color(red: 0.790, green: 0.812, blue: 0.800)
-    }
-
-    var body: some View {
-        ResetCouponTicketShape()
-            .fill(
-                LinearGradient(
-                    colors: [surfaceTop, surfaceBottom],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .overlay {
-                ResetCouponTicketShape()
-                    .stroke(edge.opacity(edgeOpacity), lineWidth: 0.75)
-            }
-            .frame(maxWidth: .infinity, minHeight: ResetCouponTicketMetrics.cardHeight, maxHeight: ResetCouponTicketMetrics.cardHeight)
-            .opacity(layerOpacity)
-    }
-}
-
-private struct ResetCouponStubSection: View {
-    let position: Int
-    let total: Int
-    let source: String
-    let isFront: Bool
-    let isDark: Bool
-    let coordinateSpaceName: String
-    let onStubTap: ((CGPoint) -> Void)?
-
-    var body: some View {
-        ZStack {
-            stubContent
-                .allowsHitTesting(false)
-
-            if total > 1, onStubTap != nil {
-                Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        codexMaterialTapGesture(in: coordinateSpaceName) { location in
-                            onStubTap?(location)
-                        }
-                    )
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel("切换查看，当前第 \(position) 张，共 \(total) 张")
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var stubContent: some View {
-        VStack(spacing: 5) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(
-                        Color.codexGreen.opacity(isDark ? 0.42 : 0.34),
-                        style: StrokeStyle(lineWidth: 0.9, dash: [2.5, 1.8])
-                    )
-                    .background(
-                        Color.codexGreen.opacity(isDark ? 0.08 : 0.05),
-                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    )
-                HStack(spacing: 4) {
-                    Image(systemName: "ticket.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text(String(format: "%02d", position))
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                }
-                .foregroundStyle(Color.codexGreen)
-                .rotationEffect(.degrees(-7))
-            }
-            .frame(width: 58, height: 26)
-
-            Text(isFront && total > 1 ? "切换查看" : "可用券")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color.codexMuted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.9)
-
-            if !source.isEmpty {
-                Text(source)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(Color.codexMuted.opacity(0.78))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-        }
-        .padding(.horizontal, ResetCouponTicketMetrics.stubHorizontalPadding)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-}
-
-private struct ResetCouponTicketShadow: ViewModifier {
-    let isFront: Bool
-    let isDark: Bool
-
-    func body(content: Content) -> some View {
-        if isFront {
-            content
-                .shadow(
-                    color: Color.black.opacity(isDark ? 0.11 : 0.042),
-                    radius: 12,
-                    x: 0,
-                    y: 5
-                )
-                .shadow(
-                    color: Color.black.opacity(isDark ? 0.05 : 0.018),
-                    radius: 3,
-                    x: 0,
-                    y: 1
-                )
-        } else {
-            content
-        }
-    }
-}
-
-private struct ResetCouponTicketCard: View {
-    private static let ticketSpace = "resetCouponTicket"
-
-    let name: String
-    let source: String
-    let expiresAt: String
-    let position: Int
-    let total: Int
-    let stackDepth: Int
-    let isFront: Bool
-    let onSwitch: (() -> Void)?
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var ripples: [CodexMaterialWaveToken] = []
-
-    private var isDark: Bool { colorScheme == .dark }
-
-    private var ticketSurfaceTop: Color {
-        isDark
-            ? Color(red: 0.158, green: 0.165, blue: 0.168)
-            : Color(red: 0.998, green: 0.993, blue: 0.968)
-    }
-
-    private var ticketSurfaceBottom: Color {
-        isDark
-            ? Color(red: 0.118, green: 0.125, blue: 0.128)
-            : Color(red: 0.958, green: 0.968, blue: 0.952)
-    }
-
-    private var stubSurface: Color {
-        isDark
-            ? Color(red: 0.132, green: 0.139, blue: 0.142)
-            : Color(red: 0.978, green: 0.984, blue: 0.972)
-    }
-
-    private var ticketEdge: Color {
-        isDark
-            ? Color(red: 0.255, green: 0.270, blue: 0.266)
-            : Color(red: 0.805, green: 0.828, blue: 0.815)
-    }
-
-    private var edgeStrokeOpacity: Double { 0.95 }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 11) {
-                resetIcon
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(name.isEmpty ? "Codex 重置券" : name)
-                            .font(.system(size: 11, weight: .semibold))
-                            .lineLimit(1)
-                        Text("\(position) / \(total)")
-                            .font(.system(size: 8, weight: .bold))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.codexGreen)
-                            .padding(.horizontal, 6)
-                            .frame(height: 17)
-                            .background(
-                                LinearGradient(
-                                    colors: isDark
-                                        ? [Color(red: 0.105, green: 0.235, blue: 0.145), Color(red: 0.085, green: 0.195, blue: 0.120)]
-                                        : [Color(red: 0.905, green: 0.978, blue: 0.922), Color(red: 0.865, green: 0.958, blue: 0.895)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                in: Capsule()
-                            )
-                            .overlay(Capsule().stroke(Color.codexGreen.opacity(isFront ? 0.22 : 0.14), lineWidth: 0.6))
-                    }
-                    Label("\(expiresAt) 到期", systemImage: "calendar.badge.clock")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(Color.codexMuted)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-
-                Spacer(minLength: 6)
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 8)
-            .allowsHitTesting(false)
-
-            stubSection
-                .frame(width: ResetCouponTicketMetrics.stubWidth)
-        }
-        .frame(maxWidth: .infinity, minHeight: ResetCouponTicketMetrics.cardHeight, maxHeight: ResetCouponTicketMetrics.cardHeight)
-        .background { ticketBackground }
-        .clipShape(ResetCouponTicketShape())
-        .overlay {
-            ResetCouponTicketShape()
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            ticketEdge.opacity(edgeStrokeOpacity),
-                            ticketEdge.opacity(edgeStrokeOpacity * 0.62)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.85
-                )
-        }
-        .overlay {
-            GeometryReader { geometry in
-                ResetCouponPerforation(tone: ticketEdge, isDark: isDark)
-                    .position(
-                        x: geometry.size.width - ResetCouponTicketMetrics.stubWidth,
-                        y: geometry.size.height / 2
-                    )
-            }
-            .allowsHitTesting(false)
-        }
-        .overlay { innerHighlight }
-        .overlay {
-            CodexMaterialWaveLayer(ripples: $ripples)
-            .clipShape(ResetCouponTicketShape())
-        }
-        .coordinateSpace(name: Self.ticketSpace)
-        .modifier(ResetCouponTicketShadow(isFront: isFront, isDark: isDark))
-    }
-
-    private var resetIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: isDark
-                            ? [Color.codexGreen.opacity(0.18), Color.codexGreen.opacity(0.08)]
-                            : [Color.codexGreen.opacity(0.11), Color.codexGreen.opacity(0.045)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color.codexGreen.opacity(isDark ? 0.36 : 0.24),
-                            Color.codexGreen.opacity(isDark ? 0.18 : 0.10)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-            Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.codexGreen)
-        }
-        .frame(width: 32, height: 32)
-        .shadow(color: Color.codexGreen.opacity(isDark ? 0.08 : 0.06), radius: 3, y: 1)
-    }
-
-    private var stubSection: some View {
-        ResetCouponStubSection(
-            position: position,
-            total: total,
-            source: source,
-            isFront: isFront,
-            isDark: isDark,
-            coordinateSpaceName: Self.ticketSpace,
-            onStubTap: onSwitch == nil ? nil : { location in
-                ripples.spawnWave(at: location)
-                onSwitch?()
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var ticketBackground: some View {
-        ZStack {
-            LinearGradient(
-                colors: [ticketSurfaceTop, ticketSurfaceBottom],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            HStack(spacing: 0) {
-                Color.clear
-                LinearGradient(
-                    colors: [
-                        stubSurface.opacity(0.15),
-                        stubSurface,
-                        stubSurface.opacity(isDark ? 0.88 : 0.96)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: ResetCouponTicketMetrics.stubWidth)
-            }
-
-            ResetCouponPaperTexture(isDark: isDark)
-                .blendMode(isDark ? .plusLighter : .multiply)
-                .opacity(isDark ? 0.35 : 0.55)
-        }
-    }
-
-    private var innerHighlight: some View {
-        ResetCouponTicketShape()
-            .stroke(Color.white.opacity(isDark ? 0.06 : 0.38), lineWidth: 0.6)
-            .blur(radius: 0.2)
-            .padding(0.6)
-            .mask {
-                ResetCouponTicketShape()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white, Color.clear],
-                            startPoint: .top,
-                            endPoint: .center
-                        )
-                    )
-            }
-    }
-}
 
 private struct CompanionSidebar: View {
     private static let sidebarSpace = "companionSidebar"
@@ -1266,23 +673,33 @@ private struct CompanionSidebar: View {
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
+    /// 在父级 HStack 已确定行高时铺满侧栏（独立横版）。
+    var fillColumnHeight = false
+    var expandsVertically = true
     @State private var ripples: [CodexMaterialWaveToken] = []
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        let centersPetVertically = expandsVertically && !fillColumnHeight
+
         ZStack {
             LinearGradient(
                 colors: [Color.codexSidebarTop, Color.codexSidebarBottom],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // Wave sits on the sidebar background, beneath pet and chrome.
             CodexMaterialWaveLayer(ripples: $ripples)
 
             petView
                 .frame(width: 145, height: 218)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: centersPetVertically ? .infinity : nil,
+                    alignment: .center
+                )
                 .zIndex(1)
                 .allowsHitTesting(false)
         }
@@ -1306,6 +723,12 @@ private struct CompanionSidebar: View {
         .overlay(alignment: .trailing) {
             Rectangle().fill(Color.codexLine.opacity(0.72)).frame(width: 1)
         }
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: (fillColumnHeight || expandsVertically) ? .infinity : nil,
+            alignment: .top
+        )
+        .fixedSize(horizontal: false, vertical: !fillColumnHeight && !expandsVertically)
     }
 
     private var sidebarFooter: some View {

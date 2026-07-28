@@ -394,7 +394,14 @@ struct CodexlingParser {
                     name: "重置券",
                     count: 1,
                     expiresAt: formatReset(card.expiresAt),
-                    source: card.status ?? "官方额度"
+                    source: card.profileUserID ?? "Codex",
+                    title: card.title,
+                    description: card.description,
+                    grantedAt: card.grantedAt.map { formatReset($0) },
+                    profileUserID: card.profileUserID,
+                    profileImageURL: card.profileImageURL,
+                    status: card.status,
+                    resetType: card.resetType
                 )
             },
             fetchedAt: Date(),
@@ -519,7 +526,24 @@ struct CodexlingParser {
             ?? (object["resetCreditId"] as? String)
             ?? fallbackID
         let status = (object["status"] as? String) ?? (object["state"] as? String)
-        return ParsedResetCard(id: id, expiresAt: expiresAt, status: status)
+        let grantedAt = readDate(object["granted_at"] ?? object["grantedAt"])
+        let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = (object["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profileUserID = (object["profile_user_id"] as? String) ?? (object["profileUserId"] as? String)
+        let profileImageURL = (object["profile_image_url"] as? String) ?? (object["profileImageUrl"] as? String)
+        let resetType = (object["reset_type"] as? String) ?? (object["resetType"] as? String)
+
+        return ParsedResetCard(
+            id: id,
+            expiresAt: expiresAt,
+            grantedAt: grantedAt,
+            status: status,
+            title: title?.isEmpty == false ? title : nil,
+            description: description?.isEmpty == false ? description : nil,
+            profileUserID: profileUserID,
+            profileImageURL: profileImageURL,
+            resetType: resetType
+        )
     }
 
     private func isAvailableResetCard(_ card: ParsedResetCard) -> Bool {
@@ -655,7 +679,13 @@ struct ParsedQuotaWindow {
 struct ParsedResetCard {
     let id: String
     let expiresAt: String
+    let grantedAt: String?
     let status: String?
+    let title: String?
+    let description: String?
+    let profileUserID: String?
+    let profileImageURL: String?
+    let resetType: String?
 }
 
 struct CodexOAuthToken: Codable, Sendable {

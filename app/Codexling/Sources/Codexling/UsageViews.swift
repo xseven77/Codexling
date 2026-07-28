@@ -18,6 +18,18 @@ struct DetachedUsageWindowView: View {
         .dashboard(isLoggedIn: store.isLoggedIn, orientation: settings.dashboardOrientation)
     }
 
+    private var showsHorizontalDashboard: Bool {
+        !showsSettings && store.isLoggedIn && settings.dashboardOrientation == .horizontal
+    }
+
+    private var showsVerticalDashboard: Bool {
+        !showsSettings && store.isLoggedIn && settings.dashboardOrientation == .vertical
+    }
+
+    private var fillsDashboardContentView: Bool {
+        showsHorizontalDashboard || showsVerticalDashboard
+    }
+
     var body: some View {
         Group {
             if showsSettings {
@@ -29,13 +41,17 @@ struct DetachedUsageWindowView: View {
                     onLogout: {
                         actions.disconnect()
                         showsSettings = false
-                        onContentLayoutChanged(
-                            .dashboard(isLoggedIn: false, orientation: settings.dashboardOrientation)
-                        )
+                        DispatchQueue.main.async {
+                            onContentLayoutChanged(
+                                .dashboard(isLoggedIn: false, orientation: settings.dashboardOrientation)
+                            )
+                        }
                     },
                     onClose: {
                         showsSettings = false
-                        onContentLayoutChanged(dashboardContentMode)
+                        DispatchQueue.main.async {
+                            onContentLayoutChanged(dashboardContentMode)
+                        }
                     },
                     onMeasuredContentHeightChange: onSettingsMeasuredHeight
                 )
@@ -51,21 +67,29 @@ struct DetachedUsageWindowView: View {
                     showsDetachedButton: false,
                     onOpenSettings: {
                         showsSettings = true
-                        onContentLayoutChanged(.settings)
+                        DispatchQueue.main.async {
+                            onContentLayoutChanged(.settings)
+                        }
                     },
                     onMeasuredContentHeightChange: onDashboardMeasuredHeight
                 )
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .modifier(DetachedUsageWindowRootFrame(fillsContentView: fillsDashboardContentView))
         .preferredColorScheme(settings.resolvedColorScheme)
-        .background(Color.codexBackground)
-        .ignoresSafeArea(.container, edges: .top)
-        .onAppear {
-            onContentLayoutChanged(dashboardContentMode)
+        .background {
+            if showsSettings {
+                Color.codexBackground
+            } else if showsHorizontalDashboard {
+                DashboardWindowChromeBackground()
+            } else if showsVerticalDashboard {
+                Color.codexCard
+            } else {
+                Color.clear
+            }
         }
-        .onChange(of: store.snapshot.resetCoupons) { _, _ in
-            guard !showsSettings else { return }
+        .ignoresSafeArea(.container, edges: [.top, .bottom, .leading, .trailing])
+        .onAppear {
             onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: store.isLoggedIn) { _, _ in
@@ -75,6 +99,20 @@ struct DetachedUsageWindowView: View {
         .onChange(of: settings.dashboardOrientation) { _, _ in
             guard !showsSettings else { return }
             onContentLayoutChanged(dashboardContentMode)
+        }
+    }
+
+    /// 横/竖主界面：铺满 contentView；高度由 AppKit `setContentSize` 决定。
+    private struct DetachedUsageWindowRootFrame: ViewModifier {
+        let fillsContentView: Bool
+
+        func body(content: Content) -> some View {
+            if fillsContentView {
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
     }
 }

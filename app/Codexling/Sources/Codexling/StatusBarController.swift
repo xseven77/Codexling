@@ -1546,4 +1546,9 @@ extension NSColor {
         light: (0.957, 0.957, 0.957, 1),
         dark: (0.118, 0.118, 0.122, 1)
     )
+
+    static let codexDashboardChrome = NSColor.codexDynamic(
+        light: (1.000, 1.000, 0.998, 1),
+        dark: (0.165, 0.165, 0.172, 1)
+    )
 }

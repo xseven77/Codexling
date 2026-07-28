@@ -1336,6 +1336,13 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(horizontal.width, DetachedWindowMetrics.dashboardWidth)
         XCTAssertEqual(horizontal.height, DetachedWindowMetrics.loggedInDashboardHeight)
 
+        let horizontalMeasured = DetachedWindowMetrics.fixedDashboardContentSize(
+            isLoggedIn: true,
+            orientation: .horizontal,
+            measuredHeight: 548
+        )
+        XCTAssertEqual(horizontalMeasured.height, DetachedWindowMetrics.loggedInDashboardHeight)
+
         let unmeasured = DetachedWindowMetrics.fixedDashboardContentSize(
             isLoggedIn: true,
             orientation: .vertical
