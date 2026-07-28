@@ -75,11 +75,11 @@ struct SettingsView: View {
         .onChange(of: settings.dashboardOrientation) { _, orientation in
             showToast("主界面布局：\(orientation.title)")
         }
-        .onChange(of: settings.petBackgroundColor) { _, color in
-            showToast("胶囊提醒色：\(color.title)")
-        }
         .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
             showToast("活动状态 Wave 已\(enabled ? "开启" : "关闭")")
+        }
+        .onChange(of: settings.statusBarWaveColorMode) { _, mode in
+            showToast("Wave 颜色：\(mode.title)")
         }
         .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
             showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
@@ -411,24 +411,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             SettingsSection(
                 title: "状态栏与 Pet",
-                subtitle: "调整额度提醒颜色与任务活动效果。"
+                subtitle: "调整胶囊透明度与任务活动效果。"
             ) {
                 VStack(spacing: 0) {
-                SettingsInlineRow(
-                    title: "胶囊提醒色",
-                    subtitle: "只改变文字：充足绿、偏低黄、紧张红、未知灰"
-                ) {
-                    HStack(spacing: 8) {
-                        petBackgroundPreview
-                        SettingsMenuPicker(
-                            selection: $settings.petBackgroundColor,
-                            options: StatusBarPetBackgroundColor.allCases,
-                            title: \.title
-                        )
-                    }
-                }
-                SettingsRowDivider()
-
                 SettingsInlineRow(
                     title: "胶囊透明度",
                     subtitle: "调整状态栏胶囊纯白背景的透明程度"
@@ -442,6 +427,18 @@ struct SettingsView: View {
                     subtitle: "非空闲时，从状态栏圆灯向外扩散并驱动任务浮窗动画"
                 ) {
                     SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
+                }
+                SettingsRowDivider()
+
+                SettingsInlineRow(
+                    title: "Wave 颜色",
+                    subtitle: "跟随任务状态色（紫/蓝/青/橙）或使用中性色"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.statusBarWaveColorMode,
+                        options: StatusBarWaveColorMode.allCases,
+                        title: \.title
+                    )
                 }
                 SettingsRowDivider()
 
@@ -768,26 +765,6 @@ struct SettingsView: View {
                 showToast("无法重启 Codex：\(error.localizedDescription)", systemImage: "exclamationmark.triangle.fill")
             }
             isRestartingCodex = false
-        }
-    }
-
-    @ViewBuilder
-    private var petBackgroundPreview: some View {
-        if settings.petBackgroundColor == .automatic {
-            HStack(spacing: 5) {
-                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.green.foregroundColor(for: settings.resolvedColorScheme)))
-                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.yellow.foregroundColor(for: settings.resolvedColorScheme)))
-                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.red.foregroundColor(for: settings.resolvedColorScheme)))
-                SettingsColorDot(color: Color(nsColor: StatusBarPetBackgroundColor.gray.foregroundColor(for: settings.resolvedColorScheme)))
-            }
-        } else {
-            SettingsColorDot(
-                color: Color(
-                    nsColor: settings.petBackgroundColor.foregroundColor(
-                        for: settings.resolvedColorScheme
-                    )
-                )
-            )
         }
     }
 
@@ -1156,17 +1133,6 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
     }
 }
 
-private struct SettingsColorDot: View {
-    let color: Color
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 11, height: 11)
-            .overlay(Circle().stroke(Color.codexLine.opacity(0.72), lineWidth: 0.6))
-    }
-}
-
 private struct SettingsPercentageSlider: View {
     @Binding var value: Double
 
@@ -1353,8 +1319,8 @@ private struct SettingsExternalLinkRow: View {
 private struct SettingsRowDivider: View {
     var body: some View {
         Rectangle()
-            .fill(Color.codexLine.opacity(0.82))
-            .frame(height: 0.7)
+            .fill(Color.codexLine.opacity(0.55))
+            .frame(height: 1)
     }
 }
 

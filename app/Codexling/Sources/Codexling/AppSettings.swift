@@ -174,6 +174,27 @@ enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum StatusBarWaveColorMode: String, CaseIterable, Identifiable {
+    case statusColor
+    case neutral
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .statusColor: "跟随状态"
+        case .neutral: "中性色"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .statusColor: "paintpalette"
+        case .neutral: "circle.lefthalf.filled"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AppSettingsStore {
@@ -189,6 +210,7 @@ final class AppSettingsStore {
         static let selectedPetID = "codexling.selectedPetID"
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
+        static let statusBarWaveColorMode = "codexling.statusBarWaveColorMode"
         static let autoOpenTaskHoverEnabled = "codexling.autoOpenTaskHoverEnabled"
         static let taskHoverDisplayMode = "codexling.taskHoverDisplayMode"
         static let statusBarOpacityPercent = "codexling.statusBarOpacityPercent"
@@ -238,6 +260,8 @@ final class AppSettingsStore {
         }
     }
 
+    // 保留 UserDefaults 键值以兼容旧版本设置，但当前胶囊不再使用此颜色
+    // （文字已固定为白色，圆灯固定为额度颜色）。
     var petBackgroundColor: StatusBarPetBackgroundColor {
         didSet {
             guard petBackgroundColor != oldValue else { return }
@@ -250,6 +274,14 @@ final class AppSettingsStore {
         didSet {
             guard statusBarWaveEnabled != oldValue else { return }
             defaults.set(statusBarWaveEnabled, forKey: Keys.statusBarWaveEnabled)
+            onPetSettingsChanged?()
+        }
+    }
+
+    var statusBarWaveColorMode: StatusBarWaveColorMode {
+        didSet {
+            guard statusBarWaveColorMode != oldValue else { return }
+            defaults.set(statusBarWaveColorMode.rawValue, forKey: Keys.statusBarWaveColorMode)
             onPetSettingsChanged?()
         }
     }
@@ -351,6 +383,8 @@ final class AppSettingsStore {
         let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
         petBackgroundColor = backgroundRaw.flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
         statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
+        statusBarWaveColorMode = defaults.string(forKey: Keys.statusBarWaveColorMode)
+            .flatMap(StatusBarWaveColorMode.init(rawValue:)) ?? .statusColor
         autoOpenTaskHoverEnabled =
             defaults.object(forKey: Keys.autoOpenTaskHoverEnabled) as? Bool ?? true
         taskHoverDisplayMode = defaults.string(forKey: Keys.taskHoverDisplayMode)
@@ -382,6 +416,7 @@ final class AppSettingsStore {
             Keys.selectedPetID,
             Keys.petBackgroundColor,
             Keys.statusBarWaveEnabled,
+            Keys.statusBarWaveColorMode,
             Keys.autoOpenTaskHoverEnabled,
             Keys.taskHoverDisplayMode,
             Keys.statusBarOpacityPercent,

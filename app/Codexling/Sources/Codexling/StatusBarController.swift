@@ -173,7 +173,6 @@ final class StatusBarController: NSObject {
             window: snapshot.primaryWindow,
             isLoggedIn: store.isLoggedIn
         )
-        let background = settings.petBackgroundColor.resolved(for: health)
         let showsWave = settings.statusBarWaveEnabled
             && activityState != .idle
             && activityState != .unavailable
@@ -191,14 +190,15 @@ final class StatusBarController: NSObject {
         // animation remains available in the main window and hover card.
         capsuleView?.petImage = nil
         capsuleView?.update(
-            background: background,
+            background: .neutral,
             text: compactText,
             reservedText: reservedText,
             backgroundOpacity: CGFloat(settings.statusBarOpacityPercent / 100),
             colorScheme: settings.resolvedColorScheme,
-            foregroundColor: background.foregroundColor(for: settings.resolvedColorScheme),
+            foregroundColor: .white,
             showsPet: false,
-            indicatorColor: activityState.statusNSColor,
+            indicatorColor: health.nsColor,
+            waveColor: settings.statusBarWaveColorMode == .statusColor ? activityState.statusNSColor : nil,
             showsWave: showsWave,
             cornerRatio: cornerRatio
         )
@@ -617,6 +617,7 @@ final class StatusCapsuleView: NSView {
     private var foregroundColor = NSColor.labelColor
     private var showsPet = true
     private var indicatorColor: NSColor?
+    private var waveColor: NSColor?
     private var showsWave = false
     private var cornerRatio: CGFloat = 0.5
     private var isTrackingPress = false
@@ -680,6 +681,7 @@ final class StatusCapsuleView: NSView {
         foregroundColor: NSColor,
         showsPet: Bool,
         indicatorColor: NSColor?,
+        waveColor: NSColor?,
         showsWave: Bool,
         cornerRatio: CGFloat
     ) {
@@ -691,6 +693,7 @@ final class StatusCapsuleView: NSView {
         self.foregroundColor = foregroundColor
         self.showsPet = showsPet
         self.indicatorColor = indicatorColor
+        self.waveColor = waveColor
         let waveVisibilityChanged = self.showsWave != showsWave
         self.showsWave = showsWave
         self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
@@ -912,13 +915,13 @@ final class StatusCapsuleView: NSView {
         )
         wavePath.addClip()
 
-        let ink = materialInkColor
+        let waveInk = waveColor ?? materialInkColor
         NSGradient(
             colorsAndLocations:
-                (ink.withAlphaComponent(0), 0),
-                (ink.withAlphaComponent(ink.alphaComponent * 0.18), 0.44),
-                (ink.withAlphaComponent(ink.alphaComponent * 0.52), 0.74),
-                (ink.withAlphaComponent(ink.alphaComponent), 1)
+                (waveInk.withAlphaComponent(0), 0),
+                (waveInk.withAlphaComponent(waveInk.alphaComponent * 0.18), 0.44),
+                (waveInk.withAlphaComponent(waveInk.alphaComponent * 0.52), 0.74),
+                (waveInk.withAlphaComponent(waveInk.alphaComponent), 1)
         )?.draw(
             in: waveRect,
             angle: 0
