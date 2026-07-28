@@ -466,6 +466,7 @@ private struct VerticalQuotaRowsView: View {
 
 private struct VerticalQuotaRow: View {
     private static let trackWidth: CGFloat = 84
+    private static let percentWidth: CGFloat = 44
 
     let window: UsageWindow
     let tint: Color
@@ -494,7 +495,9 @@ private struct VerticalQuotaRow: View {
             Text(window.percentText)
                 .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
-                .frame(width: 38, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: Self.percentWidth, alignment: .trailing)
+                .layoutPriority(1)
         }
         .padding(.horizontal, 11)
         .frame(height: 38)
