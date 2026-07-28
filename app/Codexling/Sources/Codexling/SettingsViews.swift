@@ -184,7 +184,7 @@ struct SettingsView: View {
                 .frame(minHeight: 62)
 
             if store.isLoggedIn {
-                SettingsRowDivider()
+                CodexDivider()
                 accountCardSubscriptionRow
                     .padding(.horizontal, 16)
                     .frame(minHeight: 60)
@@ -340,11 +340,11 @@ struct SettingsView: View {
                         .progressViewStyle(.linear)
                         .tint(Color.codexPrimary)
                 }
-                SettingsRowDivider()
+                CodexDivider()
                 themeSection
-                SettingsRowDivider()
+                CodexDivider()
                 orientationSection
-                SettingsRowDivider()
+                CodexDivider()
                 refreshSection
             }
             .settingsGroupSurface()
@@ -420,7 +420,7 @@ struct SettingsView: View {
                 ) {
                     SettingsPercentageSlider(value: $settings.statusBarOpacityPercent)
                 }
-                SettingsRowDivider()
+                CodexDivider()
 
                 SettingsInlineRow(
                     title: "活动状态 Wave",
@@ -428,7 +428,7 @@ struct SettingsView: View {
                 ) {
                     SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
                 }
-                SettingsRowDivider()
+                CodexDivider()
 
                 SettingsInlineRow(
                     title: "Wave 颜色",
@@ -440,7 +440,7 @@ struct SettingsView: View {
                         title: \.title
                     )
                 }
-                SettingsRowDivider()
+                CodexDivider()
 
                 SettingsInlineRow(
                     title: "任务浮窗自动展开",
@@ -448,7 +448,7 @@ struct SettingsView: View {
                 ) {
                     SettingsSwitch(isOn: $settings.autoOpenTaskHoverEnabled)
                 }
-                SettingsRowDivider()
+                CodexDivider()
 
                 SettingsInlineRow(
                     title: "任务浮窗显示器",
@@ -561,7 +561,7 @@ struct SettingsView: View {
                     subtitle: "Pet 资源站",
                     url: URL(string: "https://codex-pets.net/")!
                 )
-                SettingsRowDivider()
+                CodexDivider()
                 SettingsExternalLinkRow(
                     icon: .githubMark,
                     title: "Awesome Codex Pet",
@@ -1316,14 +1316,6 @@ private struct SettingsExternalLinkRow: View {
     }
 }
 
-private struct SettingsRowDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.codexLine.opacity(0.55))
-            .frame(height: 1)
-    }
-}
-
 private enum SettingsMeasuredContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -1334,10 +1326,22 @@ private enum SettingsMeasuredContentHeightKey: PreferenceKey {
 
 private extension View {
     func settingsGroupSurface() -> some View {
-        background(Color.codexCard.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.82), lineWidth: 0.8)
-            )
+        modifier(SettingsGroupSurfaceModifier())
+    }
+}
+
+private struct SettingsGroupSurfaceModifier: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        content
+            .background(Color.codexCard.opacity(0.72), in: shape)
+            .overlay {
+                shape.stroke(
+                    CodexDivider.color,
+                    lineWidth: CodexDivider.renderedThickness(displayScale: displayScale)
+                )
+            }
     }
 }

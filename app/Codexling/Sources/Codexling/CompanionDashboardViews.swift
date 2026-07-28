@@ -505,7 +505,7 @@ private struct CompanionPetHeader: View {
         )
         .clipped()
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.codexLine.opacity(0.72)).frame(height: 1)
+            CodexDivider()
         }
     }
 }
@@ -556,7 +556,7 @@ private struct CompanionAccountRow: View {
         .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
         .frame(height: 46)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.codexLine.opacity(0.72)).frame(height: 0.7)
+            CodexDivider()
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
@@ -721,7 +721,7 @@ private struct CompanionSidebar: View {
         )
         .clipped()
         .overlay(alignment: .trailing) {
-            Rectangle().fill(Color.codexLine.opacity(0.72)).frame(width: 1)
+            CodexDivider(.vertical)
         }
         .frame(
             maxWidth: .infinity,
@@ -773,9 +773,7 @@ private struct CompanionSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 8)
 
-            Rectangle()
-                .fill(Color.codexLine.opacity(0.72))
-                .frame(height: 0.7)
+            CodexDivider()
 
             Group {
                 if let summaryLine = snapshot.subscriptionCompactSummaryLine {
@@ -1068,9 +1066,7 @@ private struct TaskStackView: View {
         .foregroundStyle(Color.codexMuted)
         .frame(height: 39, alignment: .center)
         .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.codexLine)
-                .frame(height: 0.7)
+            CodexDivider()
         }
     }
 
@@ -1261,7 +1257,7 @@ private struct SyncFooterView: View {
         .padding(.top, isCompact ? 11 : 14)
         .frame(height: isCompact ? 40 : 46, alignment: .bottom)
         .fixedSize(horizontal: false, vertical: true)
-        .overlay(alignment: .top) { Rectangle().fill(Color.codexLine).frame(height: 0.7) }
+        .overlay(alignment: .top) { CodexDivider() }
         .alert("确认关闭软件？", isPresented: $showQuitConfirmation) {
             Button("取消", role: .cancel) {}
             Button("关闭软件", role: .destructive, action: actions.quit)

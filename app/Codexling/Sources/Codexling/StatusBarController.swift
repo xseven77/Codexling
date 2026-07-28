@@ -269,7 +269,11 @@ final class StatusBarController: NSObject {
             let preferredScreen = settings.taskHoverDisplayMode == .primary
                 ? NSScreen.screens.first
                 : button.window?.screen
-            hoverPanel.show(relativeTo: button, preferredScreen: preferredScreen)
+            hoverPanel.show(
+                relativeTo: button,
+                preferredScreen: preferredScreen,
+                alignsToScreenTopTrailing: settings.taskHoverDisplayMode == .primary
+            )
         } else if isKeepingTaskHoverVisible {
             hideHoverPanel()
         }
@@ -1199,17 +1203,10 @@ private struct CapsuleMaterialRipple {
 private final class PetHoverPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         // AppKit normally keeps the complete panel inside visibleFrame. This
-        // panel includes a transparent shadow canvas, so that behavior creates
-        // a shadowInset-sized gap below the menu bar. Preserve AppKit's
-        // horizontal constraint but allow the transparent top inset to overlap
-        // the menu-bar window.
-        let constrained = super.constrainFrameRect(frameRect, to: screen)
-        return NSRect(
-            x: constrained.origin.x,
-            y: frameRect.origin.y,
-            width: frameRect.width,
-            height: frameRect.height
-        )
+        // panel includes a transparent shadow canvas. Constraining that canvas
+        // would add a shadowInset-sized visual gap at the top and right edges,
+        // so the controller constrains the visible card instead.
+        frameRect
     }
 }
 
@@ -1217,7 +1214,8 @@ private final class PetHoverPanel: NSPanel {
 private final class PetHoverPanelController {
     private static let cardSize = NSSize(width: 340, height: 112)
     private static let shadowInset: CGFloat = 20
-    private static let cardGapFromMenuBar: CGFloat = 4
+    private static let cardEdgeGap: CGFloat = 4
+    private static let anchoredPanelEdgeGap: CGFloat = 8
     private let panel: NSPanel
     private let model = PetHoverViewModel()
 
@@ -1299,7 +1297,11 @@ private final class PetHoverPanelController {
         model.isTaskActive = isActive
     }
 
-    func show(relativeTo button: NSStatusBarButton, preferredScreen: NSScreen? = nil) {
+    func show(
+        relativeTo button: NSStatusBarButton,
+        preferredScreen: NSScreen? = nil,
+        alignsToScreenTopTrailing: Bool = false
+    ) {
         guard let window = button.window else { return }
         let rectInWindow = button.convert(button.bounds, to: nil)
         let anchor = window.convertToScreen(rectInWindow)
@@ -1307,19 +1309,30 @@ private final class PetHoverPanelController {
         let sourceScreen = window.screen
         let targetScreen = preferredScreen ?? sourceScreen ?? NSScreen.main
         let screenFrame = targetScreen?.visibleFrame ?? .zero
-        let usesAnchorScreen = targetScreen === sourceScreen
-        var x = usesAnchorScreen
-            ? anchor.midX - size.width / 2
-            : screenFrame.maxX - size.width - 8
-        x = min(max(x, screenFrame.minX + 8), screenFrame.maxX - size.width - 8)
+        let usesAnchor = !alignsToScreenTopTrailing && targetScreen === sourceScreen
+        let x: CGFloat
+        if usesAnchor {
+            let proposedX = anchor.midX - size.width / 2
+            x = min(
+                max(proposedX, screenFrame.minX + Self.anchoredPanelEdgeGap),
+                screenFrame.maxX - size.width - Self.anchoredPanelEdgeGap
+            )
+        } else {
+            // Position the visible card, not its transparent shadow canvas, so
+            // its right gap matches the top gap exactly.
+            x = screenFrame.maxX
+                - Self.cardEdgeGap
+                - Self.cardSize.width
+                - Self.shadowInset
+        }
         // Anchor the visible card—not its transparent shadow canvas—to the
         // actual menu-bar edge. The status button's local vertical bounds can
         // vary by OS version and previously produced a much larger visual gap.
-        let menuBarBottom = usesAnchorScreen
+        let menuBarBottom = usesAnchor
             ? window.frame.minY
             : screenFrame.maxY
         let y = menuBarBottom
-            - Self.cardGapFromMenuBar
+            - Self.cardEdgeGap
             - Self.cardSize.height
             - Self.shadowInset
         panel.setFrameOrigin(NSPoint(x: x, y: y))

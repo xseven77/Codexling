@@ -303,9 +303,7 @@ struct UsagePanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(headerBackground)
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.codexLine.opacity(0.74))
-                .frame(height: 1)
+            CodexDivider()
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -335,9 +333,7 @@ struct UsagePanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(headerBackground)
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.codexLine.opacity(0.74))
-                .frame(height: 1)
+            CodexDivider()
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -408,9 +404,7 @@ struct UsagePanel: View {
         .frame(maxWidth: .infinity)
         .background(actionBarBackground)
         .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.codexLine)
-                .frame(height: 1)
+            CodexDivider()
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -498,9 +492,7 @@ struct UsagePanel: View {
         .frame(maxWidth: .infinity)
         .background(actionBarBackground)
         .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.codexLine)
-                .frame(height: 1)
+            CodexDivider()
         }
         .fixedSize(horizontal: false, vertical: true)
     }

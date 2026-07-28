@@ -131,6 +131,7 @@ private struct ResetCouponFusionCard: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var ripples: [CodexMaterialWaveToken] = []
+    @State private var trackFrameInCard: CGRect = .zero
 
     private var selected: ResetCouponDisplayItem {
         items[displayOrder[selectedIndex]]
@@ -138,18 +139,43 @@ private struct ResetCouponFusionCard: View {
 
     private var isDark: Bool { colorScheme == .dark }
 
+    private var timelineRange: (min: Date, max: Date) {
+        ResetCouponDateParser.timelineRange(for: displayOrder.map { items[$0].coupon })
+    }
+
+    private func dotCenter(for orderIndex: Int) -> CGPoint {
+        guard !displayOrder.isEmpty, trackFrameInCard.width > 0 else {
+            return CGPoint(x: 60, y: 60)
+        }
+        let itemIndex = displayOrder[orderIndex]
+        let coupon = items[itemIndex].coupon
+        let date = ResetCouponDateParser.date(from: coupon.expiresAt) ?? timelineRange.max
+        let fraction = ResetCouponDateParser.fraction(of: date, in: timelineRange)
+        let inset = ResetCouponTimelineTrack.dotInset
+        let usableWidth = max(0, trackFrameInCard.width - inset * 2)
+        return CGPoint(
+            x: trackFrameInCard.minX + inset + usableWidth * fraction,
+            y: trackFrameInCard.midY
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ResetCouponTimelineRail(
                 items: items,
                 displayOrder: displayOrder,
                 selectedIndex: selectedIndex,
+                range: timelineRange,
                 isDark: isDark,
-                onSelect: onSelect
+                cardSpace: Self.cardSpace,
+                onTrackFrameChange: { trackFrameInCard = $0 },
+                onSelect: { index in
+                    ripples.spawnWave(at: dotCenter(for: index))
+                    onSelect(index)
+                }
             )
 
-            Divider()
-                .overlay(Color.codexLine.opacity(isDark ? 0.35 : 0.55))
+            CodexDivider()
 
             ResetCouponGrantMessageSection(
                 coupon: selected.coupon,
@@ -158,7 +184,8 @@ private struct ResetCouponFusionCard: View {
                 isDark: isDark,
                 showsNext: displayOrder.count > 1,
                 onNext: {
-                    ripples.spawnWave(at: CGPoint(x: 120, y: 40))
+                    let nextIndex = (selectedIndex + 1) % displayOrder.count
+                    ripples.spawnWave(at: dotCenter(for: nextIndex))
                     onNext()
                 }
             )
@@ -185,12 +212,11 @@ private struct ResetCouponTimelineRail: View {
     let items: [ResetCouponDisplayItem]
     let displayOrder: [Int]
     let selectedIndex: Int
+    let range: (min: Date, max: Date)
     let isDark: Bool
+    let cardSpace: String
+    let onTrackFrameChange: (CGRect) -> Void
     let onSelect: (Int) -> Void
-
-    private var timelineRange: (min: Date, max: Date) {
-        ResetCouponDateParser.timelineRange(for: displayOrder.map { items[$0].coupon })
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -207,8 +233,10 @@ private struct ResetCouponTimelineRail: View {
                 items: items,
                 displayOrder: displayOrder,
                 selectedIndex: selectedIndex,
-                range: timelineRange,
+                range: range,
                 isDark: isDark,
+                cardSpace: cardSpace,
+                onFrameChange: onTrackFrameChange,
                 onSelect: onSelect
             )
 
@@ -236,11 +264,16 @@ private struct ResetCouponTimelineTrack: View {
     let selectedIndex: Int
     let range: (min: Date, max: Date)
     let isDark: Bool
+    let cardSpace: String
+    let onFrameChange: (CGRect) -> Void
     let onSelect: (Int) -> Void
+
+    static let dotInset: CGFloat = 12
 
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
+            let usableWidth = max(0, width - Self.dotInset * 2)
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
                     .fill(Color.codexTrack.opacity(isDark ? 0.85 : 1))
@@ -253,7 +286,7 @@ private struct ResetCouponTimelineTrack: View {
                         of: ResetCouponDateParser.date(from: coupon.expiresAt) ?? range.max,
                         in: range
                     )
-                    let x = width * fraction
+                    let x = Self.dotInset + usableWidth * fraction
                     let isSelected = orderIndex == selectedIndex
 
                     Button {
@@ -288,7 +321,17 @@ private struct ResetCouponTimelineTrack: View {
             }
         }
         .frame(height: 28)
-        .padding(.horizontal, 2)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear {
+                        onFrameChange(geometry.frame(in: .named(cardSpace)))
+                    }
+                    .onChange(of: geometry.frame(in: .named(cardSpace))) { _, frame in
+                        onFrameChange(frame)
+                    }
+            }
+        }
     }
 }
 
@@ -301,8 +344,6 @@ private struct ResetCouponTimelineMetaGrid: View {
             alignment: .leading,
             spacing: 3
         ) {
-            metaCell(title: "获得", value: ResetCouponDateParser.shortDate(from: coupon.grantedAt) ?? "—")
-            metaCell(title: "到期", value: ResetCouponDateParser.shortDate(from: coupon.expiresAt) ?? coupon.expiresAt)
             metaCell(title: "类型", value: ResetCouponDateParser.resetTypeLabel(coupon.resetType))
             metaCell(title: "状态", value: coupon.status ?? coupon.source)
         }
@@ -493,23 +534,19 @@ private enum ResetCouponDateParser {
     }
 
     static func timelineRange(for coupons: [ResetCoupon]) -> (min: Date, max: Date) {
-        var dates: [Date] = []
-        for coupon in coupons {
-            if let granted = date(from: coupon.grantedAt) { dates.append(granted) }
-            if let expires = date(from: coupon.expiresAt) { dates.append(expires) }
+        let today = Calendar.current.startOfDay(for: Date())
+        let expiresDates = coupons.compactMap { date(from: $0.expiresAt) }
+        guard let max = expiresDates.max(), max > today else {
+            return (today, today.addingTimeInterval(86400))
         }
-        guard let min = dates.min(), let max = dates.max(), min < max else {
-            let now = Date()
-            return (now, now.addingTimeInterval(86400))
-        }
-        return (min, max)
+        return (today, max)
     }
 
     static func fraction(of date: Date, in range: (min: Date, max: Date)) -> CGFloat {
         let span = range.max.timeIntervalSince(range.min)
         guard span > 0 else { return 0.5 }
         let raw = date.timeIntervalSince(range.min) / span
-        return CGFloat(min(max(raw, 0.04), 0.96))
+        return CGFloat(min(max(raw, 0), 1))
     }
 
     static func resetTypeLabel(_ value: String?) -> String {
