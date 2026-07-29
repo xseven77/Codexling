@@ -67,7 +67,7 @@ export function Hero() {
           </div>
         </div>
 
-        <div className="relative mx-auto mt-11 max-w-[560px] sm:mt-12">
+        <div className="relative mx-auto mt-11 max-w-[720px] sm:mt-12">
           <MenuBarPreview />
         </div>
       </div>

@@ -135,7 +135,8 @@ body {
 
   .animate-float,
   .animate-pulse-soft,
-  .status-capsule-wave {
+  .status-capsule-wave,
+  .status-edge-glow::before {
     animation: none;
   }
 }
@@ -187,6 +188,46 @@ body {
 @keyframes status-capsule-wave {
   to {
     transform: translateX(232%);
+  }
+}
+
+.status-edge-glow {
+  isolation: isolate;
+  background: var(--preview-card);
+  box-shadow:
+    0 6px 16px rgba(36, 41, 51, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+}
+
+.status-edge-glow::before {
+  position: absolute;
+  z-index: 0;
+  inset: -95%;
+  content: "";
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 218deg,
+    rgba(112, 70, 255, 0.12) 242deg,
+    rgba(112, 70, 255, 0.98) 278deg,
+    rgba(178, 143, 255, 0.8) 305deg,
+    transparent 334deg 360deg
+  );
+  animation: status-edge-spin 2.8s linear infinite;
+}
+
+.status-edge-glow__inner {
+  position: absolute;
+  z-index: 1;
+  inset: 1.5px;
+  border-radius: inherit;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.15), transparent),
+    var(--preview-card);
+}
+
+@keyframes status-edge-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
