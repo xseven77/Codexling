@@ -13,6 +13,10 @@ enum CodexActivityState: String, CaseIterable, Sendable {
     case completed
     case interrupted
 
+    var showsActivityWave: Bool {
+        self != .idle && self != .unavailable
+    }
+
     var statusBarText: String? {
         switch self {
         case .unavailable, .idle:
@@ -136,6 +140,33 @@ struct CodexActivitySnapshot: Equatable, Sendable {
         return cleanTitle.count > 44
             ? String(cleanTitle.prefix(43)) + "…"
             : cleanTitle
+    }
+}
+
+struct CodexActivitySnapshotStabilizer {
+    private var pendingRemovalTaskIDs: [String]?
+
+    mutating func resolve(
+        current: CodexActivitySnapshot,
+        candidate: CodexActivitySnapshot
+    ) -> CodexActivitySnapshot? {
+        let currentIDs = Set(current.activeTasks.map(\.id))
+        let candidateIDs = Set(candidate.activeTasks.map(\.id))
+        let removedIDs = currentIDs.subtracting(candidateIDs)
+
+        guard !removedIDs.isEmpty else {
+            pendingRemovalTaskIDs = nil
+            return candidate
+        }
+
+        let signature = candidate.activeTasks.map(\.id).sorted()
+        if pendingRemovalTaskIDs == signature {
+            pendingRemovalTaskIDs = nil
+            return candidate
+        }
+
+        pendingRemovalTaskIDs = signature
+        return nil
     }
 }
 
@@ -627,6 +658,7 @@ final class CodexActivityStore {
     private let service: CodexActivityService
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
+    private var snapshotStabilizer = CodexActivitySnapshotStabilizer()
 
     init(service: CodexActivityService = CodexActivityService()) {
         self.service = service
@@ -658,9 +690,15 @@ final class CodexActivityStore {
             }.value
             guard !Task.isCancelled, let self else { return }
             refreshTask = nil
-            if next != snapshot {
-                snapshot = next
-                onSnapshotChanged?(next)
+            guard let stable = snapshotStabilizer.resolve(
+                current: snapshot,
+                candidate: next
+            ) else {
+                return
+            }
+            if stable != snapshot {
+                snapshot = stable
+                onSnapshotChanged?(stable)
             }
         }
     }

@@ -5,6 +5,7 @@ import SwiftUI
 enum ActivityWaveTiming {
     static let duration: TimeInterval = 3.6
     static let capsuleDuration: TimeInterval = duration / 2
+    static let rotatingBorderDuration: TimeInterval = 2.4
 
     static func progress(at time: TimeInterval) -> CGFloat {
         CGFloat(time.truncatingRemainder(dividingBy: duration) / duration)
@@ -15,6 +16,186 @@ enum ActivityWaveTiming {
             time.truncatingRemainder(dividingBy: capsuleDuration)
                 / capsuleDuration
         )
+    }
+
+    static func rotatingBorderProgress(at time: TimeInterval) -> CGFloat {
+        CGFloat(
+            time.truncatingRemainder(dividingBy: rotatingBorderDuration)
+                / rotatingBorderDuration
+        )
+    }
+}
+
+enum ActivityCapsuleWavePresentation: Equatable {
+    case fill
+    case border(lineWidth: CGFloat)
+    case rotatingBorder(lineWidth: CGFloat)
+
+    func progress(at time: TimeInterval) -> CGFloat {
+        switch self {
+        case .rotatingBorder:
+            ActivityWaveTiming.rotatingBorderProgress(at: time)
+        case .fill, .border:
+            ActivityWaveTiming.capsuleProgress(at: time)
+        }
+    }
+}
+
+enum ActivityCapsuleWaveRenderer {
+    static func draw(
+        in context: CGContext,
+        containerBounds: CGRect,
+        capsuleRect: CGRect,
+        cornerRatio: CGFloat,
+        ink: NSColor,
+        progress: CGFloat,
+        presentation: ActivityCapsuleWavePresentation = .fill,
+        rotationDirection: CGFloat = 1
+    ) {
+        guard !containerBounds.isEmpty, !capsuleRect.isEmpty else { return }
+
+        let clampedCornerRatio = min(max(cornerRatio, 0.2), 0.5)
+        let clampedProgress = min(max(progress, 0), 1)
+        let waveWidth = max(72, containerBounds.width * 1.08)
+        let travelWidth = containerBounds.width + waveWidth * 2
+        let centerX = containerBounds.minX - waveWidth + travelWidth * clampedProgress
+        let waveRect = CGRect(
+            x: centerX - waveWidth / 2,
+            y: capsuleRect.minY,
+            width: waveWidth,
+            height: capsuleRect.height
+        )
+
+        context.saveGState()
+        let borderWidth: CGFloat = switch presentation {
+        case .fill: 0
+        case .border(let lineWidth), .rotatingBorder(let lineWidth):
+            max(0.5, lineWidth)
+        }
+        let pathRect = borderWidth > 0
+            ? capsuleRect.insetBy(dx: borderWidth / 2, dy: borderWidth / 2)
+            : capsuleRect
+        let capsulePath = CGPath(
+            roundedRect: pathRect,
+            cornerWidth: pathRect.height * clampedCornerRatio,
+            cornerHeight: pathRect.height * clampedCornerRatio,
+            transform: nil
+        )
+        context.addPath(capsulePath)
+        if borderWidth > 0 {
+            context.setLineWidth(borderWidth)
+            context.replacePathWithStrokedPath()
+        }
+        context.clip()
+        switch presentation {
+        case .fill, .border:
+            context.addPath(
+                CGPath(
+                    roundedRect: waveRect,
+                    cornerWidth: waveRect.height * clampedCornerRatio,
+                    cornerHeight: waveRect.height * clampedCornerRatio,
+                    transform: nil
+                )
+            )
+            context.clip()
+
+            let colors = [
+                ink.withAlphaComponent(0).cgColor,
+                ink.withAlphaComponent(ink.alphaComponent * 0.18).cgColor,
+                ink.withAlphaComponent(ink.alphaComponent * 0.52).cgColor,
+                ink.cgColor,
+            ] as CFArray
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: colors,
+                locations: [0, 0.44, 0.74, 1]
+            ) {
+                context.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: waveRect.minX, y: waveRect.midY),
+                    end: CGPoint(x: waveRect.maxX, y: waveRect.midY),
+                    options: []
+                )
+            }
+        case .rotatingBorder:
+            let colors: CFArray
+            let locations: [CGFloat]
+            if rotationDirection < 0 {
+                // AppKit's upward-positive Y axis needs a negative angle for
+                // clockwise motion. Reverse the comet at the same time so the
+                // bright head still leads and the translucent tail follows.
+                colors = [
+                    ink.withAlphaComponent(0).cgColor,
+                    ink.cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.72).cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.38).cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.14).cgColor,
+                    ink.withAlphaComponent(0).cgColor,
+                    ink.withAlphaComponent(0).cgColor,
+                ] as CFArray
+                locations = [0, 0.04, 0.11, 0.20, 0.30, 0.40, 1]
+            } else {
+                colors = [
+                    ink.withAlphaComponent(0).cgColor,
+                    ink.withAlphaComponent(0).cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.14).cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.38).cgColor,
+                    ink.withAlphaComponent(ink.alphaComponent * 0.72).cgColor,
+                    ink.cgColor,
+                    ink.withAlphaComponent(0).cgColor,
+                ] as CFArray
+                locations = [0, 0.60, 0.70, 0.80, 0.89, 0.96, 1]
+            }
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: colors,
+                locations: locations
+            ) {
+                CGContextDrawConicGradient(
+                    context,
+                    gradient,
+                    CGPoint(x: capsuleRect.midX, y: capsuleRect.midY),
+                    clampedProgress * .pi * 2 * rotationDirection
+                )
+            }
+        }
+        context.restoreGState()
+    }
+}
+
+struct ActivityCapsuleWave: View {
+    let isVisible: Bool
+    let ink: NSColor
+    var cornerRatio: CGFloat = 0.5
+    var presentation: ActivityCapsuleWavePresentation = .fill
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if isVisible {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
+                Canvas { context, size in
+                    let progress = reduceMotion
+                        ? CGFloat(0.5)
+                        : presentation.progress(
+                            at: timeline.date.timeIntervalSinceReferenceDate
+                        )
+                    context.withCGContext { cgContext in
+                        let bounds = CGRect(origin: .zero, size: size)
+                        ActivityCapsuleWaveRenderer.draw(
+                            in: cgContext,
+                            containerBounds: bounds,
+                            capsuleRect: bounds,
+                            cornerRatio: cornerRatio,
+                            ink: ink,
+                            progress: progress,
+                            presentation: presentation
+                        )
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 
@@ -174,8 +355,7 @@ final class StatusBarController: NSObject {
             isLoggedIn: store.isLoggedIn
         )
         let showsWave = settings.statusBarWaveEnabled
-            && activityState != .idle
-            && activityState != .unavailable
+            && activityState.showsActivityWave
         let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
         let compactText = activityState.statusBarText.map {
             "\($0)·\(quotaText)"
@@ -185,9 +365,16 @@ final class StatusBarController: NSObject {
             isLoggedIn: store.isLoggedIn,
             showsActivity: activityState.statusBarText != nil
         )
+        let indicatorColor = settings.statusBarIndicatorColorMode.resolvedNSColor(
+            activityState: activityState,
+            quotaHealth: health
+        ) ?? NSColor.secondaryLabelColor
+        let waveColor = settings.statusBarWaveColorMode.resolvedNSColor(
+            activityState: activityState,
+            quotaHealth: health
+        )
 
-        // The final design reserves the leading dot for task state. Pet
-        // animation remains available in the main window and hover card.
+        // Pet animation remains available in the main window and hover card.
         capsuleView?.petImage = nil
         capsuleView?.update(
             background: .neutral,
@@ -195,10 +382,10 @@ final class StatusBarController: NSObject {
             reservedText: reservedText,
             backgroundOpacity: CGFloat(settings.statusBarOpacityPercent / 100),
             colorScheme: settings.resolvedColorScheme,
-            foregroundColor: .white,
+            foregroundColor: nil,
             showsPet: false,
-            indicatorColor: health.nsColor,
-            waveColor: settings.statusBarWaveColorMode == .statusColor ? activityState.statusNSColor : nil,
+            indicatorColor: indicatorColor,
+            waveColor: waveColor,
             showsWave: showsWave,
             cornerRatio: cornerRatio
         )
@@ -605,6 +792,8 @@ final class StatusCapsuleView: NSView {
     private static let dotSize: CGFloat = 8
     private static let capsuleHeight: CGFloat = 24
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+    private static let activityFlowPresentation =
+        ActivityCapsuleWavePresentation.rotatingBorder(lineWidth: 2)
 
     var onClick: (() -> Void)?
     var onMouseEntered: (() -> Void)?
@@ -618,7 +807,7 @@ final class StatusCapsuleView: NSView {
     private var text = ""
     private var reservedText = ""
     private var backgroundOpacity: CGFloat = 0.20
-    private var foregroundColor = NSColor.labelColor
+    private var foregroundColor: NSColor?
     private var showsPet = true
     private var indicatorColor: NSColor?
     private var waveColor: NSColor?
@@ -672,8 +861,8 @@ final class StatusCapsuleView: NSView {
         materialRipples.count
     }
 
-    var activityWaveOriginForTesting: NSPoint {
-        activityWaveOrigin
+    var activityFlowPresentationForTesting: ActivityCapsuleWavePresentation {
+        Self.activityFlowPresentation
     }
 
     func update(
@@ -682,10 +871,10 @@ final class StatusCapsuleView: NSView {
         reservedText: String,
         backgroundOpacity: CGFloat = 0.20,
         colorScheme: ColorScheme = .light,
-        foregroundColor: NSColor,
+        foregroundColor: NSColor?,
         showsPet: Bool,
         indicatorColor: NSColor?,
-        waveColor: NSColor?,
+        waveColor: NSColor? = nil,
         showsWave: Bool,
         cornerRatio: CGFloat
     ) {
@@ -723,7 +912,7 @@ final class StatusCapsuleView: NSView {
         )
         drawNeutralSurface(in: outerPath)
         drawMaterialRipples(clippedTo: outerPath)
-        drawWave(clippedTo: outerPath)
+        drawWave()
 
         let indicatorWidth: CGFloat
         if showsPet, let petImage {
@@ -814,7 +1003,7 @@ final class StatusCapsuleView: NSView {
         let result = NSMutableAttributedString(
             string: text,
             attributes: [
-                .foregroundColor: foregroundColor,
+                .foregroundColor: foregroundColor ?? automaticForegroundColor,
                 .font: Self.font
             ]
         )
@@ -836,6 +1025,24 @@ final class StatusCapsuleView: NSView {
             searchRange = NSRange(location: nextLocation, length: source.length - nextLocation)
         }
         return result
+    }
+
+    private var automaticForegroundColor: NSColor {
+        Self.automaticForegroundColor(
+            backgroundOpacity: backgroundOpacity,
+            appearance: effectiveAppearance
+        )
+    }
+
+    static func automaticForegroundColor(
+        backgroundOpacity: CGFloat,
+        appearance: NSAppearance
+    ) -> NSColor {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let baseLuminance: CGFloat = isDark ? 0.10 : 0.94
+        let opacity = min(max(backgroundOpacity, 0), 1)
+        let blendedLuminance = baseLuminance * (1 - opacity) + opacity
+        return blendedLuminance >= 0.58 ? .black : .white
     }
 
     private var indicatorPadding: CGFloat {
@@ -885,9 +1092,10 @@ final class StatusCapsuleView: NSView {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func drawWave(clippedTo outerPath: NSBezierPath) {
+    private func drawWave() {
         guard showsWave else { return }
 
+        let presentation = Self.activityFlowPresentation
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let progress: CGFloat
         if reducedMotion {
@@ -895,48 +1103,28 @@ final class StatusCapsuleView: NSView {
         } else if let activityWaveProgressForTesting {
             progress = min(1, max(0, activityWaveProgressForTesting))
         } else {
-            progress = ActivityWaveTiming.capsuleProgress(
+            progress = presentation.progress(
                 at: Date.timeIntervalSinceReferenceDate
             )
         }
 
-        NSGraphicsContext.saveGraphicsState()
-        outerPath.addClip()
-
-        let waveWidth = max(72, bounds.width * 1.08)
-        let travelWidth = bounds.width + waveWidth * 2
-        let centerX = bounds.minX - waveWidth + travelWidth * progress
-        let waveRect = NSRect(
-            x: centerX - waveWidth / 2,
-            y: bounds.midY - Self.capsuleHeight / 2 + 0.25,
-            width: waveWidth,
-            height: Self.capsuleHeight - 0.5
-        )
-        let wavePath = NSBezierPath(
-            roundedRect: waveRect,
-            xRadius: waveRect.height * cornerRatio,
-            yRadius: waveRect.height * cornerRatio
-        )
-        wavePath.addClip()
-
-        let waveInk = waveColor ?? materialInkColor
-        NSGradient(
-            colorsAndLocations:
-                (waveInk.withAlphaComponent(0), 0),
-                (waveInk.withAlphaComponent(waveInk.alphaComponent * 0.18), 0.44),
-                (waveInk.withAlphaComponent(waveInk.alphaComponent * 0.52), 0.74),
-                (waveInk.withAlphaComponent(waveInk.alphaComponent), 1)
-        )?.draw(
-            in: waveRect,
-            angle: 0
-        )
-        NSGraphicsContext.restoreGraphicsState()
-    }
-
-    private var activityWaveOrigin: NSPoint {
-        NSPoint(
-            x: indicatorPadding + Self.dotSize / 2,
-            y: bounds.midY
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        ActivityCapsuleWaveRenderer.draw(
+            in: context,
+            containerBounds: bounds,
+            capsuleRect: NSRect(
+                x: 0.25,
+                y: bounds.midY - Self.capsuleHeight / 2 + 0.25,
+                width: max(0, bounds.width - 0.5),
+                height: Self.capsuleHeight - 0.5
+            ),
+            cornerRatio: cornerRatio,
+            ink: waveColor ?? materialInkColor,
+            progress: progress,
+            presentation: presentation,
+            // AppKit uses an upward-positive Y axis; negate the conic angle so
+            // the visible motion matches SwiftUI's clockwise border flow.
+            rotationDirection: -1
         )
     }
 

@@ -174,23 +174,67 @@ enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum StatusBarWaveColorMode: String, CaseIterable, Identifiable {
-    case statusColor
-    case neutral
+enum StatusCapsuleColorMode: String, CaseIterable, Identifiable {
+    case activityState
+    case quotaHealth
+    case purple
+    case blue
+    case cyan
+    case orange
+    case green
+    case red
 
     var id: String { rawValue }
 
+    static var activityFlowCases: [Self] {
+        allCases.filter { $0 != .quotaHealth }
+    }
+
     var title: String {
         switch self {
-        case .statusColor: "跟随状态"
-        case .neutral: "中性色"
+        case .activityState: "跟随任务状态"
+        case .quotaHealth: "跟随额度状态"
+        case .purple: "紫色"
+        case .blue: "蓝色"
+        case .cyan: "青色"
+        case .orange: "橙色"
+        case .green: "绿色"
+        case .red: "红色"
         }
     }
 
-    var symbolName: String {
+    var swatchColor: Color {
+        Color(nsColor: previewNSColor)
+    }
+
+    private var previewNSColor: NSColor {
         switch self {
-        case .statusColor: "paintpalette"
-        case .neutral: "circle.lefthalf.filled"
+        case .activityState, .purple:
+            NSColor(red: 0.478, green: 0.259, blue: 0.961, alpha: 1)
+        case .quotaHealth, .green:
+            NSColor(red: 0.122, green: 0.647, blue: 0.353, alpha: 1)
+        case .blue:
+            NSColor(red: 0.180, green: 0.420, blue: 1.000, alpha: 1)
+        case .cyan:
+            NSColor(red: 0.020, green: 0.631, blue: 0.800, alpha: 1)
+        case .orange:
+            NSColor(red: 0.949, green: 0.451, blue: 0.078, alpha: 1)
+        case .red:
+            NSColor(red: 0.929, green: 0.220, blue: 0.302, alpha: 1)
+        }
+    }
+
+    func resolvedNSColor(
+        activityState: CodexActivityState,
+        quotaHealth: QuotaHealthLevel
+    ) -> NSColor? {
+        switch self {
+        case .activityState:
+            activityState.statusNSColor
+        case .quotaHealth:
+            quotaHealth.nsColor
+        case .purple, .blue, .cyan, .orange, .green, .red:
+            previewNSColor
         }
     }
 }
@@ -209,6 +253,7 @@ final class AppSettingsStore {
         static let petsEnabled = "codexling.petsEnabled"
         static let selectedPetID = "codexling.selectedPetID"
         static let petBackgroundColor = "codexling.petBackgroundColor"
+        static let statusBarIndicatorColorMode = "codexling.statusBarIndicatorColorMode"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
         static let statusBarWaveColorMode = "codexling.statusBarWaveColorMode"
         static let autoOpenTaskHoverEnabled = "codexling.autoOpenTaskHoverEnabled"
@@ -261,7 +306,7 @@ final class AppSettingsStore {
     }
 
     // 保留 UserDefaults 键值以兼容旧版本设置，但当前胶囊不再使用此颜色
-    // （文字已固定为白色，圆灯固定为额度颜色）。
+    // （状态栏文字现按实际背景自动取黑/白，圆灯由单独的颜色模式控制）。
     var petBackgroundColor: StatusBarPetBackgroundColor {
         didSet {
             guard petBackgroundColor != oldValue else { return }
@@ -278,7 +323,18 @@ final class AppSettingsStore {
         }
     }
 
-    var statusBarWaveColorMode: StatusBarWaveColorMode {
+    var statusBarIndicatorColorMode: StatusCapsuleColorMode {
+        didSet {
+            guard statusBarIndicatorColorMode != oldValue else { return }
+            defaults.set(
+                statusBarIndicatorColorMode.rawValue,
+                forKey: Keys.statusBarIndicatorColorMode
+            )
+            onPetSettingsChanged?()
+        }
+    }
+
+    var statusBarWaveColorMode: StatusCapsuleColorMode {
         didSet {
             guard statusBarWaveColorMode != oldValue else { return }
             defaults.set(statusBarWaveColorMode.rawValue, forKey: Keys.statusBarWaveColorMode)
@@ -382,9 +438,15 @@ final class AppSettingsStore {
         selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
         let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
         petBackgroundColor = backgroundRaw.flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
+        statusBarIndicatorColorMode = defaults.string(forKey: Keys.statusBarIndicatorColorMode)
+            .flatMap(StatusCapsuleColorMode.init(rawValue:)) ?? .activityState
         statusBarWaveEnabled = defaults.object(forKey: Keys.statusBarWaveEnabled) as? Bool ?? true
-        statusBarWaveColorMode = defaults.string(forKey: Keys.statusBarWaveColorMode)
-            .flatMap(StatusBarWaveColorMode.init(rawValue:)) ?? .statusColor
+        let savedWaveColorMode = defaults.string(forKey: Keys.statusBarWaveColorMode)
+        statusBarWaveColorMode = savedWaveColorMode.flatMap { rawValue in
+            ["statusColor", "neutral", StatusCapsuleColorMode.quotaHealth.rawValue].contains(rawValue)
+                ? .activityState
+                : StatusCapsuleColorMode(rawValue: rawValue)
+        } ?? .activityState
         autoOpenTaskHoverEnabled =
             defaults.object(forKey: Keys.autoOpenTaskHoverEnabled) as? Bool ?? true
         taskHoverDisplayMode = defaults.string(forKey: Keys.taskHoverDisplayMode)
@@ -415,6 +477,7 @@ final class AppSettingsStore {
             Keys.petsEnabled,
             Keys.selectedPetID,
             Keys.petBackgroundColor,
+            Keys.statusBarIndicatorColorMode,
             Keys.statusBarWaveEnabled,
             Keys.statusBarWaveColorMode,
             Keys.autoOpenTaskHoverEnabled,

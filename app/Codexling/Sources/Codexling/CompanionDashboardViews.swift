@@ -35,6 +35,18 @@ struct CompanionDashboardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color.codexInk)
+        .overlay(alignment: .topLeading) {
+            if store.isLoggedIn, layout == .window {
+                verticalDashboardHeightProbe
+            }
+        }
+        .onPreferenceChange(DashboardMeasuredContentSizeKey.self) { size in
+            guard layout == .window,
+                  DetachedWindowMetrics.isValidVerticalMeasurement(size) else {
+                return
+            }
+            onMeasuredContentHeightChange(size.height)
+        }
         .onChange(of: activityStore.snapshot.activeTasks.map(\.id)) { _, ids in
             if let selectedTaskID, !ids.contains(selectedTaskID) {
                 self.selectedTaskID = ids.first
@@ -151,7 +163,7 @@ struct CompanionDashboardView: View {
             onOpenSettings: onOpenSettings
         )
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
-        .padding(.bottom, layout == .window ? 25 : 16)
+        .padding(.bottom, layout == .window ? 14 : 16)
     }
 
     private var quotaSection: some View {
@@ -187,20 +199,12 @@ struct CompanionDashboardView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .background {
                         Color.codexCard.ignoresSafeArea()
-                    }
+                }
             }
-        }
-        .onPreferenceChange(DashboardMeasuredContentHeightKey.self) { height in
-            guard layout == .window, height > 1 else { return }
-            onMeasuredContentHeightChange(height)
-        }
-        .onChange(of: verticalDashboardMeasureIdentity) { _, _ in
-            guard layout == .window else { return }
-            onMeasuredContentHeightChange(-1)
         }
     }
 
-    /// 竖向独立窗口：GeometryReader 贴 contentView；Spacer 压 footer；高度由 Preference 上报。
+    /// 竖向独立窗口使用切换前预排版得到的自然高度，不在内容区引入滚动。
     private var verticalDashboardWindowLayout: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
@@ -213,26 +217,12 @@ struct CompanionDashboardView: View {
                 Color.codexCard
             }
         }
-        .overlay(alignment: .topLeading) {
-            verticalDashboardMeasureColumn
-                .fixedSize(horizontal: false, vertical: true)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: DashboardMeasuredContentHeightKey.self,
-                            value: geometry.size.height
-                        )
-                    }
-                }
-                .opacity(0)
-                .allowsHitTesting(false)
-        }
-        .id(verticalDashboardMeasureIdentity)
     }
 
     private var verticalDashboardHeaderStack: some View {
         VStack(spacing: 0) {
             CompanionPetHeader(
+                snapshot: store.snapshot,
                 activity: activityStore.snapshot,
                 settings: settings,
                 frameStore: frameStore,
@@ -283,22 +273,43 @@ struct CompanionDashboardView: View {
         .padding(.bottom, 14)
     }
 
-    private var verticalDashboardMeasureIdentity: String {
-        [
-            String(store.snapshot.resetCoupons.count),
-            store.snapshot.showsSubscriptionExpiryReminder ? "1" : "0",
-            store.snapshot.hasShortWindow ? "1" : "0",
-            store.snapshot.hasWeeklyWindow ? "1" : "0",
-            String(activityStore.snapshot.activeTasks.count),
-        ].joined(separator: "-")
-    }
-
     private var verticalDashboardMeasureColumn: some View {
         VStack(spacing: 0) {
             verticalDashboardHeaderStack
             verticalDashboardSyncFooter
         }
-        .id(verticalDashboardMeasureIdentity)
+    }
+
+    /// 横版显示期间就按 330pt 宽度排好竖版并缓存高度，方向切换时可一次完成 resize。
+    private var verticalDashboardHeightProbe: some View {
+        verticalDashboardMeasureColumn
+            .frame(width: DetachedWindowMetrics.verticalDashboardWidth, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: DashboardMeasuredContentSizeKey.self,
+                        value: geometry.size
+                    )
+                }
+            }
+            .id(verticalDashboardMeasureIdentity)
+            .hidden()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    private var verticalDashboardMeasureIdentity: String {
+        let coupons = store.snapshot.resetCoupons.map {
+            "\($0.id):\($0.count):\($0.description ?? "")"
+        }.joined(separator: "|")
+        return [
+            coupons,
+            store.snapshot.subscriptionExpiryReminderMessage ?? "",
+            store.snapshot.hasShortWindow ? "1" : "0",
+            store.snapshot.hasWeeklyWindow ? "1" : "0",
+            String(activityStore.snapshot.activeTasks.count),
+        ].joined(separator: "-")
     }
 
     private var verticalQuotaSection: some View {
@@ -325,11 +336,14 @@ struct CompanionDashboardView: View {
     }
 }
 
-enum DashboardMeasuredContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+enum DashboardMeasuredContentSizeKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.height > value.height {
+            value = next
+        }
     }
 }
 
@@ -377,8 +391,16 @@ enum CompanionCopy {
 /// 陪伴胶囊：Pet 名 + 当前活动状态，横竖两版只有高度不同。
 private struct CompanionStatusCapsule: View {
     let activity: CodexActivitySnapshot
+    let quotaHealth: QuotaHealthLevel
     let petName: String?
     let height: CGFloat
+    let waveEnabled: Bool
+    let waveColorMode: StatusCapsuleColorMode
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var showsActivityFlow: Bool {
+        waveEnabled && activity.state.showsActivityWave
+    }
 
     var body: some View {
         HStack(spacing: 5) {
@@ -391,8 +413,33 @@ private struct CompanionStatusCapsule: View {
         .font(.system(size: 11, weight: .semibold))
         .padding(.horizontal, 10)
         .frame(height: height)
-        .background(Color.codexCard.opacity(0.92), in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.7))
+        .background {
+            ZStack {
+                Color.codexCard.opacity(0.92)
+                ActivityCapsuleWave(
+                    isVisible: showsActivityFlow,
+                    ink: waveInk,
+                    presentation: .rotatingBorder(lineWidth: 2)
+                )
+            }
+            .clipShape(Capsule())
+        }
+        .clipShape(Capsule())
+        .overlay {
+            if !showsActivityFlow {
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.72), lineWidth: 0.7)
+            }
+        }
+    }
+
+    private var waveInk: NSColor {
+        waveColorMode.resolvedNSColor(
+            activityState: activity.state,
+            quotaHealth: quotaHealth
+        ) ?? (colorScheme == .dark
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.black.withAlphaComponent(0.10))
     }
 }
 
@@ -454,6 +501,7 @@ private struct CompanionPetHeader: View {
     /// 让出无标题栏窗口左上角的交通灯与右上角的置顶按钮。
     private static let chromeTopPadding: CGFloat = 34
 
+    let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
@@ -482,8 +530,14 @@ private struct CompanionPetHeader: View {
 
                 CompanionStatusCapsule(
                     activity: activity,
+                    quotaHealth: QuotaHealthLevel.from(
+                        window: snapshot.primaryWindow,
+                        isLoggedIn: true
+                    ),
                     petName: settings.selectedPet?.displayName,
-                    height: 28
+                    height: 28,
+                    waveEnabled: settings.statusBarWaveEnabled,
+                    waveColorMode: settings.statusBarWaveColorMode
                 )
 
                 Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
@@ -735,8 +789,14 @@ private struct CompanionSidebar: View {
         VStack(spacing: 0) {
             CompanionStatusCapsule(
                 activity: activity,
+                quotaHealth: QuotaHealthLevel.from(
+                    window: snapshot.primaryWindow,
+                    isLoggedIn: true
+                ),
                 petName: settings.selectedPet?.displayName,
-                height: 30
+                height: 30,
+                waveEnabled: settings.statusBarWaveEnabled,
+                waveColorMode: settings.statusBarWaveColorMode
             )
 
             Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")

@@ -280,16 +280,19 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusCapsuleActivityWaveStartsAtTaskIndicator() {
+    func testStatusCapsuleUsesTheSharedRotatingBorderFlow() {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
 
-        XCTAssertEqual(view.activityWaveOriginForTesting.x, 11.5, accuracy: 0.001)
-        XCTAssertEqual(view.activityWaveOriginForTesting.y, 12, accuracy: 0.001)
+        XCTAssertEqual(
+            view.activityFlowPresentationForTesting,
+            .rotatingBorder(lineWidth: 2)
+        )
     }
 
-    func testStatusCapsuleRunsTwicePerHoverWaveOnTheSharedTimeline() {
+    func testActivityWaveTimingsRemainSharedAcrossSurfaces() {
         XCTAssertEqual(ActivityWaveTiming.duration, 3.6)
         XCTAssertEqual(ActivityWaveTiming.capsuleDuration, 1.8)
+        XCTAssertEqual(ActivityWaveTiming.rotatingBorderDuration, 2.4)
         XCTAssertEqual(ActivityWaveTiming.progress(at: 0), 0, accuracy: 0.001)
         XCTAssertEqual(ActivityWaveTiming.progress(at: 1.8), 0.5, accuracy: 0.001)
         XCTAssertEqual(ActivityWaveTiming.progress(at: 3.6), 0, accuracy: 0.001)
@@ -297,6 +300,23 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 0.9), 0.5, accuracy: 0.001)
         XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 1.8), 0, accuracy: 0.001)
         XCTAssertEqual(ActivityWaveTiming.capsuleProgress(at: 3.6), 0, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.rotatingBorderProgress(at: 1.2), 0.5, accuracy: 0.001)
+        XCTAssertEqual(ActivityWaveTiming.rotatingBorderProgress(at: 2.4), 0, accuracy: 0.001)
+    }
+
+    func testOnlyActiveCodexStatesShowTheSharedActivityWave() {
+        XCTAssertFalse(CodexActivityState.unavailable.showsActivityWave)
+        XCTAssertFalse(CodexActivityState.idle.showsActivityWave)
+
+        let activeStates: [CodexActivityState] = [
+            .thinking,
+            .executing,
+            .reviewing,
+            .waitingForUser,
+            .completed,
+            .interrupted,
+        ]
+        XCTAssertTrue(activeStates.allSatisfy(\.showsActivityWave))
     }
 
     @MainActor
@@ -324,6 +344,72 @@ final class CodexlingTests: XCTestCase {
         settings.statusBarWaveEnabled = false
         let restored = AppSettingsStore(defaults: defaults)
         XCTAssertFalse(restored.statusBarWaveEnabled)
+    }
+
+    @MainActor
+    func testStatusBarIndicatorDefaultsToActivityStateAndPersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.statusBarIndicatorColorMode, .activityState)
+
+        settings.statusBarIndicatorColorMode = .quotaHealth
+        XCTAssertEqual(
+            AppSettingsStore(defaults: defaults).statusBarIndicatorColorMode,
+            .quotaHealth
+        )
+    }
+
+    @MainActor
+    func testStatusCapsuleSolidColorsPersistAndLegacyNeutralMigrates() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        settings.statusBarIndicatorColorMode = .cyan
+        settings.statusBarWaveColorMode = .orange
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(restored.statusBarIndicatorColorMode, .cyan)
+        XCTAssertEqual(restored.statusBarWaveColorMode, .orange)
+        XCTAssertFalse(StatusCapsuleColorMode.allCases.map(\.rawValue).contains("neutral"))
+        XCTAssertFalse(StatusCapsuleColorMode.activityFlowCases.contains(.quotaHealth))
+
+        defaults.set("neutral", forKey: "codexling.statusBarWaveColorMode")
+        XCTAssertEqual(
+            AppSettingsStore(defaults: defaults).statusBarWaveColorMode,
+            .activityState
+        )
+
+        defaults.set("quotaHealth", forKey: "codexling.statusBarWaveColorMode")
+        XCTAssertEqual(
+            AppSettingsStore(defaults: defaults).statusBarWaveColorMode,
+            .activityState
+        )
+    }
+
+    @MainActor
+    func testStatusCapsuleAutomaticForegroundContrastsWithMenuBarBackground() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+
+        XCTAssertEqual(
+            StatusCapsuleView.automaticForegroundColor(
+                backgroundOpacity: 0.20,
+                appearance: light
+            ),
+            .black
+        )
+        XCTAssertEqual(
+            StatusCapsuleView.automaticForegroundColor(
+                backgroundOpacity: 0.20,
+                appearance: dark
+            ),
+            .white
+        )
     }
 
     @MainActor
@@ -1092,6 +1178,81 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(snapshot.activeTasks.contains { $0.id == "thread-guardian" })
     }
 
+    func testActivitySnapshotStabilizerIgnoresOneTransientTaskRemoval() {
+        let now = Date()
+        let first = CodexTaskActivity(
+            id: "first",
+            state: .thinking,
+            detail: "分析中",
+            title: "任务一",
+            updatedAt: now
+        )
+        let second = CodexTaskActivity(
+            id: "second",
+            state: .executing,
+            detail: "执行中",
+            title: "任务二",
+            updatedAt: now
+        )
+        let current = CodexActivitySnapshot(
+            state: .thinking,
+            detail: first.detail,
+            threadTitle: first.title,
+            activeTaskCount: 2,
+            updatedAt: now,
+            activeTasks: [first, second]
+        )
+        let transient = CodexActivitySnapshot(
+            state: .thinking,
+            detail: first.detail,
+            threadTitle: first.title,
+            activeTaskCount: 1,
+            updatedAt: now,
+            activeTasks: [first]
+        )
+        var stabilizer = CodexActivitySnapshotStabilizer()
+
+        XCTAssertNil(stabilizer.resolve(current: current, candidate: transient))
+        XCTAssertEqual(
+            stabilizer.resolve(current: current, candidate: current),
+            current
+        )
+        XCTAssertNil(stabilizer.resolve(current: current, candidate: transient))
+    }
+
+    func testActivitySnapshotStabilizerAcceptsConfirmedTaskRemoval() {
+        let now = Date()
+        let task = CodexTaskActivity(
+            id: "task",
+            state: .executing,
+            detail: "执行中",
+            title: "任务",
+            updatedAt: now
+        )
+        let current = CodexActivitySnapshot(
+            state: .executing,
+            detail: task.detail,
+            threadTitle: task.title,
+            activeTaskCount: 1,
+            updatedAt: now,
+            activeTasks: [task]
+        )
+        let idle = CodexActivitySnapshot(
+            state: .idle,
+            detail: "当前没有正在执行的 Codex 任务",
+            threadTitle: task.title,
+            activeTaskCount: 0,
+            updatedAt: now
+        )
+        var stabilizer = CodexActivitySnapshotStabilizer()
+
+        XCTAssertNil(stabilizer.resolve(current: current, candidate: idle))
+        XCTAssertEqual(
+            stabilizer.resolve(current: current, candidate: idle),
+            idle
+        )
+    }
+
     func testActivityServicePrefersIndexedThreadNameAndLoadsTaskMetadata() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-title-db-\(UUID().uuidString)", isDirectory: true)
@@ -1349,6 +1510,21 @@ final class CodexlingTests: XCTestCase {
         )
         XCTAssertEqual(unmeasured.width, DetachedWindowMetrics.verticalDashboardWidth)
         XCTAssertEqual(unmeasured.height, DetachedWindowMetrics.verticalProvisionalHeight)
+        XCTAssertEqual(
+            DetachedWindowMetrics.verticalProvisionalHeight,
+            DetachedWindowMetrics.loggedInDashboardHeight
+        )
+
+        XCTAssertFalse(
+            DetachedWindowMetrics.isValidVerticalMeasurement(
+                CGSize(width: DetachedWindowMetrics.dashboardWidth, height: 480)
+            )
+        )
+        XCTAssertTrue(
+            DetachedWindowMetrics.isValidVerticalMeasurement(
+                CGSize(width: DetachedWindowMetrics.verticalDashboardWidth, height: 638.4)
+            )
+        )
 
         let measured = DetachedWindowMetrics.fixedDashboardContentSize(
             isLoggedIn: true,

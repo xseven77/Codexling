@@ -76,10 +76,13 @@ struct SettingsView: View {
             showToast("主界面布局：\(orientation.title)")
         }
         .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
-            showToast("活动状态 Wave 已\(enabled ? "开启" : "关闭")")
+            showToast("活动流光已\(enabled ? "开启" : "关闭")")
+        }
+        .onChange(of: settings.statusBarIndicatorColorMode) { _, mode in
+            showToast("状态圆灯颜色：\(mode.title)")
         }
         .onChange(of: settings.statusBarWaveColorMode) { _, mode in
-            showToast("Wave 颜色：\(mode.title)")
+            showToast("活动流光颜色：\(mode.title)")
         }
         .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
             showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
@@ -415,44 +418,64 @@ struct SettingsView: View {
             ) {
                 VStack(spacing: 0) {
                 SettingsInlineRow(
-                    title: "胶囊透明度",
-                    subtitle: "调整状态栏胶囊纯白背景的透明程度"
+                    title: "胶囊背景透明度",
+                    subtitle: "调整状态栏胶囊白色背景的透明度"
                 ) {
                     SettingsPercentageSlider(value: $settings.statusBarOpacityPercent)
                 }
                 CodexDivider()
 
                 SettingsInlineRow(
-                    title: "活动状态 Wave",
-                    subtitle: "非空闲时，从状态栏圆灯向外扩散并驱动任务浮窗动画"
-                ) {
-                    SettingsSwitch(isOn: $settings.statusBarWaveEnabled)
-                }
-                CodexDivider()
-
-                SettingsInlineRow(
-                    title: "Wave 颜色",
-                    subtitle: "跟随任务状态色（紫/蓝/青/橙）或使用中性色"
+                    title: "状态圆灯颜色",
+                    subtitle: "选择跟随任务状态、额度状态或固定单色"
                 ) {
                     SettingsMenuPicker(
-                        selection: $settings.statusBarWaveColorMode,
-                        options: StatusBarWaveColorMode.allCases,
-                        title: \.title
+                        selection: $settings.statusBarIndicatorColorMode,
+                        options: StatusCapsuleColorMode.allCases,
+                        title: \.title,
+                        swatchColor: \.swatchColor
                     )
                 }
                 CodexDivider()
 
                 SettingsInlineRow(
-                    title: "任务浮窗自动展开",
-                    subtitle: "Codex 开始工作时自动显示；关闭后仍可悬停胶囊查看"
+                    title: "活动流光",
+                    subtitle: "任务活动时，在状态栏和 Pet 胶囊显示顺时针边缘流光"
                 ) {
-                    SettingsSwitch(isOn: $settings.autoOpenTaskHoverEnabled)
+                    SettingsSwitch(
+                        isOn: $settings.statusBarWaveEnabled,
+                        accessibilityLabel: "活动流光"
+                    )
                 }
                 CodexDivider()
 
                 SettingsInlineRow(
-                    title: "任务浮窗显示器",
-                    subtitle: "选择执行任务时自动出现的浮窗位置"
+                    title: "活动流光颜色",
+                    subtitle: "选择跟随任务状态或固定单色"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.statusBarWaveColorMode,
+                        options: StatusCapsuleColorMode.activityFlowCases,
+                        title: \.title,
+                        swatchColor: \.swatchColor
+                    )
+                }
+                CodexDivider()
+
+                SettingsInlineRow(
+                    title: "自动展开任务浮窗",
+                    subtitle: "Codex 开始工作时自动显示；关闭后仍可悬停胶囊查看"
+                ) {
+                    SettingsSwitch(
+                        isOn: $settings.autoOpenTaskHoverEnabled,
+                        accessibilityLabel: "自动展开任务浮窗"
+                    )
+                }
+                CodexDivider()
+
+                SettingsInlineRow(
+                    title: "任务浮窗显示位置",
+                    subtitle: "选择任务浮窗自动出现的显示器"
                 ) {
                     SettingsMenuPicker(
                         selection: $settings.taskHoverDisplayMode,
@@ -552,7 +575,7 @@ struct SettingsView: View {
     private var thirdPartyPetResourcesSection: some View {
         SettingsSection(
             title: "更多 Pet",
-            subtitle: "到下列站点下载更多精灵，放入 ~/.codex/pets 后点「重新扫描」。感谢 codex-pets.net 与 GitHub 社区的整理与分享。"
+            subtitle: "到下列站点下载更多精灵，放入 ~/.codex/pets 后点「重新扫描」。感谢 Petdex、codex-pets.net 与 GitHub 社区的整理与分享。"
         ) {
             VStack(spacing: 0) {
                 SettingsExternalLinkRow(
@@ -560,6 +583,13 @@ struct SettingsView: View {
                     title: "codex-pets.net",
                     subtitle: "Pet 资源站",
                     url: URL(string: "https://codex-pets.net/")!
+                )
+                CodexDivider()
+                SettingsExternalLinkRow(
+                    icon: .symbol("safari"),
+                    title: "Petdex",
+                    subtitle: "Coding Agent Pet 图鉴",
+                    url: URL(string: "https://petdex.dev/")!
                 )
                 CodexDivider()
                 SettingsExternalLinkRow(
@@ -1028,9 +1058,18 @@ private struct SettingsInlineRow<Content: View>: View {
 private struct SettingsMenuTriggerLabel: View {
     let title: String
     var fontSize: CGFloat = 13
+    var swatchColor: Color? = nil
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
+            if let swatchColor {
+                Circle()
+                    .fill(swatchColor)
+                    .frame(width: 8, height: 8)
+                    .overlay {
+                        Circle().stroke(Color.white.opacity(0.72), lineWidth: 0.7)
+                    }
+            }
             Text(title)
                 .lineLimit(1)
             Image(systemName: "chevron.down")
@@ -1094,13 +1133,17 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
     @Binding var selection: Option
     let options: [Option]
     let title: (Option) -> String
+    var swatchColor: (Option) -> Color? = { _ in nil }
     @State private var isPresented = false
 
     var body: some View {
         Button {
             isPresented.toggle()
         } label: {
-            SettingsMenuTriggerLabel(title: title(selection))
+            SettingsMenuTriggerLabel(
+                title: title(selection),
+                swatchColor: swatchColor(selection)
+            )
         }
         .buttonStyle(CodexPressableStyle(cornerRadius: 7))
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -1111,6 +1154,14 @@ private struct SettingsMenuPicker<Option: Hashable & Identifiable>: View {
                         isPresented = false
                     } label: {
                         HStack(spacing: 8) {
+                            if let color = swatchColor(option) {
+                                Circle()
+                                    .fill(color)
+                                    .frame(width: 9, height: 9)
+                                    .overlay {
+                                        Circle().stroke(Color.white.opacity(0.72), lineWidth: 0.7)
+                                    }
+                            }
                             Text(title(option))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             if selection == option {
@@ -1153,6 +1204,7 @@ private struct SettingsPercentageSlider: View {
 
 private struct SettingsSwitch: View {
     @Binding var isOn: Bool
+    let accessibilityLabel: String
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -1174,7 +1226,7 @@ private struct SettingsSwitch: View {
             .contentShape(Capsule())
         }
         .buttonStyle(SettingsSwitchButtonStyle())
-        .accessibilityLabel("活动状态 Wave")
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(isOn ? "已开启" : "已关闭")
         .accessibilityAddTraits(.isButton)
     }

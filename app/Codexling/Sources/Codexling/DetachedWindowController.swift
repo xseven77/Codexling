@@ -24,15 +24,16 @@ enum DetachedWindowMetrics {
     static let verticalDashboardWidth: CGFloat = 330
     static let verticalContentPadding: CGFloat = 14
     /// 竖向独立窗口首帧占位（测出后 `setContentSize` 收敛）。
-    static let verticalProvisionalHeight: CGFloat = 480
+    /// 不低于横版高度，避免方向切换期间短暂塌成只显示任务卡的窗口。
+    static var verticalProvisionalHeight: CGFloat { loggedInDashboardHeight }
     static let verticalMinHeight: CGFloat = 360
 
     static let maxWidth: CGFloat = 680
     static let minHeight: CGFloat = 420
     static let maxHeight: CGFloat = 960
     static let loginDashboardHeight: CGFloat = 440
-    /// 横版已登录：510pt 为旧稿；含 M1 重置券融合区后固定 670pt（579×670）。
-    static let loggedInDashboardHeight: CGFloat = 670
+    /// 横版已登录：包含 M1 重置券融合区；略微收紧券卡与底部工具栏之间的留白。
+    static let loggedInDashboardHeight: CGFloat = 658
     static let horizontalMinHeight: CGFloat = 420
 
     static func dashboardWidth(for orientation: DashboardOrientation) -> CGFloat {
@@ -40,6 +41,11 @@ enum DetachedWindowMetrics {
         case .horizontal: dashboardWidth
         case .vertical: verticalDashboardWidth
         }
+    }
+
+    static func isValidVerticalMeasurement(_ size: CGSize) -> Bool {
+        size.height > 1
+            && abs(size.width - verticalDashboardWidth) < 1
     }
     /// 设置页首次打开时先用屏幕允许的最大高度布局，避免在滚动模式下测不准内容高度。
     static func settingsWindowProvisionalHeight(screen: NSScreen? = nil) -> CGFloat {
@@ -178,6 +184,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var isRelocatingToScreen = false
     private var isWindowMoving = false
     private var pendingDashboardHeightWorkItem: DispatchWorkItem?
+    /// 使已经取消但仍进入执行队列的旧测高任务失效。
+    private var dashboardHeightCommitGeneration = 0
     private var userMoveMouseUpMonitor: Any?
     /// 用户拖窗结束后短暂禁止改高度，避免顶边锚定 resize 造成松手瞬移。
     private var suppressDashboardHeightCommitUntil: Date?
@@ -235,9 +243,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 },
                 onDashboardMeasuredHeight: { [weak self] height in
                     guard let self else { return }
-                    if height < 0 {
-                        self.invalidateDashboardMeasuredHeight()
-                    } else if height > 1 {
+                    if height > 1 {
                         self.commitDashboardMeasuredHeight(height)
                     }
                 }
@@ -380,13 +386,11 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         if enteringSettings {
             settingsMeasuredContentHeight = nil
         }
-        if case let .dashboard(loggedIn, orientation) = mode {
-            if orientation == .horizontal {
-                dashboardMeasuredHeight = nil
-            } else if case let .dashboard(previousLoggedIn, previousOrientation) = contentMode,
-                      loggedIn != previousLoggedIn || orientation != previousOrientation {
-                dashboardMeasuredHeight = nil
-            }
+        if contentMode != mode {
+            cancelPendingDashboardHeightCommit()
+        }
+        if case let .dashboard(isLoggedIn, _) = mode, !isLoggedIn {
+            dashboardMeasuredHeight = nil
         }
         contentMode = mode
         applyWindowInteraction(for: mode)
@@ -465,15 +469,30 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         guard case let .dashboard(isLoggedIn, orientation) = contentMode, isLoggedIn else {
             return
         }
-        guard orientation == .vertical else { return }
+
+        let floor = DetachedWindowMetrics.verticalMinHeight
+        let measured = max(floor, ceil(height))
+        guard measured > 1 else { return }
+
+        // 横版时只缓存 330pt 竖版的预排版高度，不改变当前窗口。
+        if orientation == .horizontal {
+            cancelPendingDashboardHeightCommit()
+            dashboardMeasuredHeight = measured
+            return
+        }
+
         guard !isWindowMoving else { return }
         if let until = suppressDashboardHeightCommitUntil, Date() < until {
             return
         }
 
-        pendingDashboardHeightWorkItem?.cancel()
+        cancelPendingDashboardHeightCommit()
+        guard dashboardMeasuredHeight != measured else { return }
+        let generation = dashboardHeightCommitGeneration
+
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.isWindowMoving else { return }
+            guard self.dashboardHeightCommitGeneration == generation else { return }
             if let until = self.suppressDashboardHeightCommitUntil, Date() < until {
                 return
             }
@@ -482,13 +501,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 return
             }
 
-            let floor = DetachedWindowMetrics.verticalMinHeight
-            let measured = max(floor, ceil(height))
-            guard measured > 1 else { return }
-
             guard self.dashboardMeasuredHeight != measured else { return }
 
             self.dashboardMeasuredHeight = measured
+            self.pendingDashboardHeightWorkItem = nil
             self.resizeWindowToDashboardContent(
                 isLoggedIn: true,
                 orientation: .vertical,
@@ -497,22 +513,20 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             )
         }
         pendingDashboardHeightWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        let delay: TimeInterval
+        if dashboardMeasuredHeight == nil {
+            // 首次切换需等待 330pt 宽度完成布局，不能提交旧横版宽度下的瞬态高度。
+            delay = 0.35
+        } else {
+            delay = measured < dashboardMeasuredHeight! ? 1.4 : 0.15
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func invalidateDashboardMeasuredHeight() {
-        guard case let .dashboard(isLoggedIn, orientation) = contentMode, isLoggedIn else {
-            return
-        }
-        if orientation == .vertical {
-            dashboardMeasuredHeight = nil
-            resizeWindowToDashboardContent(
-                isLoggedIn: true,
-                orientation: .vertical,
-                measuredHeight: nil,
-                animate: false
-            )
-        }
+    private func cancelPendingDashboardHeightCommit() {
+        dashboardHeightCommitGeneration &+= 1
+        pendingDashboardHeightWorkItem?.cancel()
+        pendingDashboardHeightWorkItem = nil
     }
 
     private func invalidateSettingsMeasuredHeight() {
@@ -613,7 +627,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     private func beginUserMoveTracking() {
         isWindowMoving = true
-        pendingDashboardHeightWorkItem?.cancel()
+        cancelPendingDashboardHeightCommit()
         guard userMoveMouseUpMonitor == nil else { return }
         userMoveMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
             self?.endUserMoveTracking()

@@ -129,7 +129,7 @@
 
 `DetachedWindowContentMode.dashboard` 带上了 `orientation`，`DetachedWindowMetrics.fixedDashboardContentSize(isLoggedIn:orientation:measuredHeight:screen:)` 按方向返回尺寸：
 
-- 横向：宽 `dashboardWidth`（579），高 `loggedInDashboardHeight`（510），与改动前完全一致。
+- 横向：宽 `dashboardWidth`（579），高 `loggedInDashboardHeight`（658），容纳重置券并保持紧凑的底部留白。
 - 竖向：宽 `verticalDashboardWidth`（330），高取内容实测值，钳制在 `verticalMinHeight`（360）与屏幕可视高度之间；未测出前先用 `verticalProvisionalHeight`（700）占位；未登录时复用 `loginDashboardHeight`（440）。
 
 竖向的高度测量沿用设置页那套机制：`verticalDashboard` 用 `.fixedSize(horizontal: false, vertical: true)` 得到自然高度，经 `DashboardMeasuredContentHeightKey` 上报，`DetachedWindowController.commitVerticalDashboardHeight(_:)` 收敛窗口。因为测量值来自内容而非窗口，不会与 resize 形成回环。方向切换时 `applyContentLayout` 会作废上一次的测量值。
