@@ -392,11 +392,20 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusCapsuleAutomaticForegroundUsesMenuBarSemanticColor() {
+    func testStatusCapsuleAutomaticForegroundFollowsMenuBarAppearanceWithoutVibrancy() throws {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        let vibrantLight = try XCTUnwrap(NSAppearance(named: .vibrantLight))
+        let vibrantDark = try XCTUnwrap(NSAppearance(named: .vibrantDark))
 
-        XCTAssertTrue(view.allowsVibrancy)
-        XCTAssertEqual(StatusCapsuleView.automaticMenuBarForegroundColor, .labelColor)
+        XCTAssertFalse(view.allowsVibrancy)
+        XCTAssertEqual(
+            StatusCapsuleView.automaticMenuBarForegroundColor(appearance: vibrantLight),
+            .black
+        )
+        XCTAssertEqual(
+            StatusCapsuleView.automaticMenuBarForegroundColor(appearance: vibrantDark),
+            .white
+        )
     }
 
     @MainActor

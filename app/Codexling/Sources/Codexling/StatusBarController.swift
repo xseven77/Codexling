@@ -846,13 +846,6 @@ final class StatusCapsuleView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var allowsVibrancy: Bool {
-        // Status-bar contrast is driven by the material behind the menu bar,
-        // which can differ from the app's light/dark appearance because of
-        // the current wallpaper or full-screen content.
-        true
-    }
-
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Status-bar buttons do not reliably forward hover and press events to
         // a click-through subview. Keep the capsule as the event target so its
@@ -1035,14 +1028,22 @@ final class StatusCapsuleView: NSView {
     }
 
     private var automaticForegroundColor: NSColor {
-        Self.automaticMenuBarForegroundColor
+        Self.automaticMenuBarForegroundColor(appearance: effectiveAppearance)
     }
 
-    static var automaticMenuBarForegroundColor: NSColor {
-        // Keep this semantic and unresolved. In a vibrant status-bar view,
-        // AppKit resolves labelColor to the black or white foreground selected
-        // for the actual menu-bar background instead of the app appearance.
-        .labelColor
+    static func automaticMenuBarForegroundColor(appearance: NSAppearance) -> NSColor {
+        // The menu bar exposes vibrant appearances that already account for
+        // wallpaper and full-screen content. Resolve only the foreground from
+        // that appearance; opting the entire custom view into vibrancy would
+        // also re-composite the translucent capsule surface on every redraw.
+        switch appearance.bestMatch(
+            from: [.vibrantDark, .darkAqua, .vibrantLight, .aqua]
+        ) {
+        case .vibrantDark, .darkAqua:
+            return .white
+        default:
+            return .black
+        }
     }
 
     private var indicatorPadding: CGFloat {
