@@ -364,6 +364,8 @@ private struct ResetCouponTimelineMetaGrid: View {
 }
 
 private struct ResetCouponGrantMessageSection: View {
+    private static let footerHeight: CGFloat = 44
+
     let coupon: ResetCoupon
     let position: Int
     let total: Int
@@ -447,7 +449,8 @@ private struct ResetCouponGrantMessageSection: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.footerHeight, alignment: .center)
             .background(Color.codexMist.opacity(isDark ? 0.22 : 0.38))
         }
     }
@@ -506,7 +509,9 @@ private struct ResetCouponPageDots: View {
     }
 }
 
-private enum ResetCouponDateParser {
+enum ResetCouponDateParser {
+    static let minimumTimelineDaySpan = 10
+
     private static let displayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -533,13 +538,23 @@ private enum ResetCouponDateParser {
         return shortDisplayFormatter.string(from: date)
     }
 
-    static func timelineRange(for coupons: [ResetCoupon]) -> (min: Date, max: Date) {
-        let today = Calendar.current.startOfDay(for: Date())
+    static func timelineRange(
+        for coupons: [ResetCoupon],
+        relativeTo now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> (min: Date, max: Date) {
+        let today = calendar.startOfDay(for: now)
+        // This is the visible scale of the rail, not a change to coupon
+        // validity. A rolling ten-day minimum lets a lone expiry marker move
+        // left as its expiration approaches instead of remaining at the end.
+        let minimumMaximum = calendar.date(
+            byAdding: .day,
+            value: minimumTimelineDaySpan,
+            to: today
+        ) ?? today.addingTimeInterval(TimeInterval(minimumTimelineDaySpan * 86_400))
         let expiresDates = coupons.compactMap { date(from: $0.expiresAt) }
-        guard let max = expiresDates.max(), max > today else {
-            return (today, today.addingTimeInterval(86400))
-        }
-        return (today, max)
+        let latestExpiry = expiresDates.max() ?? today
+        return (today, max(latestExpiry, minimumMaximum))
     }
 
     static func fraction(of date: Date, in range: (min: Date, max: Date)) -> CGFloat {

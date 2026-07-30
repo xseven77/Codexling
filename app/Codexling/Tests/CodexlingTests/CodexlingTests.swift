@@ -392,24 +392,11 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusCapsuleAutomaticForegroundContrastsWithMenuBarBackground() throws {
-        let light = try XCTUnwrap(NSAppearance(named: .aqua))
-        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+    func testStatusCapsuleAutomaticForegroundUsesMenuBarSemanticColor() {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
 
-        XCTAssertEqual(
-            StatusCapsuleView.automaticForegroundColor(
-                backgroundOpacity: 0.20,
-                appearance: light
-            ),
-            .black
-        )
-        XCTAssertEqual(
-            StatusCapsuleView.automaticForegroundColor(
-                backgroundOpacity: 0.20,
-                appearance: dark
-            ),
-            .white
-        )
+        XCTAssertTrue(view.allowsVibrancy)
+        XCTAssertEqual(StatusCapsuleView.automaticMenuBarForegroundColor, .labelColor)
     }
 
     @MainActor
@@ -627,6 +614,62 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(snapshot.resetCoupons.count, 2)
         XCTAssertEqual(snapshot.resetCoupons.reduce(0) { $0 + $1.count }, 2)
         XCTAssertLessThan(snapshot.resetCoupons[0].expiresAt, snapshot.resetCoupons[1].expiresAt)
+    }
+
+    func testResetCouponTimelineHasATenDayMinimumAndPreservesLongerExpiry() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let formatter = ISO8601DateFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-07-30T12:00:00Z"))
+        let today = calendar.startOfDay(for: now)
+
+        let shortCoupon = ResetCoupon(
+            name: "Short",
+            count: 1,
+            expiresAt: formatter.string(from: calendar.date(byAdding: .day, value: 2, to: today)!),
+            source: "Codex"
+        )
+        let minimumRange = ResetCouponDateParser.timelineRange(
+            for: [shortCoupon],
+            relativeTo: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            calendar.dateComponents([.day], from: minimumRange.min, to: minimumRange.max).day,
+            10
+        )
+        let shortExpiry = try XCTUnwrap(ResetCouponDateParser.date(from: shortCoupon.expiresAt))
+        XCTAssertEqual(
+            ResetCouponDateParser.fraction(of: shortExpiry, in: minimumRange),
+            0.2,
+            accuracy: 0.0001
+        )
+
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: now))
+        let tomorrowRange = ResetCouponDateParser.timelineRange(
+            for: [shortCoupon],
+            relativeTo: tomorrow,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            ResetCouponDateParser.fraction(of: shortExpiry, in: tomorrowRange),
+            0.1,
+            accuracy: 0.0001
+        )
+
+        let laterExpiry = try XCTUnwrap(calendar.date(byAdding: .day, value: 14, to: today))
+        let longCoupon = ResetCoupon(
+            name: "Long",
+            count: 1,
+            expiresAt: formatter.string(from: laterExpiry),
+            source: "Codex"
+        )
+        let extendedRange = ResetCouponDateParser.timelineRange(
+            for: [longCoupon],
+            relativeTo: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(extendedRange.max, laterExpiry)
     }
 
     @MainActor

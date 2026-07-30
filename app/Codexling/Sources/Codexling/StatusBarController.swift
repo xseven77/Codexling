@@ -846,6 +846,13 @@ final class StatusCapsuleView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override var allowsVibrancy: Bool {
+        // Status-bar contrast is driven by the material behind the menu bar,
+        // which can differ from the app's light/dark appearance because of
+        // the current wallpaper or full-screen content.
+        true
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Status-bar buttons do not reliably forward hover and press events to
         // a click-through subview. Keep the capsule as the event target so its
@@ -1028,21 +1035,14 @@ final class StatusCapsuleView: NSView {
     }
 
     private var automaticForegroundColor: NSColor {
-        Self.automaticForegroundColor(
-            backgroundOpacity: backgroundOpacity,
-            appearance: effectiveAppearance
-        )
+        Self.automaticMenuBarForegroundColor
     }
 
-    static func automaticForegroundColor(
-        backgroundOpacity: CGFloat,
-        appearance: NSAppearance
-    ) -> NSColor {
-        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let baseLuminance: CGFloat = isDark ? 0.10 : 0.94
-        let opacity = min(max(backgroundOpacity, 0), 1)
-        let blendedLuminance = baseLuminance * (1 - opacity) + opacity
-        return blendedLuminance >= 0.58 ? .black : .white
+    static var automaticMenuBarForegroundColor: NSColor {
+        // Keep this semantic and unresolved. In a vibrant status-bar view,
+        // AppKit resolves labelColor to the black or white foreground selected
+        // for the actual menu-bar background instead of the app appearance.
+        .labelColor
     }
 
     private var indicatorPadding: CGFloat {
@@ -1064,6 +1064,11 @@ final class StatusCapsuleView: NSView {
             updateMonitoredHoverState()
         }
         updateWaveAnimation()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        invalidateCapsuleDisplay()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
