@@ -128,6 +128,13 @@ body {
   overflow-x: hidden;
 }
 
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--preview-green) 68%, transparent);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -252,6 +259,28 @@ body {
   }
   50% {
     opacity: 1;
+  }
+}
+
+@keyframes preview-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes preview-toast {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
   }
 }
 
