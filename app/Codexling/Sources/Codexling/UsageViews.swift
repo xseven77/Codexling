@@ -4,6 +4,7 @@ import SwiftUI
 struct DetachedUsageWindowView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
+    @Bindable var multiAgentSettings: MultiAgentSettingsStore
     @Bindable var activityStore: CodexActivityStore
     @Bindable var frameStore: PetFrameStore
     @Bindable var companionStatsStore: CompanionStatsStore
@@ -36,6 +37,7 @@ struct DetachedUsageWindowView: View {
                 SettingsView(
                     store: store,
                     settings: settings,
+                    multiAgentSettings: multiAgentSettings,
                     updater: updater,
                     layout: .window,
                     onLogout: {

@@ -132,3 +132,156 @@ struct ProviderBalanceSnapshot: Equatable, Codable, Sendable {
     let toppedUp: Decimal
     let fetchedAt: Date
 }
+
+enum ConnectionAuthenticationState: String, Codable, Sendable {
+    case needsLogin
+    case checking
+    case connected
+    case invalid
+}
+
+struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
+    let id: ConnectionID
+    var label: String
+    let relativeHomeDirectory: String
+    var authenticationState: ConnectionAuthenticationState
+    var isEnabled: Bool
+    let createdAt: Date
+}
+
+struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
+    let id: ConnectionID
+    var label: String
+    let credentialHandle: String
+    let keySuffix: String
+    var authenticationState: ConnectionAuthenticationState
+    var balance: ProviderBalanceSnapshot?
+    let createdAt: Date
+}
+
+enum AgentActivityState: String, CaseIterable, Codable, Sendable {
+    case offline
+    case idle
+    case thinking
+    case executing
+    case reviewing
+    case waitingForUser
+    case completed
+    case interrupted
+    case rateLimited
+    case failed
+
+    var arbitrationPriority: Int {
+        switch self {
+        case .waitingForUser: 60
+        case .failed, .rateLimited: 50
+        case .completed: 40
+        case .reviewing, .executing, .thinking: 30
+        case .interrupted: 20
+        case .idle: 10
+        case .offline: 0
+        }
+    }
+}
+
+enum NormalizedAgentEventName: String, Codable, Sendable {
+    case sessionStarted = "session.started"
+    case promptSubmitted = "prompt.submitted"
+    case toolStarted = "tool.started"
+    case permissionRequested = "permission.requested"
+    case toolFinished = "tool.finished"
+    case turnCompleted = "turn.completed"
+    case sessionEnded = "session.ended"
+    case failed
+    case rateLimited = "rate_limited"
+}
+
+enum AgentToolCategory: String, Codable, Sendable {
+    case reading
+    case writing
+    case shell
+    case network
+    case other
+}
+
+/// Privacy-preserving event emitted by the bundled bridge. Vendor payload
+/// bodies, prompts, tool arguments, commands and full paths never enter here.
+struct NormalizedAgentEvent: Codable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let agentID: AgentID
+    let surfaceID: AgentSurfaceID
+    let connectionID: ConnectionID?
+    let sessionID: String?
+    let turnID: String?
+    let event: NormalizedAgentEventName
+    let toolCategory: AgentToolCategory?
+    let outcome: String?
+    let timestamp: Date
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        agentID: AgentID,
+        surfaceID: AgentSurfaceID,
+        connectionID: ConnectionID? = nil,
+        sessionID: String? = nil,
+        turnID: String? = nil,
+        event: NormalizedAgentEventName,
+        toolCategory: AgentToolCategory? = nil,
+        outcome: String? = nil,
+        timestamp: Date = Date()
+    ) {
+        self.schemaVersion = schemaVersion
+        self.agentID = agentID
+        self.surfaceID = surfaceID
+        self.connectionID = connectionID
+        self.sessionID = sessionID
+        self.turnID = turnID
+        self.event = event
+        self.toolCategory = toolCategory
+        self.outcome = outcome
+        self.timestamp = timestamp
+    }
+}
+
+enum PetStateMapper {
+    static func activity(for event: NormalizedAgentEvent) -> AgentActivityState {
+        switch event.event {
+        case .sessionStarted:
+            .idle
+        case .promptSubmitted:
+            .thinking
+        case .toolStarted:
+            .executing
+        case .permissionRequested:
+            .waitingForUser
+        case .toolFinished:
+            .reviewing
+        case .turnCompleted:
+            .completed
+        case .sessionEnded:
+            .idle
+        case .failed:
+            .failed
+        case .rateLimited:
+            .rateLimited
+        }
+    }
+}
+
+struct AgentActivityCandidate: Equatable, Sendable {
+    let state: AgentActivityState
+    let updatedAt: Date
+}
+
+enum AgentActivityArbitrator {
+    static func preferred(_ candidates: [AgentActivityCandidate]) -> AgentActivityCandidate? {
+        candidates.max { lhs, rhs in
+            if lhs.state.arbitrationPriority == rhs.state.arbitrationPriority {
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            return lhs.state.arbitrationPriority < rhs.state.arbitrationPriority
+        }
+    }
+}

@@ -197,6 +197,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     init(
         store: UsageSnapshotStore,
         settings: AppSettingsStore,
+        multiAgentSettings: MultiAgentSettingsStore,
         activityStore: CodexActivityStore,
         frameStore: PetFrameStore,
         companionStatsStore: CompanionStatsStore,
@@ -223,6 +224,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             rootView: DetachedUsageWindowView(
                 store: store,
                 settings: settings,
+                multiAgentSettings: multiAgentSettings,
                 activityStore: activityStore,
                 frameStore: frameStore,
                 companionStatsStore: companionStatsStore,

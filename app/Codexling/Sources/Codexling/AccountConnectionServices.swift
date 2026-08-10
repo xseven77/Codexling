@@ -1,0 +1,301 @@
+import AppKit
+import Foundation
+import Security
+
+struct ConnectionRegistrySnapshot: Codable, Sendable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion = currentSchemaVersion
+    var codexAccounts: [CodexAccountConnection] = []
+    var deepSeekConnections: [DeepSeekAPIConnection] = []
+}
+
+struct ConnectionRegistryStorage {
+    let fileManager: FileManager
+    let fileURL: URL
+
+    init(fileManager: FileManager = .default, fileURL: URL? = nil) {
+        self.fileManager = fileManager
+        self.fileURL = fileURL ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/connections-v1.json")
+    }
+
+    func load() -> ConnectionRegistrySnapshot {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: fileURL),
+              let snapshot = try? decoder.decode(ConnectionRegistrySnapshot.self, from: data),
+              snapshot.schemaVersion == ConnectionRegistrySnapshot.currentSchemaVersion else {
+            return ConnectionRegistrySnapshot()
+        }
+        return snapshot
+    }
+
+    func save(_ snapshot: ConnectionRegistrySnapshot) throws {
+        try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        var data = try encoder.encode(snapshot)
+        data.append(0x0A)
+        try data.write(to: fileURL, options: .atomic)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+    }
+}
+
+enum CodexAccountRuntimeError: LocalizedError {
+    case codexNotInstalled
+    case invalidHome
+
+    var errorDescription: String? {
+        switch self {
+        case .codexNotInstalled: "未找到 codex CLI"
+        case .invalidHome: "Codex 账号运行目录无效"
+        }
+    }
+}
+
+struct CodexAccountRuntimeManager {
+    let fileManager: FileManager
+    let runtimesRoot: URL
+
+    init(fileManager: FileManager = .default, runtimesRoot: URL? = nil) {
+        self.fileManager = fileManager
+        self.runtimesRoot = runtimesRoot ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/Runtimes/Codex", isDirectory: true)
+    }
+
+    func createAccount(label: String) throws -> CodexAccountConnection {
+        let id = ConnectionID(rawValue: UUID())
+        let relative = id.rawValue.uuidString.lowercased()
+        let home = runtimesRoot.appendingPathComponent(relative, isDirectory: true)
+        try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
+        let config = home.appendingPathComponent("config.toml")
+        if !fileManager.fileExists(atPath: config.path) {
+            try "cli_auth_credentials_store = \"file\"\n"
+                .write(to: config, atomically: true, encoding: .utf8)
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+        }
+        return CodexAccountConnection(
+            id: id,
+            label: label,
+            relativeHomeDirectory: relative,
+            authenticationState: .needsLogin,
+            isEnabled: true,
+            createdAt: Date()
+        )
+    }
+
+    func homeURL(for connection: CodexAccountConnection) throws -> URL {
+        guard !connection.relativeHomeDirectory.contains("/"),
+              !connection.relativeHomeDirectory.contains("..") else {
+            throw CodexAccountRuntimeError.invalidHome
+        }
+        return runtimesRoot.appendingPathComponent(connection.relativeHomeDirectory, isDirectory: true)
+    }
+
+    func launchLogin(for connection: CodexAccountConnection) throws {
+        let codex = try locateCodexExecutable()
+        let home = try homeURL(for: connection)
+        try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
+        let launcher = home.appendingPathComponent("login.command")
+        let script = """
+        #!/bin/zsh
+        export CODEX_HOME=\(shellQuote(home.path))
+        \(shellQuote(codex.path)) login
+        echo
+        echo "Codex 登录流程已结束，可以关闭此窗口。"
+        """
+        try script.write(to: launcher, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+        NSWorkspace.shared.open(launcher)
+    }
+
+    func removeRuntime(for connection: CodexAccountConnection) throws {
+        let home = try homeURL(for: connection)
+        guard home.deletingLastPathComponent().standardizedFileURL == runtimesRoot.standardizedFileURL else {
+            throw CodexAccountRuntimeError.invalidHome
+        }
+        if fileManager.fileExists(atPath: home.path) {
+            try fileManager.removeItem(at: home)
+        }
+    }
+
+    private func locateCodexExecutable() throws -> URL {
+        let home = fileManager.homeDirectoryForCurrentUser
+        let candidates = [
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex",
+            home.appendingPathComponent(".local/bin/codex").path,
+        ]
+        if let path = candidates.first(where: fileManager.isExecutableFile(atPath:)) {
+            return URL(fileURLWithPath: path)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "command -v codex"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let path = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              fileManager.isExecutableFile(atPath: path) else {
+            throw CodexAccountRuntimeError.codexNotInstalled
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+protocol DeepSeekCredentialStoring: Sendable {
+    func save(apiKey: String, handle: String) throws
+    func read(handle: String) throws -> String
+    func delete(handle: String) throws
+}
+
+enum DeepSeekCredentialError: LocalizedError {
+    case keychain(OSStatus)
+    case missing
+
+    var errorDescription: String? {
+        switch self {
+        case .keychain(let status): "Keychain 操作失败（\(status)）"
+        case .missing: "Keychain 中没有找到此 API Key"
+        }
+    }
+}
+
+struct DeepSeekCredentialStore: DeepSeekCredentialStoring {
+    static let service = "com.qiizo.Codexling.credentials"
+
+    func save(apiKey: String, handle: String) throws {
+        let data = Data(apiKey.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: handle,
+        ]
+        let attributes: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var insert = query
+            insert[kSecValueData as String] = data
+            let status = SecItemAdd(insert as CFDictionary, nil)
+            guard status == errSecSuccess else { throw DeepSeekCredentialError.keychain(status) }
+        } else if updateStatus != errSecSuccess {
+            throw DeepSeekCredentialError.keychain(updateStatus)
+        }
+    }
+
+    func read(handle: String) throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: handle,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status != errSecItemNotFound else { throw DeepSeekCredentialError.missing }
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            throw DeepSeekCredentialError.keychain(status)
+        }
+        return value
+    }
+
+    func delete(handle: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: handle,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw DeepSeekCredentialError.keychain(status)
+        }
+    }
+}
+
+enum DeepSeekBalanceError: LocalizedError {
+    case invalidResponse
+    case unauthorized
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse: "DeepSeek 返回了无法识别的余额数据"
+        case .unauthorized: "DeepSeek API Key 无效或已失效"
+        case .unavailable: "DeepSeek 余额当前不可用"
+        }
+    }
+}
+
+struct DeepSeekBalanceService {
+    private struct Response: Decodable {
+        struct Balance: Decodable {
+            let currency: String
+            let totalBalance: String
+            let grantedBalance: String
+            let toppedUpBalance: String
+
+            enum CodingKeys: String, CodingKey {
+                case currency
+                case totalBalance = "total_balance"
+                case grantedBalance = "granted_balance"
+                case toppedUpBalance = "topped_up_balance"
+            }
+        }
+
+        let isAvailable: Bool
+        let balanceInfos: [Balance]
+
+        enum CodingKeys: String, CodingKey {
+            case isAvailable = "is_available"
+            case balanceInfos = "balance_infos"
+        }
+    }
+
+    let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func fetch(apiKey: String, connectionID: ConnectionID) async throws -> ProviderBalanceSnapshot {
+        var request = URLRequest(url: URL(string: "https://api.deepseek.com/user/balance")!)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw DeepSeekBalanceError.invalidResponse }
+        if http.statusCode == 401 || http.statusCode == 403 { throw DeepSeekBalanceError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw DeepSeekBalanceError.invalidResponse }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard decoded.isAvailable, let balance = decoded.balanceInfos.first else {
+            throw DeepSeekBalanceError.unavailable
+        }
+        guard let total = Decimal(string: balance.totalBalance),
+              let granted = Decimal(string: balance.grantedBalance),
+              let toppedUp = Decimal(string: balance.toppedUpBalance) else {
+            throw DeepSeekBalanceError.invalidResponse
+        }
+        return ProviderBalanceSnapshot(
+            connectionID: connectionID,
+            providerID: .deepSeek,
+            scope: .account,
+            currency: balance.currency,
+            total: total,
+            granted: granted,
+            toppedUp: toppedUp,
+            fetchedAt: Date()
+        )
+    }
+}

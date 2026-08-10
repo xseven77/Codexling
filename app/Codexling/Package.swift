@@ -8,15 +8,21 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Codexling", targets: ["Codexling"])
+        .executable(name: "Codexling", targets: ["Codexling"]),
+        .executable(name: "CodexlingAgentBridge", targets: ["CodexlingAgentBridge"])
     ],
     targets: [
         .executableTarget(
             name: "Codexling",
             path: "Sources/Codexling",
             linkerSettings: [
-                .linkedLibrary("sqlite3")
+                .linkedLibrary("sqlite3"),
+                .linkedFramework("Security")
             ]
+        ),
+        .executableTarget(
+            name: "CodexlingAgentBridge",
+            path: "Sources/CodexlingAgentBridge"
         ),
         .testTarget(
             name: "CodexlingTests",

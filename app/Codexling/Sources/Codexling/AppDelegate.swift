@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: DetachedWindowController?
     private let snapshotStore = UsageSnapshotStore()
     private let settingsStore = AppSettingsStore()
+    private let multiAgentSettingsStore = MultiAgentSettingsStore()
     private let activityStore = CodexActivityStore()
     private let frameStore = PetFrameStore()
     private let companionStatsStore = CompanionStatsStore()
@@ -189,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowController = DetachedWindowController(
                 store: snapshotStore,
                 settings: settingsStore,
+                multiAgentSettings: multiAgentSettingsStore,
                 activityStore: activityStore,
                 frameStore: frameStore,
                 companionStatsStore: companionStatsStore,

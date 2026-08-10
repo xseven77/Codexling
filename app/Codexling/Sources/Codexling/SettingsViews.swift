@@ -5,9 +5,18 @@ private enum SettingsLayoutMetrics {
     static let sectionSpacing: CGFloat = 24
 }
 
+private struct PendingAgentHookAction: Identifiable {
+    let agentID: AgentID
+    let agentName: String
+    let installs: Bool
+
+    var id: String { "\(agentID.rawValue)-\(installs ? "install" : "uninstall")" }
+}
+
 struct SettingsView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
+    @Bindable var multiAgentSettings: MultiAgentSettingsStore
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
     let onLogout: () -> Void
@@ -17,11 +26,91 @@ struct SettingsView: View {
     @State private var showsPetPicker = false
     @State private var showsCodexRestartConfirmation = false
     @State private var isRestartingCodex = false
+    @State private var pendingHookAction: PendingAgentHookAction?
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        lifecycleContent
+    }
+
+    private var lifecycleContent: some View {
+        alertContent
+            .onPreferenceChange(SettingsMeasuredContentHeightKey.self) { height in
+                guard layout == .window, height > 1 else { return }
+                onMeasuredContentHeightChange(height)
+            }
+            .onAppear {
+                guard layout == .window else { return }
+                onMeasuredContentHeightChange(0)
+            }
+            .task(id: petPreviewIdentity) {
+                await PetThumbnailLoader.shared.preload(
+                    settings.availablePets.map(\.spritesheetURL)
+                )
+            }
+            .onChange(of: settingsMeasuredContentIdentity) { _, _ in
+                guard layout == .window else { return }
+                onMeasuredContentHeightChange(-1)
+            }
+    }
+
+    private var alertContent: some View {
+        toastTrackingContent
+            .alert("确认退出登录？", isPresented: $showsLogoutConfirmation) {
+                Button("取消", role: .cancel) {}
+                Button("退出登录", role: .destructive, action: onLogout)
+            } message: {
+                Text("退出后需要重新授权才能查看用量。")
+            }
+            .alert("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
+                Button("取消", role: .cancel) {}
+                Button("重启 Codex", role: .destructive) {
+                    restartCodex()
+                }
+            } message: {
+                Text("这会退出并重新打开 Codex，正在运行或等待确认的任务可能会被中断。")
+            }
+            .alert(item: $pendingHookAction) { pending in
+                hookActionAlert(pending)
+            }
+            .onChange(of: multiAgentSettings.lastMessage) { _, message in
+                guard let message else { return }
+                showToast(message, systemImage: message.contains("失败") ? "exclamationmark.triangle.fill" : "link.badge.plus")
+                multiAgentSettings.clearLastMessage()
+            }
+    }
+
+    private var toastTrackingContent: some View {
+        baseContent
+            .onChange(of: settings.theme) { _, theme in
+                showToast("主题：\(theme.title)")
+            }
+            .onChange(of: settings.autoRefreshInterval) { _, interval in
+                showToast("自动刷新：\(interval.title)")
+            }
+            .onChange(of: settings.dashboardOrientation) { _, orientation in
+                showToast("主界面布局：\(orientation.title)")
+            }
+            .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
+                showToast("活动流光已\(enabled ? "开启" : "关闭")")
+            }
+            .onChange(of: settings.statusBarIndicatorColorMode) { _, mode in
+                showToast("状态圆灯颜色：\(mode.title)")
+            }
+            .onChange(of: settings.statusBarWaveColorMode) { _, mode in
+                showToast("活动流光颜色：\(mode.title)")
+            }
+            .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
+                showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
+            }
+            .onChange(of: updater.phase) { oldPhase, phase in
+                handleUpdaterPhaseChange(from: oldPhase, to: phase)
+            }
+    }
+
+    private var baseContent: some View {
         VStack(spacing: 0) {
             header
             Group {
@@ -47,9 +136,9 @@ struct SettingsView: View {
                         .scrollIndicators(.hidden)
                         .background(ScrollIndicatorHider())
                     }
-                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
@@ -66,76 +155,25 @@ struct SettingsView: View {
                     .accessibilityLabel(toast.message)
             }
         }
-        .onChange(of: settings.theme) { _, theme in
-            showToast("主题：\(theme.title)")
-        }
-        .onChange(of: settings.autoRefreshInterval) { _, interval in
-            showToast("自动刷新：\(interval.title)")
-        }
-        .onChange(of: settings.dashboardOrientation) { _, orientation in
-            showToast("主界面布局：\(orientation.title)")
-        }
-        .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
-            showToast("活动流光已\(enabled ? "开启" : "关闭")")
-        }
-        .onChange(of: settings.statusBarIndicatorColorMode) { _, mode in
-            showToast("状态圆灯颜色：\(mode.title)")
-        }
-        .onChange(of: settings.statusBarWaveColorMode) { _, mode in
-            showToast("活动流光颜色：\(mode.title)")
-        }
-        .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
-            showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
-        }
-        .onChange(of: updater.phase) { oldPhase, phase in
-            guard oldPhase != phase else { return }
-            switch phase {
-            case .upToDate:
-                showToast("已是最新版本")
-            case .available:
-                if let version = updater.latestRelease?.version {
-                    showToast("发现新版本 \(version)", systemImage: "arrow.down.circle.fill")
-                } else {
-                    showToast("发现新版本", systemImage: "arrow.down.circle.fill")
-                }
-            case .failed(let message):
-                showToast(message, systemImage: "exclamationmark.triangle.fill")
-            case .installing:
-                showToast("正在安装，完成后将自动重启", systemImage: "arrow.down.circle.fill")
-            default:
-                break
+    }
+
+    private func handleUpdaterPhaseChange(from oldPhase: AppUpdatePhase, to phase: AppUpdatePhase) {
+        guard oldPhase != phase else { return }
+        switch phase {
+        case .upToDate:
+            showToast("已是最新版本")
+        case .available:
+            if let version = updater.latestRelease?.version {
+                showToast("发现新版本 \(version)", systemImage: "arrow.down.circle.fill")
+            } else {
+                showToast("发现新版本", systemImage: "arrow.down.circle.fill")
             }
-        }
-        .alert("确认退出登录？", isPresented: $showsLogoutConfirmation) {
-            Button("取消", role: .cancel) {}
-            Button("退出登录", role: .destructive, action: onLogout)
-        } message: {
-            Text("退出后需要重新授权才能查看用量。")
-        }
-        .alert("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
-            Button("取消", role: .cancel) {}
-            Button("重启 Codex", role: .destructive) {
-                restartCodex()
-            }
-        } message: {
-            Text("这会退出并重新打开 Codex，正在运行或等待确认的任务可能会被中断。")
-        }
-        .onPreferenceChange(SettingsMeasuredContentHeightKey.self) { height in
-            guard layout == .window, height > 1 else { return }
-            onMeasuredContentHeightChange(height)
-        }
-        .onAppear {
-            guard layout == .window else { return }
-            onMeasuredContentHeightChange(0)
-        }
-        .task(id: petPreviewIdentity) {
-            await PetThumbnailLoader.shared.preload(
-                settings.availablePets.map(\.spritesheetURL)
-            )
-        }
-        .onChange(of: settingsMeasuredContentIdentity) { _, _ in
-            guard layout == .window else { return }
-            onMeasuredContentHeightChange(-1)
+        case .failed(let message):
+            showToast(message, systemImage: "exclamationmark.triangle.fill")
+        case .installing:
+            showToast("正在安装，完成后将自动重启", systemImage: "arrow.down.circle.fill")
+        default:
+            break
         }
     }
 
@@ -157,6 +195,8 @@ struct SettingsView: View {
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             accountCard
+            AccountConnectionsSettingsView(store: multiAgentSettings)
+            agentIntegrationsSection
             updateSection
             petSection
             thirdPartyPetResourcesSection
@@ -172,6 +212,8 @@ struct SettingsView: View {
             settings.isCodexlingPetInstalled ? "1" : "0",
             String(settings.availablePets.count),
             store.isLoggedIn ? "1" : "0",
+            String(multiAgentSettings.codexAccounts.count),
+            String(multiAgentSettings.deepSeekConnections.count),
             String(describing: updater.phase),
         ].joined(separator: "-")
     }
@@ -278,6 +320,173 @@ struct SettingsView: View {
             ) {
                 openURL(ChatGPTWebLinks.billingPage)
             }
+        }
+    }
+
+    private var agentIntegrationsSection: some View {
+        SettingsSection(
+            title: "Agents 与 Hooks",
+            subtitle: "按 Codex、Hermes、Claude Code、Reasonix 的优先级探测本机安装。Hook 只向本地 Bridge 上报脱敏生命周期状态。"
+        ) {
+            VStack(spacing: 0) {
+                ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
+                    agentIntegrationRow(integration)
+                    if index < multiAgentSettings.integrations.count - 1 {
+                        CodexDivider()
+                    }
+                }
+            }
+            .settingsGroupSurface()
+        }
+    }
+
+    private func agentIntegrationRow(_ integration: AgentIntegrationStatus) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(agentColor(integration.id).opacity(0.10))
+                Text(agentMonogram(integration.id))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(agentColor(integration.id))
+            }
+            .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(integration.name)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(agentAvailabilityTitle(integration))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(agentAvailabilityColor(integration))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(agentAvailabilityColor(integration).opacity(0.09), in: Capsule())
+                }
+                Text(integration.detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                Text(hookStatusLine(integration.hookState))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(hookStatusColor(integration.hookState))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            hookActionButton(integration)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 76)
+    }
+
+    @ViewBuilder
+    private func hookActionButton(_ integration: AgentIntegrationStatus) -> some View {
+        if multiAgentSettings.isMutating(integration.id) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 66)
+        } else {
+            switch integration.hookState {
+            case .installed:
+                Button("卸载") {
+                    pendingHookAction = PendingAgentHookAction(
+                        agentID: integration.id,
+                        agentName: integration.name,
+                        installs: false
+                    )
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+            case .notInstalled, .conflict, .failed:
+                Button("安装") {
+                    pendingHookAction = PendingAgentHookAction(
+                        agentID: integration.id,
+                        agentName: integration.name,
+                        installs: true
+                    )
+                }
+                .buttonStyle(CodexlingPetInstallButtonStyle())
+            case .unavailable:
+                Button("重新探测") { multiAgentSettings.refresh() }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+            }
+        }
+    }
+
+    private func hookConfirmationMessage(for pending: PendingAgentHookAction) -> String {
+        if pending.installs {
+            let eventCount = pending.agentID == .hermes ? 7 : 8
+            let trustNote = pending.agentID == .codex
+                ? "\n\nCodex 会要求你在 /hooks 中审阅并信任新增命令。"
+                : ""
+            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook，命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。\(trustNote)"
+        }
+        return "只移除命令中包含 codexling-agent-bridge 的配置项；其他 Hook 与 Agent 配置保持不变。"
+    }
+
+    private func hookActionAlert(_ pending: PendingAgentHookAction) -> Alert {
+        if pending.installs {
+            return Alert(
+                title: Text("安装 \(pending.agentName) Hook？"),
+                message: Text(hookConfirmationMessage(for: pending)),
+                primaryButton: .default(Text("安装")) {
+                    multiAgentSettings.installHook(for: pending.agentID)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+        return Alert(
+            title: Text("卸载 \(pending.agentName) Hook？"),
+            message: Text(hookConfirmationMessage(for: pending)),
+            primaryButton: .destructive(Text("卸载")) {
+                multiAgentSettings.uninstallHook(for: pending.agentID)
+            },
+            secondaryButton: .cancel(Text("取消"))
+        )
+    }
+
+    private func agentAvailabilityTitle(_ integration: AgentIntegrationStatus) -> String {
+        if integration.cliInstalled && integration.desktopInstalled { return "CLI + Desktop" }
+        if integration.cliInstalled { return "CLI 已安装" }
+        if integration.desktopInstalled { return "Desktop 已安装" }
+        return "未发现"
+    }
+
+    private func agentAvailabilityColor(_ integration: AgentIntegrationStatus) -> Color {
+        integration.cliInstalled || integration.desktopInstalled ? Color.codexGreen : Color.codexMuted
+    }
+
+    private func hookStatusLine(_ state: AgentHookInstallationState) -> String {
+        switch state {
+        case .notInstalled: "Hook 未安装"
+        case .installed: "Hook 已安装 · 本地脱敏事件"
+        case .unavailable(let message): message
+        case .conflict(let message), .failed(let message): message
+        }
+    }
+
+    private func hookStatusColor(_ state: AgentHookInstallationState) -> Color {
+        switch state {
+        case .installed: Color.codexGreen
+        case .conflict, .failed: Color.codexRed
+        case .notInstalled, .unavailable: Color.codexMuted
+        }
+    }
+
+    private func agentMonogram(_ agentID: AgentID) -> String {
+        switch agentID {
+        case .codex: "CX"
+        case .hermes: "HE"
+        case .claudeCode: "CL"
+        case .reasonix: "RX"
+        default: "AI"
+        }
+    }
+
+    private func agentColor(_ agentID: AgentID) -> Color {
+        switch agentID {
+        case .codex: Color.codexGreen
+        case .hermes: Color.purple
+        case .claudeCode: Color.orange
+        case .reasonix: Color.blue
+        default: Color.codexMuted
         }
     }
 
@@ -1004,7 +1213,7 @@ private struct CodexlingPetInstallButtonStyle: PrimitiveButtonStyle {
     }
 }
 
-private struct SettingsSection<Content: View>: View {
+struct SettingsSection<Content: View>: View {
     let title: String
     var subtitle: String? = nil
     @ViewBuilder let content: Content
@@ -1376,13 +1585,13 @@ private enum SettingsMeasuredContentHeightKey: PreferenceKey {
     }
 }
 
-private extension View {
+extension View {
     func settingsGroupSurface() -> some View {
         modifier(SettingsGroupSurfaceModifier())
     }
 }
 
-private struct SettingsGroupSurfaceModifier: ViewModifier {
+struct SettingsGroupSurfaceModifier: ViewModifier {
     @Environment(\.displayScale) private var displayScale
 
     func body(content: Content) -> some View {

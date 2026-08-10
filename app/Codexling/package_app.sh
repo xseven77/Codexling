@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_NAME="Codexling"
 BINARY_NAME="Codexling"
+BRIDGE_BINARY_NAME="CodexlingAgentBridge"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 
@@ -58,15 +59,17 @@ if ! build_release_binary; then
 fi
 
 rm -rf "${DIST_DIR}"
-mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
+mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Helpers" "${APP_BUNDLE}/Contents/Resources"
 
 cp ".build/release/${BINARY_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
+cp ".build/release/${BRIDGE_BINARY_NAME}" "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
 cp "Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 cp "../landing/public/brand/codexling-logo.webp" "${APP_BUNDLE}/Contents/Resources/codexling-logo.webp"
 cp "Resources/github-mark.svg" "${APP_BUNDLE}/Contents/Resources/github-mark.svg"
 cp -R "Resources/Pets" "${APP_BUNDLE}/Contents/Resources/Pets"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
+chmod +x "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
 
 codesign --force --deep --sign - "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
