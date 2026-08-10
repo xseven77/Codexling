@@ -21,25 +21,17 @@ struct CompanionDashboardView: View {
 
     var body: some View {
         Group {
-            if store.isLoggedIn {
-                switch settings.dashboardOrientation {
-                case .horizontal:
-                    dashboard
-                case .vertical:
-                    verticalDashboard
-                }
-            } else {
-                CompanionLoginView(
-                    isAuthenticating: store.snapshot.refreshState == "授权中",
-                    statusText: store.snapshot.refreshState,
-                    actions: actions
-                )
+            switch settings.dashboardOrientation {
+            case .horizontal:
+                dashboard
+            case .vertical:
+                verticalDashboard
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color.codexInk)
         .overlay(alignment: .topLeading) {
-            if store.isLoggedIn, layout == .window {
+            if layout == .window {
                 verticalDashboardHeightProbe
             }
         }
@@ -185,6 +177,8 @@ struct CompanionDashboardView: View {
     private var dashboardConnectionBar: some View {
         DashboardConnectionSwitcher(
             snapshot: store.snapshot,
+            activity: activityStore.snapshot,
+            showsCurrentCodex: store.isLoggedIn,
             store: multiAgentSettings,
             onAdd: { showsConnectionSheet = true }
         )
@@ -272,6 +266,8 @@ struct CompanionDashboardView: View {
 
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
+                activity: activityStore.snapshot,
+                showsCurrentCodex: store.isLoggedIn,
                 store: multiAgentSettings,
                 onAdd: { showsConnectionSheet = true },
                 compact: true
@@ -421,9 +417,16 @@ struct CompanionDashboardView: View {
 
 private struct DashboardConnectionSwitcher: View {
     let snapshot: CodexUsageSnapshot
+    let activity: CodexActivitySnapshot
+    let showsCurrentCodex: Bool
     @Bindable var store: MultiAgentSettingsStore
     let onAdd: () -> Void
     var compact = false
+
+    private enum ConnectionIndicator {
+        case activity(Color)
+        case balance(Color)
+    }
 
     var body: some View {
         HStack(spacing: 7) {
@@ -435,13 +438,16 @@ private struct DashboardConnectionSwitcher: View {
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
-                    connectionButton(
-                        asset: .codex,
-                        title: "Codex",
-                        subtitle: snapshot.companionAccountName,
-                        color: Color.codexGreen,
-                        selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey
-                    ) { store.selectCurrentCodexConnection() }
+                    if showsCurrentCodex {
+                        connectionButton(
+                            asset: .codex,
+                            title: "Codex",
+                            subtitle: snapshot.companionAccountName,
+                            color: Color.codexGreen,
+                            selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey,
+                            indicator: currentCodexIndicator
+                        ) { store.selectCurrentCodexConnection() }
+                    }
                     ForEach(store.codexAccounts) { connection in
                         connectionButton(
                             asset: .codex,
@@ -449,7 +455,7 @@ private struct DashboardConnectionSwitcher: View {
                             subtitle: connection.label,
                             color: Color.codexGreen,
                             selected: store.isSelected(connection),
-                            needsAttention: connection.authenticationState != .connected
+                            indicator: managedCodexIndicator(for: connection)
                         ) { store.selectCodexConnection(connection) }
                     }
                     ForEach(store.deepSeekConnections) { connection in
@@ -459,7 +465,7 @@ private struct DashboardConnectionSwitcher: View {
                             subtitle: connection.label,
                             color: .blue,
                             selected: store.isSelected(connection),
-                            needsAttention: connection.authenticationState != .connected
+                            indicator: .balance(balanceColor(for: connection))
                         ) { store.selectDeepSeekConnection(connection) }
                     }
                 }
@@ -490,26 +496,26 @@ private struct DashboardConnectionSwitcher: View {
         subtitle: String,
         color: Color,
         selected: Bool,
-        needsAttention: Bool = false,
+        indicator: ConnectionIndicator?,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                BrandIconView(
-                    asset: asset,
-                    size: 32,
-                    cornerRadius: 11
-                )
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 10, weight: .bold))
-                    Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
-                }
-                if needsAttention {
-                    Circle().fill(Color.codexAmber).frame(width: 6, height: 6)
+            Group {
+                if compact {
+                    connectionIcon(asset: asset, indicator: indicator)
+                        .frame(width: 42, height: 42)
+                } else {
+                    HStack(spacing: 6) {
+                        connectionIcon(asset: asset, indicator: indicator)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(.system(size: 10, weight: .bold))
+                            Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 42)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 42)
             .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -519,6 +525,57 @@ private struct DashboardConnectionSwitcher: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(title)，\(subtitle)")
         .accessibilityValue(selected ? "已选择" : "未选择")
+    }
+
+    private func connectionIcon(asset: BrandAssetID, indicator: ConnectionIndicator?) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            BrandIconView(asset: asset, size: 32, cornerRadius: 11)
+            if let indicator {
+                switch indicator {
+                case .activity(let color):
+                    Circle()
+                        .fill(color)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(Color.codexCard, lineWidth: 1.5))
+                        .offset(x: 2, y: 2)
+                case .balance(let color):
+                    Text("$")
+                        .font(.system(size: 13, weight: .black, design: .rounded))
+                        .foregroundStyle(color)
+                        .shadow(color: Color.codexCard, radius: 0, x: 0, y: 1)
+                        .offset(x: 3, y: 3)
+                }
+            }
+        }
+    }
+
+    private var currentCodexIndicator: ConnectionIndicator? {
+        let task = activity.activeTasks.first {
+            !$0.id.hasPrefix("agent.") || $0.id.hasPrefix("agent.codex:vendor:")
+        }
+        return activityIndicator(for: task?.state)
+    }
+
+    private func managedCodexIndicator(for connection: CodexAccountConnection) -> ConnectionIndicator? {
+        let connectionID = connection.id.rawValue.uuidString.lowercased()
+        let task = activity.activeTasks.first { $0.id.lowercased().contains(connectionID) }
+        return activityIndicator(for: task?.state)
+    }
+
+    private func activityIndicator(for state: CodexActivityState?) -> ConnectionIndicator? {
+        guard let state, state != .idle, state != .unavailable else { return nil }
+        return .activity(Color(nsColor: state.statusNSColor))
+    }
+
+    private func balanceColor(for connection: DeepSeekAPIConnection) -> Color {
+        switch ProviderBalanceIndicator.resolve(
+            total: connection.balance?.total,
+            authenticationState: connection.authenticationState
+        ) {
+        case .healthy: Color.codexGreen
+        case .low: Color.codexAmber
+        case .depleted: Color.codexRed
+        }
     }
 }
 
@@ -572,7 +629,7 @@ private struct ManagedCodexDashboardCard: View {
                         .font(.system(size: 12, weight: .bold))
                     Text(connection.authenticationState == .connected
                          ? "这个账号暂时没有由 Hook 上报的进行中任务"
-                         : "使用官方 codex login，不读取或复制其他账号的 token")
+                         : "通过官方 OAuth 单独授权，不读取或复制其他账号的 token")
                         .font(.system(size: 9))
                         .foregroundStyle(Color.codexMuted)
                 }
@@ -582,8 +639,11 @@ private struct ManagedCodexDashboardCard: View {
                         .buttonStyle(.bordered)
                     Spacer()
                     if connection.authenticationState != .connected {
-                        Button("官方登录") { store.launchCodexLogin(for: connection) }
+                        Button("官方登录") {
+                            Task { await store.authenticateCodexAccount(connection) }
+                        }
                             .buttonStyle(.borderedProminent)
+                            .disabled(store.isMutatingConnections)
                     }
                 }
             }
@@ -597,7 +657,7 @@ private struct ManagedCodexDashboardCard: View {
                 HStack {
                     Text("额度").font(.system(size: 12, weight: .bold))
                     Spacer()
-                    Text("来源：Codex App Server")
+                    Text("来源：Codex 官方接口")
                         .font(.system(size: 9))
                         .foregroundStyle(Color.codexMuted)
                 }
@@ -1719,68 +1779,6 @@ private struct SyncFooterView: View {
     }
 }
 
-private struct CompanionLoginView: View {
-    let isAuthenticating: Bool
-    let statusText: String
-    let actions: UsageActions
-
-    private var logoImage: NSImage {
-        guard let url = Bundle.main.url(forResource: "codexling-logo", withExtension: "webp"),
-              let image = NSImage(contentsOf: url) else {
-            return NSApp.applicationIconImage
-        }
-        return image
-    }
-
-    var body: some View {
-        ZStack {
-            Color.white
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 50)
-                Image(nsImage: logoImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(width: 58, height: 58)
-                Text("登录后查看你的 Codex")
-                    .font(.system(size: 19, weight: .semibold))
-                    .padding(.top, 17)
-                Text("查看当前任务、精灵状态和额度。\n授权会在官方 ChatGPT / Codex 页面完成。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.codexMuted)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .padding(.top, 10)
-                Button(action: actions.loginAndFetch) {
-                    HStack(spacing: 7) {
-                        if isAuthenticating { ProgressView().controlSize(.small) }
-                        Text(isAuthenticating ? "等待授权…" : "登录并同步额度")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(isAuthenticating)
-                .frame(maxWidth: 292)
-                .padding(.top, 22)
-                Text("授权 token 仅保存在本机 Application Support")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.codexMuted)
-                    .padding(.top, 12)
-                if !isAuthenticating, !["预览数据", "成功", "已退出登录"].contains(statusText) {
-                    Text(statusText)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.codexAmber)
-                        .padding(.top, 6)
-                }
-                Spacer(minLength: 50)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .foregroundStyle(Color(red: 0.096, green: 0.105, blue: 0.118))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
 
 private struct DashboardIconButtonStyle: PrimitiveButtonStyle {
     var helpText: String = ""

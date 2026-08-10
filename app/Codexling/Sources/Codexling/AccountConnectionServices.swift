@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Security
 
@@ -94,21 +93,8 @@ struct CodexAccountRuntimeManager: @unchecked Sendable {
         return runtimesRoot.appendingPathComponent(connection.relativeHomeDirectory, isDirectory: true)
     }
 
-    func launchLogin(for connection: CodexAccountConnection) throws {
-        let codex = try locateCodexExecutable()
-        let home = try homeURL(for: connection)
-        try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
-        let launcher = home.appendingPathComponent("login.command")
-        let script = """
-        #!/bin/zsh
-        export CODEX_HOME=\(shellQuote(home.path))
-        \(shellQuote(codex.path)) login
-        echo
-        echo "Codex 登录流程已结束，可以关闭此窗口。"
-        """
-        try script.write(to: launcher, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
-        NSWorkspace.shared.open(launcher)
+    func oauthTokenURL(for connection: CodexAccountConnection) throws -> URL {
+        try homeURL(for: connection).appendingPathComponent("oauth_token.json")
     }
 
     func authenticationState(for connection: CodexAccountConnection) -> ConnectionAuthenticationState {
@@ -170,9 +156,6 @@ struct CodexAccountRuntimeManager: @unchecked Sendable {
         return URL(fileURLWithPath: path)
     }
 
-    private func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 }
 
 protocol DeepSeekCredentialStoring: Sendable {

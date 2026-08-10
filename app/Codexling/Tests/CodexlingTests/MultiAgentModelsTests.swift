@@ -88,4 +88,13 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(first.scope, .account)
         XCTAssertEqual(second.scope, .account)
     }
+
+    func testProviderBalanceIndicatorUsesRequestedThresholds() {
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: 42.80, authenticationState: .connected), .healthy)
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: 10, authenticationState: .connected), .low)
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: 0.01, authenticationState: .connected), .low)
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: 0, authenticationState: .connected), .depleted)
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: -1, authenticationState: .connected), .depleted)
+        XCTAssertEqual(ProviderBalanceIndicator.resolve(total: nil, authenticationState: .invalid), .depleted)
+    }
 }

@@ -140,6 +140,20 @@ enum ConnectionAuthenticationState: String, Codable, Sendable {
     case invalid
 }
 
+enum ProviderBalanceIndicator: Equatable, Sendable {
+    case healthy
+    case low
+    case depleted
+
+    static func resolve(total: Decimal?, authenticationState: ConnectionAuthenticationState) -> Self {
+        guard authenticationState == .connected else { return .depleted }
+        guard let total else { return .low }
+        if total <= 0 { return .depleted }
+        if total <= 10 { return .low }
+        return .healthy
+    }
+}
+
 struct CodexAccountRateLimitWindow: Equatable, Codable, Sendable {
     let usedPercent: Int
     let resetsAt: Date?

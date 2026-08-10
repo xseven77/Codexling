@@ -10,7 +10,6 @@ private enum ConnectionPickerTab: String, CaseIterable, Identifiable {
 
 private enum ConnectionModalPage {
     case picker
-    case codex
     case deepSeek
 }
 
@@ -34,8 +33,6 @@ struct AccountConnectionsModalView: View {
             switch page {
             case .picker:
                 pickerContent
-            case .codex:
-                codexForm
             case .deepSeek:
                 deepSeekForm
             }
@@ -82,7 +79,6 @@ struct AccountConnectionsModalView: View {
     private var headerTitle: String {
         switch page {
         case .picker: "添加账号或 API Key"
-        case .codex: "登录另一个 Codex 账号"
         case .deepSeek: "添加 DeepSeek API Key"
         }
     }
@@ -90,7 +86,6 @@ struct AccountConnectionsModalView: View {
     private var headerSubtitle: String {
         switch page {
         case .picker: "同一种 Agent 可以登录多个账号。"
-        case .codex: "使用独立 CODEX_HOME，并委托官方 CLI 登录。"
         case .deepSeek: "Key 只存入 macOS Keychain，用于官方余额接口。"
         }
     }
@@ -126,10 +121,14 @@ struct AccountConnectionsModalView: View {
                 connectionOption(
                     asset: .codex,
                     title: "登录另一个 Codex 账号",
-                    subtitle: "委托官方登录"
+                    subtitle: "通过官方 OAuth 授权"
                 ) {
                     resetFields()
-                    page = .codex
+                    Task {
+                        if await store.addCodexAccount() {
+                            onClose()
+                        }
+                    }
                 }
             } else {
                 connectionOption(
@@ -140,6 +139,13 @@ struct AccountConnectionsModalView: View {
                     resetFields()
                     page = .deepSeek
                 }
+            }
+            if let message = store.lastMessage,
+               message.contains("失败") {
+                Text(message)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexRed)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -161,9 +167,13 @@ struct AccountConnectionsModalView: View {
                         .foregroundStyle(Color.codexMuted)
                 }
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.codexMuted)
+                if store.isMutatingConnections {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+                }
             }
             .padding(.horizontal, 10)
             .frame(height: 58)
@@ -175,18 +185,7 @@ struct AccountConnectionsModalView: View {
             }
         }
         .buttonStyle(.plain)
-    }
-
-    private var codexForm: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("账号名称，例如 Work / Personal", text: $label)
-                .textFieldStyle(.roundedBorder)
-            formActions(primaryTitle: "创建并登录") {
-                store.addCodexAccount(label: label)
-                onClose()
-            }
-        }
-        .padding(.top, 16)
+        .disabled(store.isMutatingConnections)
     }
 
     private var deepSeekForm: some View {
@@ -222,16 +221,6 @@ struct AccountConnectionsModalView: View {
             }
         }
         .padding(.top, 16)
-    }
-
-    private func formActions(primaryTitle: String, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            Button("返回") { page = .picker }
-                .buttonStyle(.bordered)
-            Spacer()
-            Button(primaryTitle, action: action)
-                .buttonStyle(.borderedProminent)
-        }
     }
 
     private func resetFields() {

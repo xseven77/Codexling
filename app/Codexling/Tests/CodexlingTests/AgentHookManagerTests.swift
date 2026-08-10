@@ -195,6 +195,27 @@ final class AgentHookManagerTests: XCTestCase {
         let personalConfig = try String(contentsOf: manager.homeURL(for: personal).appendingPathComponent("config.toml"), encoding: .utf8)
         XCTAssertEqual(workConfig, "cli_auth_credentials_store = \"file\"\n")
         XCTAssertEqual(personalConfig, workConfig)
+
+        let token = CodexOAuthToken(
+            accessToken: "work-access",
+            refreshToken: "work-refresh",
+            idToken: "work-id",
+            expiresAt: Date().addingTimeInterval(3_600),
+            email: "work@example.com",
+            displayName: "Work"
+        )
+        let workTokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: work))
+        let personalTokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: personal))
+        workTokenStore.save(token)
+
+        let loadedToken = try XCTUnwrap(workTokenStore.load())
+        XCTAssertEqual(loadedToken.accessToken, token.accessToken)
+        XCTAssertEqual(loadedToken.refreshToken, token.refreshToken)
+        XCTAssertEqual(loadedToken.idToken, token.idToken)
+        XCTAssertEqual(loadedToken.email, token.email)
+        XCTAssertEqual(loadedToken.displayName, token.displayName)
+        XCTAssertEqual(loadedToken.expiresAt.timeIntervalSince1970, token.expiresAt.timeIntervalSince1970, accuracy: 1)
+        XCTAssertFalse(personalTokenStore.hasStoredToken())
     }
 
     func testConnectionRegistryRoundTripsDatesAndAccountScopedBalance() throws {

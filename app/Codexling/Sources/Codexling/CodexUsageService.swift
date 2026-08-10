@@ -42,7 +42,11 @@ actor CodexUsageService {
     private let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     private let redirectURI = "http://localhost:1455/auth/callback"
     private let scopes = ["openid", "email", "profile", "offline_access"]
-    private let tokenStore = CodexOAuthTokenStore()
+    private let tokenStore: CodexOAuthTokenStore
+
+    init(tokenStore: CodexOAuthTokenStore = CodexOAuthTokenStore()) {
+        self.tokenStore = tokenStore
+    }
 
     func connectAndFetch(forceLogin: Bool = false) async throws -> CodexUsageSnapshot {
         let token = try await validToken(forceLogin: forceLogin)
@@ -688,7 +692,7 @@ struct ParsedResetCard {
     let resetType: String?
 }
 
-struct CodexOAuthToken: Codable, Sendable {
+struct CodexOAuthToken: Codable, Equatable, Sendable {
     var accessToken: String
     var refreshToken: String
     var idToken: String?
@@ -712,11 +716,18 @@ private struct TokenResponse: Decodable {
 }
 
 struct CodexOAuthTokenStore: Sendable {
+    private let scopedFileURL: URL?
+
+    init(fileURL: URL? = nil) {
+        scopedFileURL = fileURL
+    }
+
     private var supportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
     private var fileURL: URL {
+        if let scopedFileURL { return scopedFileURL }
         return supportDirectory
             .appendingPathComponent("Codexling", isDirectory: true)
             .appendingPathComponent("oauth_token.json")
@@ -730,7 +741,7 @@ struct CodexOAuthTokenStore: Sendable {
 
     func hasStoredToken() -> Bool {
         FileManager.default.fileExists(atPath: fileURL.path)
-            || FileManager.default.fileExists(atPath: legacyFileURL.path)
+            || (scopedFileURL == nil && FileManager.default.fileExists(atPath: legacyFileURL.path))
     }
 
     func load() -> CodexOAuthToken? {
@@ -738,12 +749,12 @@ struct CodexOAuthTokenStore: Sendable {
             return token
         }
 
-        if let token = loadFromFile(at: legacyFileURL) {
+        if scopedFileURL == nil, let token = loadFromFile(at: legacyFileURL) {
             save(token)
             return token
         }
 
-        if let legacyToken = CodexOAuthLegacyKeychain().load() {
+        if scopedFileURL == nil, let legacyToken = CodexOAuthLegacyKeychain().load() {
             save(legacyToken)
             CodexOAuthLegacyKeychain().clear()
             return legacyToken
@@ -773,8 +784,10 @@ struct CodexOAuthTokenStore: Sendable {
 
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
-        try? FileManager.default.removeItem(at: legacyFileURL)
-        CodexOAuthLegacyKeychain().clear()
+        if scopedFileURL == nil {
+            try? FileManager.default.removeItem(at: legacyFileURL)
+            CodexOAuthLegacyKeychain().clear()
+        }
     }
 
     private func loadFromFile() -> CodexOAuthToken? {

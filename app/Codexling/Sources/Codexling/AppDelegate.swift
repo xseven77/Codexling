@@ -47,16 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.snapshotStore.isLoggedIn {
                     self.autoRefreshUsage()
                 } else {
-                    self.loginAndFetchUsage()
+                    self.openDetachedWindow()
                 }
             },
             openUsagePage: {
                 if let url = URL(string: "https://chatgpt.com/codex/settings/usage") {
                     NSWorkspace.shared.open(url)
                 }
-            },
-            loginAndFetch: { [weak self] in
-                self?.loginAndFetchUsage()
             },
             disconnect: { [weak self] in
                 self?.disconnect()
@@ -131,10 +128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.autoRefreshUsage()
             }
         }
-    }
-
-    private func loginAndFetchUsage() {
-        refreshUsage(allowOAuthLogin: true)
     }
 
     private func autoRefreshUsage() {

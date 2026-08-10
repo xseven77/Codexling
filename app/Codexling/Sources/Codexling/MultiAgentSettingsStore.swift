@@ -119,24 +119,44 @@ final class MultiAgentSettingsStore {
         let manager = codexRuntimeManager
         let supervisor = codexAppServerSupervisor
         let accounts = codexAccounts
-        let results = await Task.detached {
-            accounts.map { connection -> CodexAccountRefreshResult in
-                let state = manager.authenticationState(for: connection)
-                guard state == .connected, connection.isEnabled else {
-                    return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
-                }
-                do {
-                    let usage = try supervisor.snapshot(
-                        for: connection,
-                        homeURL: manager.homeURL(for: connection),
-                        executableURL: manager.locateCodexExecutable()
-                    )
-                    return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: usage)
-                } catch {
-                    return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
-                }
+        var results: [CodexAccountRefreshResult] = []
+        for connection in accounts {
+            guard connection.isEnabled else {
+                results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
+                continue
             }
-        }.value
+            do {
+                let tokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: connection))
+                if tokenStore.hasStoredToken() {
+                    let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
+                    results.append(CodexAccountRefreshResult(
+                        id: connection.id,
+                        state: .connected,
+                        usage: codexAccountUsage(from: snapshot)
+                    ))
+                    continue
+                }
+            } catch {
+                results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
+                continue
+            }
+
+            let state = manager.authenticationState(for: connection)
+            guard state == .connected else {
+                results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
+                continue
+            }
+            do {
+                let usage = try supervisor.snapshot(
+                    for: connection,
+                    homeURL: manager.homeURL(for: connection),
+                    executableURL: manager.locateCodexExecutable()
+                )
+                results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: usage))
+            } catch {
+                results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
+            }
+        }
         var changed = false
         for result in results {
             guard let index = codexAccounts.firstIndex(where: { $0.id == result.id }) else { continue }
@@ -156,31 +176,65 @@ final class MultiAgentSettingsStore {
         codexAppServerSupervisor.stopAll()
     }
 
-    func addCodexAccount(label: String) {
-        guard !isMutatingConnections else { return }
+    func addCodexAccount() async -> Bool {
+        guard !isMutatingConnections else { return false }
         isMutatingConnections = true
         defer { isMutatingConnections = false }
+        var pendingConnection: CodexAccountConnection?
         do {
             let fallback = "Codex 账号 \(codexAccounts.count + 1)"
-            let connection = try codexRuntimeManager.createAccount(
-                label: normalizedLabel(label, fallback: fallback)
+            var connection = try codexRuntimeManager.createAccount(label: fallback)
+            pendingConnection = connection
+            let tokenStore = CodexOAuthTokenStore(
+                fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
             )
+            let snapshot = try await CodexUsageService(tokenStore: tokenStore)
+                .connectAndFetch(forceLogin: true)
+            connection.label = normalizedLabel(
+                snapshot.accountName ?? snapshot.accountEmail,
+                fallback: fallback
+            )
+            connection.authenticationState = .connected
+            connection.usage = codexAccountUsage(from: snapshot)
             codexAccounts.append(connection)
             try saveRegistry()
-            try codexRuntimeManager.launchLogin(for: connection)
             selectCodexConnection(connection)
-            lastMessage = "已创建 \(connection.label)，正在打开官方 codex login"
+            lastMessage = "已登录并保存 \(connection.label)"
+            return true
         } catch {
-            lastMessage = "添加 Codex 账号失败：\(error.localizedDescription)"
+            if let pendingConnection {
+                try? codexRuntimeManager.removeRuntime(for: pendingConnection)
+            }
+            lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            return false
         }
     }
 
-    func launchCodexLogin(for connection: CodexAccountConnection) {
+    func authenticateCodexAccount(_ connection: CodexAccountConnection) async -> Bool {
+        guard !isMutatingConnections else { return false }
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
         do {
-            try codexRuntimeManager.launchLogin(for: connection)
-            lastMessage = "正在打开 \(connection.label) 的官方登录"
+            let tokenStore = CodexOAuthTokenStore(
+                fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
+            )
+            let snapshot = try await CodexUsageService(tokenStore: tokenStore)
+                .connectAndFetch(forceLogin: true)
+            guard let index = codexAccounts.firstIndex(where: { $0.id == connection.id }) else {
+                return false
+            }
+            codexAccounts[index].label = normalizedLabel(
+                snapshot.accountName ?? snapshot.accountEmail,
+                fallback: connection.label
+            )
+            codexAccounts[index].authenticationState = .connected
+            codexAccounts[index].usage = codexAccountUsage(from: snapshot)
+            try saveRegistry()
+            lastMessage = "已登录并更新 \(codexAccounts[index].label)"
+            return true
         } catch {
-            lastMessage = "无法启动登录：\(error.localizedDescription)"
+            lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            return false
         }
     }
 
@@ -286,6 +340,24 @@ final class MultiAgentSettingsStore {
     private func normalizedLabel(_ value: String, fallback: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : String(trimmed.prefix(60))
+    }
+
+    private func codexAccountUsage(from snapshot: CodexUsageSnapshot) -> CodexAccountUsageSnapshot {
+        CodexAccountUsageSnapshot(
+            email: snapshot.accountEmail,
+            planType: snapshot.planName,
+            primary: snapshot.shortWindow.map(codexRateLimitWindow),
+            secondary: snapshot.hasWeeklyWindow ? codexRateLimitWindow(snapshot.weekly) : nil,
+            fetchedAt: snapshot.fetchedAt
+        )
+    }
+
+    private func codexRateLimitWindow(_ window: UsageWindow) -> CodexAccountRateLimitWindow {
+        CodexAccountRateLimitWindow(
+            usedPercent: 100 - Int((window.percent * 100).rounded()),
+            resetsAt: UsageDateFormat.parseISO8601(window.resetsAt),
+            windowDurationMinutes: nil
+        )
     }
 
     private func validateSelectedConnection() {

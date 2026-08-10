@@ -268,7 +268,6 @@ struct UsageSnapshotCache {
 struct UsageActions {
     var refresh: () -> Void
     var openUsagePage: () -> Void
-    var loginAndFetch: () -> Void
     var disconnect: () -> Void
     var openDetachedWindow: () -> Void
     var quit: () -> Void

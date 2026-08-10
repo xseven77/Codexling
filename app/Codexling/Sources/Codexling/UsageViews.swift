@@ -16,15 +16,15 @@ struct DetachedUsageWindowView: View {
     @State private var showsSettings = false
 
     private var dashboardContentMode: DetachedWindowContentMode {
-        .dashboard(isLoggedIn: store.isLoggedIn, orientation: settings.dashboardOrientation)
+        .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
     }
 
     private var showsHorizontalDashboard: Bool {
-        !showsSettings && store.isLoggedIn && settings.dashboardOrientation == .horizontal
+        !showsSettings && settings.dashboardOrientation == .horizontal
     }
 
     private var showsVerticalDashboard: Bool {
-        !showsSettings && store.isLoggedIn && settings.dashboardOrientation == .vertical
+        !showsSettings && settings.dashboardOrientation == .vertical
     }
 
     private var fillsDashboardContentView: Bool {
@@ -45,7 +45,7 @@ struct DetachedUsageWindowView: View {
                         showsSettings = false
                         DispatchQueue.main.async {
                             onContentLayoutChanged(
-                                .dashboard(isLoggedIn: false, orientation: settings.dashboardOrientation)
+                                .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
                             )
                         }
                     },
@@ -139,10 +139,6 @@ struct UsagePanel: View {
         snapshot.resetCoupons.reduce(0) { $0 + $1.count }
     }
 
-    private var isAuthenticating: Bool {
-        snapshot.refreshState == "授权中"
-    }
-
     private var primaryHealth: QuotaHealthLevel {
         QuotaHealthLevel.from(window: snapshot.primaryWindow, isLoggedIn: isLoggedIn)
     }
@@ -190,13 +186,7 @@ struct UsagePanel: View {
     }
 
     var body: some View {
-        Group {
-            if isLoggedIn {
-                loggedInContent
-            } else {
-                loginContent
-            }
-        }
+        loggedInContent
         .foregroundStyle(Color.codexInk)
         .alert("确认退出登录？", isPresented: $showLogoutConfirmation) {
             Button("取消", role: .cancel) {}
@@ -237,28 +227,6 @@ struct UsagePanel: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var loginContent: some View {
-        Group {
-            switch layout {
-            case .compact:
-                VStack(spacing: 0) {
-                    loginHeader
-                    loginBody
-                    Spacer(minLength: 0)
-                    loginActionsBar
-                }
-            case .window:
-                VStack(spacing: 0) {
-                    loginHeader
-                    loginBody
-                    Spacer(minLength: 0)
-                    loginActionsBar
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
-        }
     }
 
     private var loggedInHeader: some View {
@@ -311,105 +279,8 @@ struct UsagePanel: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var loginHeader: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Codexling")
-                    .font(.system(size: 15, weight: .semibold))
-                    .padding(.leading, accountTitleLeadingPadding)
-                    .offset(y: accountTitleVerticalOffset)
-                Text("连接 OpenAI 账号以查看额度")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.codexMuted)
-            }
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 6) {
-                IconButton(systemName: "gearshape", title: "设置", action: onOpenSettings)
-                if showsDetachedButton {
-                    IconButton(systemName: "rectangle.on.rectangle.angled", title: "打开窗口", action: actions.openDetachedWindow)
-                }
-            }
-        }
-        .padding(headerInsets)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(headerBackground)
-        .overlay(alignment: .bottom) {
-            CodexDivider()
-        }
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
     private var headerBackground: some View {
         CodexChromeBackground(intensity: .header)
-    }
-
-    private var loginBody: some View {
-        VStack(spacing: 22) {
-            VStack(spacing: 8) {
-                Text("登录 Codex 账号")
-                    .font(.system(size: 20, weight: .semibold))
-
-                Text("通过 ChatGPT / Codex 官方页面完成授权\n不保存账号密码或 MFA 信息")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.codexMuted)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                LoginFeatureRow(icon: "checkmark.shield.fill", text: "官方 OAuth 授权，安全可控")
-                LoginFeatureRow(icon: "gauge.with.dots.needle.67percent", text: "实时查看 5 小时与周额度")
-                LoginFeatureRow(icon: "ticket.fill", text: "追踪重置券与过期时间")
-            }
-        .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .liquidGlassSurface(cornerRadius: 10, tint: Color.codexGlassTint, shadowOpacity: 0.04)
-
-            if isAuthenticating {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在打开授权页面，请在浏览器中完成登录…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.codexMuted)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else if !snapshot.refreshState.isEmpty,
-                      snapshot.refreshState != "预览数据",
-                      snapshot.refreshState != "成功" {
-                Text(snapshot.refreshState)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.codexAmber)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 28)
-    }
-
-    private var loginActionsBar: some View {
-        HStack(spacing: 8) {
-            Button(action: actions.loginAndFetch) {
-                Text(isAuthenticating ? "等待授权…" : "使用 OpenAI 账号登录")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(isAuthenticating)
-
-            IconButton(systemName: "power", title: "退出软件", action: actions.quit)
-                .frame(width: 36)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 14)
-        .frame(maxWidth: .infinity)
-        .background(actionBarBackground)
-        .overlay(alignment: .top) {
-            CodexDivider()
-        }
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var summary: some View {
@@ -562,24 +433,6 @@ struct CodexChromeBackground: View {
                     }
                 }
             }
-        }
-    }
-}
-
-struct LoginFeatureRow: View {
-    let icon: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.codexMuted)
-                .frame(width: 18)
-
-            Text(text)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.codexInk)
         }
     }
 }
