@@ -67,11 +67,12 @@ struct AccountConnectionsModalView: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .medium))
-                    .frame(width: 30, height: 30)
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 38, height: 38)
+                    .contentShape(Circle())
+                    .background(closeButtonSurface, in: Circle())
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.codexMuted)
-            .background(closeButtonSurface, in: Circle())
+            .buttonStyle(CodexPressableCircleStyle())
             .accessibilityLabel("关闭添加连接")
         }
     }
@@ -107,9 +108,8 @@ struct AccountConnectionsModalView: View {
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 9))
                     .frame(maxWidth: .infinity)
-                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .foregroundStyle(selectedTab == tab ? Color.codexInk : Color.codexMuted)
                 }
             }
@@ -184,7 +184,7 @@ struct AccountConnectionsModalView: View {
                     .strokeBorder(Color.codexLine, lineWidth: 1)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CodexPressableCardStyle(cornerRadius: 13))
         .disabled(store.isMutatingConnections)
     }
 
@@ -200,8 +200,14 @@ struct AccountConnectionsModalView: View {
                     .foregroundStyle(Color.red)
             }
             HStack(spacing: 8) {
-                Button("返回") { page = .picker }
-                    .buttonStyle(.bordered)
+                Button { page = .picker } label: {
+                    Text("返回")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 Spacer()
                 Button {
                     Task {
@@ -210,13 +216,20 @@ struct AccountConnectionsModalView: View {
                         }
                     }
                 } label: {
-                    if store.isMutatingConnections {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("验证并添加")
+                    HStack(spacing: 6) {
+                        if store.isMutatingConnections {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("验证并添加")
+                        }
                     }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 15)
+                    .frame(height: 32)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
                 .disabled(store.isMutatingConnections || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

@@ -779,6 +779,22 @@ struct CodexPressableCardStyle: PrimitiveButtonStyle {
     }
 }
 
+/// Square icon controls that render as circles, including a full-circle hit
+/// target and a Material wave clipped to the same shape.
+struct CodexPressableCircleStyle: PrimitiveButtonStyle {
+    var ink: CodexMaterialWaveInk = .adaptiveMint
+
+    func makeBody(configuration: Configuration) -> some View {
+        CodexMaterialWaveButtonBody(
+            action: { configuration.trigger() },
+            usesCapsule: true,
+            ink: ink
+        ) {
+            configuration.label
+        }
+    }
+}
+
 struct IconButtonStyle: PrimitiveButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
 

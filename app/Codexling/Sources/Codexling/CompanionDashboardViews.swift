@@ -476,8 +476,7 @@ private struct DashboardConnectionSwitcher: View {
                     .frame(width: 36, height: 36)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .buttonStyle(CodexPressableStyle(cornerRadius: 9))
             .foregroundStyle(Color.codexMuted)
             .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
@@ -522,7 +521,7 @@ private struct DashboardConnectionSwitcher: View {
                     .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CodexPressableCardStyle(cornerRadius: 11))
         .accessibilityLabel("\(title)，\(subtitle)")
         .accessibilityValue(selected ? "已选择" : "未选择")
     }
@@ -635,15 +634,28 @@ private struct ManagedCodexDashboardCard: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 94)
                 HStack {
-                    Button("检查登录") { Task { await store.refreshCodexAccounts() } }
-                        .buttonStyle(.bordered)
+                    Button { Task { await store.refreshCodexAccounts() } } label: {
+                        Text("检查登录")
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 13)
+                            .frame(height: 32)
+                            .background(Color.codexLine.opacity(0.45), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                     Spacer()
                     if connection.authenticationState != .connected {
-                        Button("官方登录") {
+                        Button {
                             Task { await store.authenticateCodexAccount(connection) }
+                        } label: {
+                            Text("官方登录")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                                .padding(.horizontal, 13)
+                                .frame(height: 32)
+                                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                         }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(store.isMutatingConnections)
+                        .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
+                        .disabled(store.isMutatingConnections)
                     }
                 }
             }
@@ -763,8 +775,11 @@ private struct DeepSeekDashboardCard: View {
                     Button(action: onRefresh) {
                         Label("查询余额", systemImage: "arrow.clockwise")
                             .frame(maxWidth: .infinity)
+                            .frame(height: 34)
+                            .foregroundStyle(Color.white)
+                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
                     Button(action: {}) { Image(systemName: "gearshape") }
                         .buttonStyle(.bordered)
                         .disabled(true)
