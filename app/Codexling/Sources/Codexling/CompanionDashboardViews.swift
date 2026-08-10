@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct CompanionDashboardView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
     @Bindable var multiAgentSettings: MultiAgentSettingsStore
@@ -58,7 +59,7 @@ struct CompanionDashboardView: View {
             if showsConnectionSheet {
                 ZStack {
                     Rectangle()
-                        .fill(Color.black.opacity(0.24))
+                        .fill(Color.black.opacity(colorScheme == .dark ? 0.52 : 0.20))
                         .background(.ultraThinMaterial)
                         .ignoresSafeArea()
                         .onTapGesture { showsConnectionSheet = false }

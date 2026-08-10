@@ -18,6 +18,7 @@ private enum ConnectionModalPage {
 /// landing Preview. It intentionally stays inside the dashboard instead of
 /// navigating to Settings or presenting a native macOS sheet.
 struct AccountConnectionsModalView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: MultiAgentSettingsStore
     let onClose: () -> Void
 
@@ -41,13 +42,12 @@ struct AccountConnectionsModalView: View {
         }
         .padding(16)
         .frame(maxWidth: 330)
-        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .background(Color.codexCard.opacity(0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(modalSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                .strokeBorder(modalBorder, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.30), radius: 28, y: 14)
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.52 : 0.24), radius: 28, y: 14)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("添加账号或 API Key")
     }
@@ -74,7 +74,7 @@ struct AccountConnectionsModalView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color.codexMuted)
-            .background(Color.codexInk.opacity(0.04), in: Circle())
+            .background(closeButtonSurface, in: Circle())
             .accessibilityLabel("关闭添加连接")
         }
     }
@@ -107,7 +107,7 @@ struct AccountConnectionsModalView: View {
                             .frame(maxWidth: .infinity)
                             .frame(height: 30)
                             .background(
-                                selectedTab == tab ? Color.codexCard : Color.clear,
+                                selectedTab == tab ? selectedTabSurface : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                             )
                     }
@@ -116,7 +116,7 @@ struct AccountConnectionsModalView: View {
                 }
             }
             .padding(4)
-            .background(Color.codexInk.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .padding(.top, 14)
 
             if selectedTab == .agent {
@@ -165,7 +165,7 @@ struct AccountConnectionsModalView: View {
             .padding(.horizontal, 10)
             .frame(height: 58)
             .contentShape(Rectangle())
-            .background(Color.codexCard.opacity(0.42), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(optionSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(Color.codexLine, lineWidth: 1)
@@ -234,5 +234,31 @@ struct AccountConnectionsModalView: View {
     private func resetFields() {
         label = ""
         apiKey = ""
+    }
+
+    private var modalSurface: Color {
+        colorScheme == .dark
+            ? Color(red: 0.205, green: 0.205, blue: 0.218)
+            : Color(red: 0.985, green: 0.985, blue: 0.980)
+    }
+
+    private var modalBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.28) : Color.black.opacity(0.12)
+    }
+
+    private var segmentedSurface: Color {
+        colorScheme == .dark ? Color.black.opacity(0.35) : Color.black.opacity(0.055)
+    }
+
+    private var selectedTabSurface: Color {
+        colorScheme == .dark ? Color.white.opacity(0.10) : Color.white.opacity(0.95)
+    }
+
+    private var optionSurface: Color {
+        colorScheme == .dark ? Color.white.opacity(0.035) : Color.white.opacity(0.62)
+    }
+
+    private var closeButtonSurface: Color {
+        colorScheme == .dark ? Color.black.opacity(0.12) : Color.black.opacity(0.035)
     }
 }
