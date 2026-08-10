@@ -46,7 +46,7 @@ struct BrandIconView: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .padding(size * 0.16)
+                    .padding(contentInset)
             } else {
                 Image(systemName: "app.dashed")
                     .font(.system(size: size * 0.42, weight: .medium))
@@ -60,5 +60,12 @@ struct BrandIconView: View {
                 .strokeBorder(Color.codexLine.opacity(0.75), lineWidth: 0.7)
         }
         .accessibilityHidden(true)
+    }
+
+    private var contentInset: CGFloat {
+        // Codex's color SVG already includes its own white tile and optical
+        // padding. Keeping the generic inset makes the terminal chevron blur
+        // into that tile at compact sizes and look like a clipped corner.
+        asset == .codex ? size * 0.10 : size * 0.16
     }
 }
