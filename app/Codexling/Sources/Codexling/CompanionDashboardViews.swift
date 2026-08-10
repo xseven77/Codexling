@@ -16,6 +16,7 @@ struct CompanionDashboardView: View {
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
 
     @State private var selectedTaskID: String?
+    @State private var showsConnectionSheet = false
 
     var body: some View {
         Group {
@@ -53,6 +54,25 @@ struct CompanionDashboardView: View {
                 self.selectedTaskID = ids.first
             }
         }
+        .overlay {
+            if showsConnectionSheet {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.black.opacity(0.24))
+                        .background(.ultraThinMaterial)
+                        .ignoresSafeArea()
+                        .onTapGesture { showsConnectionSheet = false }
+
+                    AccountConnectionsModalView(store: multiAgentSettings) {
+                        showsConnectionSheet = false
+                    }
+                    .padding(14)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+                }
+                .zIndex(20)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
     }
 
     private var dashboard: some View {
@@ -165,7 +185,7 @@ struct CompanionDashboardView: View {
         DashboardConnectionSwitcher(
             snapshot: store.snapshot,
             store: multiAgentSettings,
-            onAdd: onOpenSettings
+            onAdd: { showsConnectionSheet = true }
         )
         .padding(.horizontal, 16)
         .frame(height: 59)
@@ -254,7 +274,7 @@ struct CompanionDashboardView: View {
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
                 store: multiAgentSettings,
-                onAdd: onOpenSettings,
+                onAdd: { showsConnectionSheet = true },
                 compact: true
             )
             .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)

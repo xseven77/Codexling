@@ -1,237 +1,206 @@
 import SwiftUI
 
-private enum AddConnectionSheet: String, Identifiable {
-    case codex
-    case deepSeek
+private enum ConnectionPickerTab: String, CaseIterable, Identifiable {
+    case agent
+    case apiKey
 
     var id: String { rawValue }
+    var title: String { self == .agent ? "Agent 账号" : "API Key" }
 }
 
-private struct PendingConnectionRemoval: Identifiable {
-    enum Target {
-        case codex(CodexAccountConnection)
-        case deepSeek(DeepSeekAPIConnection)
-    }
-
-    let id = UUID()
-    let target: Target
+private enum ConnectionModalPage {
+    case picker
+    case codex
+    case deepSeek
 }
 
-struct AccountConnectionsSettingsView: View {
-    @Bindable var store: MultiAgentSettingsStore
-    @State private var addSheet: AddConnectionSheet?
-    @State private var pendingRemoval: PendingConnectionRemoval?
-
-    var body: some View {
-        SettingsSection(
-            title: "账号与 API Keys",
-            subtitle: "每个 Codex 账号使用独立 CODEX_HOME；DeepSeek Key 只存入 Keychain，余额按官方账户口径显示。"
-        ) {
-            VStack(spacing: 0) {
-                connectionActions
-                if !store.codexAccounts.isEmpty || !store.deepSeekConnections.isEmpty {
-                    CodexDivider()
-                    connectionRows
-                }
-            }
-            .settingsGroupSurface()
-        }
-        .sheet(item: $addSheet) { sheet in
-            switch sheet {
-            case .codex:
-                AddCodexAccountSheet(store: store) { addSheet = nil }
-            case .deepSeek:
-                AddDeepSeekKeySheet(store: store) { addSheet = nil }
-            }
-        }
-        .alert(item: $pendingRemoval) { pending in
-            removalAlert(pending)
-        }
-    }
-
-    private var connectionActions: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("新增连接")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("登录由官方 CLI 完成；Codexling 不读取或复制 token")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.codexMuted)
-            }
-            Spacer(minLength: 8)
-            Button {
-                addSheet = .codex
-            } label: {
-                Label("Codex 账号", systemImage: "person.badge.plus")
-            }
-            .buttonStyle(.bordered)
-            Button {
-                addSheet = .deepSeek
-            } label: {
-                Label("DeepSeek Key", systemImage: "key")
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 62)
-    }
-
-    private var connectionRows: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(store.codexAccounts.enumerated()), id: \.element.id) { index, connection in
-                codexRow(connection)
-                if index < store.codexAccounts.count - 1 || !store.deepSeekConnections.isEmpty {
-                    CodexDivider()
-                }
-            }
-            ForEach(Array(store.deepSeekConnections.enumerated()), id: \.element.id) { index, connection in
-                deepSeekRow(connection)
-                if index < store.deepSeekConnections.count - 1 {
-                    CodexDivider()
-                }
-            }
-        }
-    }
-
-    private func codexRow(_ connection: CodexAccountConnection) -> some View {
-        HStack(spacing: 12) {
-            BrandIconView(asset: .codex, size: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(connection.label)
-                    .font(.system(size: 12, weight: .semibold))
-                Text("独立 CODEX_HOME · \(connection.relativeHomeDirectory.prefix(8))")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.codexMuted)
-            }
-            Spacer(minLength: 8)
-            Text(connection.authenticationState == .connected ? "已连接" : "待登录")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
-            Button("登录") { store.launchCodexLogin(for: connection) }
-                .buttonStyle(.bordered)
-            Button(role: .destructive) {
-                pendingRemoval = PendingConnectionRemoval(target: .codex(connection))
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .help("移除此 Codex 账号运行目录")
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 64)
-    }
-
-    private func deepSeekRow(_ connection: DeepSeekAPIConnection) -> some View {
-        HStack(spacing: 12) {
-            BrandIconView(asset: .deepSeek, size: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(connection.label)
-                    .font(.system(size: 12, weight: .semibold))
-                Text("sk-•••• \(connection.keySuffix) · 账户余额")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.codexMuted)
-            }
-            Spacer(minLength: 8)
-            if let balance = connection.balance {
-                Text(balanceText(balance))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-            } else {
-                Text("—")
-                    .foregroundStyle(Color.codexMuted)
-            }
-            Button {
-                Task { await store.refreshDeepSeekConnection(connection) }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .disabled(store.isMutatingConnections)
-            Button(role: .destructive) {
-                pendingRemoval = PendingConnectionRemoval(target: .deepSeek(connection))
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .help("从 Keychain 移除此 API Key")
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 64)
-    }
-
-    private func balanceText(_ balance: ProviderBalanceSnapshot) -> String {
-        let value = NSDecimalNumber(decimal: balance.total).stringValue
-        return balance.currency == "CNY" ? "¥\(value)" : "\(balance.currency) \(value)"
-    }
-
-    private func removalAlert(_ pending: PendingConnectionRemoval) -> Alert {
-        switch pending.target {
-        case .codex(let connection):
-            return Alert(
-                title: Text("移除 \(connection.label)？"),
-                message: Text("将删除这个账号的独立 CODEX_HOME，包括由官方 Codex 写入其中的登录状态和本地 session；其他账号不受影响。"),
-                primaryButton: .destructive(Text("移除")) { store.removeCodexAccount(connection) },
-                secondaryButton: .cancel()
-            )
-        case .deepSeek(let connection):
-            return Alert(
-                title: Text("移除 \(connection.label)？"),
-                message: Text("将从 Keychain 删除对应 API Key；其他 Key 不受影响。"),
-                primaryButton: .destructive(Text("移除")) { store.removeDeepSeekConnection(connection) },
-                secondaryButton: .cancel()
-            )
-        }
-    }
-}
-
-private struct AddCodexAccountSheet: View {
+/// Dashboard-owned modal matching the connection picker demonstrated by the
+/// landing Preview. It intentionally stays inside the dashboard instead of
+/// navigating to Settings or presenting a native macOS sheet.
+struct AccountConnectionsModalView: View {
     @Bindable var store: MultiAgentSettingsStore
     let onClose: () -> Void
-    @State private var label = ""
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("添加 Codex 账号")
-                .font(.system(size: 18, weight: .bold))
-            Text("Codexling 将创建独立 CODEX_HOME，并在 Terminal 中启动官方 codex login。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.codexMuted)
-            TextField("例如：Work / Personal", text: $label)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Spacer()
-                Button("取消", action: onClose)
-                Button("创建并登录") {
-                    store.addCodexAccount(label: label)
-                    onClose()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(22)
-        .frame(width: 390)
-    }
-}
-
-private struct AddDeepSeekKeySheet: View {
-    @Bindable var store: MultiAgentSettingsStore
-    let onClose: () -> Void
+    @State private var selectedTab: ConnectionPickerTab = .agent
+    @State private var page: ConnectionModalPage = .picker
     @State private var label = ""
     @State private var apiKey = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("添加 DeepSeek API Key")
-                .font(.system(size: 18, weight: .bold))
-            Text("Key 将保存到 macOS Keychain，并发送到 DeepSeek 官方 /user/balance 接口验证。显示的是账户余额，不是每 Key 独享余额。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.codexMuted)
+        VStack(alignment: .leading, spacing: 0) {
+            modalHeader
+
+            switch page {
+            case .picker:
+                pickerContent
+            case .codex:
+                codexForm
+            case .deepSeek:
+                deepSeekForm
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: 330)
+        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color.codexCard.opacity(0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.30), radius: 28, y: 14)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("添加账号或 API Key")
+    }
+
+    private var modalHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(page == .picker ? "NEW CONNECTION" : "NEW CREDENTIAL")
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundStyle(Color.codexGreen)
+                Text(headerTitle)
+                    .font(.system(size: 17, weight: .bold))
+                Text(headerSubtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.top, 2)
+            }
+            Spacer(minLength: 8)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.codexMuted)
+            .background(Color.codexInk.opacity(0.04), in: Circle())
+            .accessibilityLabel("关闭添加连接")
+        }
+    }
+
+    private var headerTitle: String {
+        switch page {
+        case .picker: "添加账号或 API Key"
+        case .codex: "登录另一个 Codex 账号"
+        case .deepSeek: "添加 DeepSeek API Key"
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch page {
+        case .picker: "同一种 Agent 可以登录多个账号。"
+        case .codex: "使用独立 CODEX_HOME，并委托官方 CLI 登录。"
+        case .deepSeek: "Key 只存入 macOS Keychain，用于官方余额接口。"
+        }
+    }
+
+    private var pickerContent: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 4) {
+                ForEach(ConnectionPickerTab.allCases) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Text(tab.title)
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 30)
+                            .background(
+                                selectedTab == tab ? Color.codexCard : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(selectedTab == tab ? Color.codexInk : Color.codexMuted)
+                }
+            }
+            .padding(4)
+            .background(Color.codexInk.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.top, 14)
+
+            if selectedTab == .agent {
+                connectionOption(
+                    asset: .codex,
+                    title: "登录另一个 Codex 账号",
+                    subtitle: "委托官方登录"
+                ) {
+                    resetFields()
+                    page = .codex
+                }
+            } else {
+                connectionOption(
+                    asset: .deepSeek,
+                    title: "添加 DeepSeek API Key",
+                    subtitle: "查询官方账户余额"
+                ) {
+                    resetFields()
+                    page = .deepSeek
+                }
+            }
+        }
+    }
+
+    private func connectionOption(
+        asset: BrandAssetID,
+        title: String,
+        subtitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                BrandIconView(asset: asset, size: 38, cornerRadius: 10)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(subtitle)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 58)
+            .contentShape(Rectangle())
+            .background(Color.codexCard.opacity(0.42), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(Color.codexLine, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var codexForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("账号名称，例如 Work / Personal", text: $label)
+                .textFieldStyle(.roundedBorder)
+            formActions(primaryTitle: "创建并登录") {
+                store.addCodexAccount(label: label)
+                onClose()
+            }
+        }
+        .padding(.top, 16)
+    }
+
+    private var deepSeekForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
             TextField("连接名称", text: $label)
                 .textFieldStyle(.roundedBorder)
             SecureField("sk-…", text: $apiKey)
                 .textFieldStyle(.roundedBorder)
-            HStack {
+            if let message = store.lastMessage, message.contains("失败") {
+                Text(message)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.red)
+            }
+            HStack(spacing: 8) {
+                Button("返回") { page = .picker }
+                    .buttonStyle(.bordered)
                 Spacer()
-                Button("取消", action: onClose)
                 Button {
                     Task {
                         if await store.addDeepSeekConnection(label: label, apiKey: apiKey) {
@@ -249,7 +218,21 @@ private struct AddDeepSeekKeySheet: View {
                 .disabled(store.isMutatingConnections || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(22)
-        .frame(width: 420)
+        .padding(.top, 16)
+    }
+
+    private func formActions(primaryTitle: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Button("返回") { page = .picker }
+                .buttonStyle(.bordered)
+            Spacer()
+            Button(primaryTitle, action: action)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func resetFields() {
+        label = ""
+        apiKey = ""
     }
 }

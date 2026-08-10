@@ -195,7 +195,6 @@ struct SettingsView: View {
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             accountCard
-            AccountConnectionsSettingsView(store: multiAgentSettings)
             agentIntegrationsSection
             updateSection
             petSection

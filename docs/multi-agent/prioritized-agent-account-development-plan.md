@@ -83,6 +83,13 @@ account: <connection-id>
 - 首期不展示“某 Key 已花费多少”，除非后续有官方 Key 级 usage API。
 - 401/403 仅使当前 connection invalid，不影响其他 Key。
 
+截至 2026-08-10，DeepSeek 官方开放 API 没有发布账号级 OAuth / Access Token，也没有发布列出账号全部 API Key 或按 Key 查询每日用量的接口。公开 API Reference 中只有使用 API Key Bearer 认证的模型、生成与 `/user/balance` 等接口；官方 FAQ 提供的按 Key 明细路径仍是用户登录 Platform 后，在 Usage 页面按月导出数据包，并读取其中的 `amount` CSV。
+
+因此首期不能改成“账号 Token 登录”：Codexling 不保存 DeepSeek 账号密码、不提取网页 Cookie，也不调用抓包得到的未公开接口。产品继续使用 API Key 查询账号级余额，并可在后续增加两个安全能力：
+
+1. 打开 DeepSeek 官方 Usage 页面，由用户自行查看或导出。
+2. 用户主动选择本地导出的官方 CSV 后，在设备内解析按 Key / 日期的历史用量；导入文件不上传。
+
 ## 3. Agent 接入方案
 
 | 优先级 | 对象 | 首选接入 | Attached/回退 | 首期能力 | 可行性 |
