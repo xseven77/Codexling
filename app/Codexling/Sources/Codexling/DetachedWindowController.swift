@@ -32,8 +32,8 @@ enum DetachedWindowMetrics {
     static let minHeight: CGFloat = 420
     static let maxHeight: CGFloat = 960
     static let loginDashboardHeight: CGFloat = 440
-    /// 横版已登录：包含 M1 重置券融合区；略微收紧券卡与底部工具栏之间的留白。
-    static let loggedInDashboardHeight: CGFloat = 658
+    /// 横版已登录：连接栏、账号上下文、任务、额度、重置券与底部工具栏完整可见。
+    static let loggedInDashboardHeight: CGFloat = 760
     static let horizontalMinHeight: CGFloat = 420
 
     static func dashboardWidth(for orientation: DashboardOrientation) -> CGFloat {
@@ -192,6 +192,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     /// 竖向实测内容高度。
     private var dashboardMeasuredHeight: CGFloat?
     private var settingsMeasuredContentHeight: CGFloat?
+    private var titleControlsAccessory: NSTitlebarAccessoryViewController!
+    private var titleControlsContainer: NSView!
     private var titleControlsHostingView: NSHostingView<WindowTitleControls>!
 
     init(
@@ -341,7 +343,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     private func installTitleControls() {
         let accessory = NSTitlebarAccessoryViewController()
-        accessory.layoutAttribute = .right
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 66, height: 28))
         let hostingView = NSHostingView(
@@ -352,7 +353,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
         accessory.view = container
         window.addTitlebarAccessoryViewController(accessory)
+        titleControlsAccessory = accessory
+        titleControlsContainer = container
         titleControlsHostingView = hostingView
+        updateTitleControlsPlacement()
     }
 
     private func applyAlwaysOnTop() {
@@ -378,6 +382,40 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private func updateTitleControlsAppearance() {
         guard let titleControlsHostingView else { return }
         titleControlsHostingView.rootView = makeTitleControls()
+        updateTitleControlsPlacement()
+    }
+
+    private func updateTitleControlsPlacement() {
+        guard let titleControlsAccessory,
+              let titleControlsContainer,
+              let titleControlsHostingView else { return }
+
+        let usesPetColumn = if case .dashboard(_, .horizontal) = contentMode { true } else { false }
+        let showsOrientationToggle = if case .dashboard = contentMode { true } else { false }
+        let targetAttribute: NSLayoutConstraint.Attribute = usesPetColumn ? .left : .right
+
+        if usesPetColumn {
+            // The horizontal layout's left column is the generic Pet surface.
+            // Place window controls at that column's top-right, after the
+            // traffic lights, rather than over the account-specific content.
+            titleControlsContainer.frame.size = NSSize(width: 118, height: 28)
+            titleControlsHostingView.frame = NSRect(x: 55, y: 0, width: 60, height: 28)
+        } else if showsOrientationToggle {
+            titleControlsContainer.frame.size = NSSize(width: 66, height: 28)
+            titleControlsHostingView.frame = NSRect(x: 3, y: 0, width: 60, height: 28)
+        } else {
+            // Settings only shows the pin. Keep the accessory's hit region to
+            // the visible 28pt button so it cannot cover the SwiftUI close.
+            titleControlsContainer.frame.size = NSSize(width: 34, height: 28)
+            titleControlsHostingView.frame = NSRect(x: 3, y: 0, width: 28, height: 28)
+        }
+
+        guard titleControlsAccessory.layoutAttribute != targetAttribute else { return }
+        if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === titleControlsAccessory }) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+        titleControlsAccessory.layoutAttribute = targetAttribute
+        window.addTitlebarAccessoryViewController(titleControlsAccessory)
     }
 
     private func makeTitleControls() -> WindowTitleControls {
@@ -780,6 +818,6 @@ private struct WindowTitleControls: View {
             .help(isPinned ? "取消置顶" : "置顶窗口")
             .accessibilityLabel(isPinned ? "取消窗口置顶" : "窗口置顶")
         }
-        .frame(width: 60, height: 28, alignment: .trailing)
+        .frame(width: orientation == nil ? 28 : 60, height: 28, alignment: .trailing)
     }
 }

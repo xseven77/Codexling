@@ -3,6 +3,44 @@ import SwiftUI
 
 private enum SettingsLayoutMetrics {
     static let sectionSpacing: CGFloat = 24
+    static let sidebarWidth: CGFloat = 154
+    static let splitMinimumHeight: CGFloat = 560
+}
+
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case accounts
+    case agents
+    case general
+    case pet
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .accounts: "账户池"
+        case .agents: "Agents 与 Hooks"
+        case .general: "通用"
+        case .pet: "状态栏与 Pet"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .accounts: "统一查看本机账号与 API Key"
+        case .agents: "本地 Agent 探测与 Hook 管理"
+        case .general: "应用、外观与刷新行为"
+        case .pet: "Pet、状态胶囊与任务浮窗"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .accounts: "person.2"
+        case .agents: "terminal"
+        case .general: "slider.horizontal.3"
+        case .pet: "pawprint"
+        }
+    }
 }
 
 private struct PendingAgentHookAction: Identifiable {
@@ -29,6 +67,7 @@ struct SettingsView: View {
     @State private var pendingHookAction: PendingAgentHookAction?
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
+    @State private var selectedTab: SettingsTab = .accounts
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -113,32 +152,15 @@ struct SettingsView: View {
     private var baseContent: some View {
         VStack(spacing: 0) {
             header
-            Group {
-                if layout == .window {
-                    GeometryReader { geometry in
-                        ViewThatFits(in: .vertical) {
-                            settingsWindowColumn
-
-                            ScrollView {
-                                settingsContent
-                            }
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                        }
-                    }
-                } else {
-                    ViewThatFits(in: .vertical) {
-                        settingsContent
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        ScrollView {
-                            settingsContent
-                        }
-                        .scrollIndicators(.hidden)
-                        .background(ScrollIndicatorHider())
-                    }
+            if layout == .window {
+                settingsSplitView
+            } else {
+                ScrollView {
+                    allSettingsContent
+                }
+                .scrollIndicators(.hidden)
+                .background(ScrollIndicatorHider())
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
@@ -177,10 +199,24 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsWindowColumn: some View {
-        settingsContent
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+    private var settingsSplitView: some View {
+        HStack(spacing: 0) {
+            settingsSidebar
+                .frame(width: SettingsLayoutMetrics.sidebarWidth)
+
+            CodexDivider(.vertical)
+
+            ScrollView {
+                selectedSettingsContent
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .scrollIndicators(.automatic)
+            .background(Color.codexBackground.opacity(0.50))
+        }
+        .frame(minHeight: SettingsLayoutMetrics.splitMinimumHeight)
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(
@@ -192,9 +228,9 @@ struct SettingsView: View {
         .id(settingsMeasuredContentIdentity)
     }
 
-    private var settingsContent: some View {
+    private var allSettingsContent: some View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
-            accountCard
+            accountPoolSection
             agentIntegrationsSection
             updateSection
             petSection
@@ -203,6 +239,80 @@ struct SettingsView: View {
         .padding(.horizontal, 18)
         .padding(.top, 16)
         .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SETTINGS")
+                .font(.system(size: 9, weight: .bold))
+                .tracking(1.4)
+                .foregroundStyle(Color.codexMuted)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 7)
+
+            ForEach(SettingsTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 18)
+                        Text(tab.title)
+                            .font(.system(size: 11, weight: selectedTab == tab ? .semibold : .medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(selectedTab == tab ? Color.codexInk : Color.codexMuted)
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .contentShape(Rectangle())
+                    .background(
+                        selectedTab == tab ? Color.codexPrimary.opacity(0.10) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 9))
+                .accessibilityValue(selectedTab == tab ? "已选择" : "")
+            }
+
+            Spacer(minLength: 12)
+
+            Text("Codexling \(updater.currentVersion)")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted.opacity(0.82))
+                .padding(.horizontal, 10)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.codexCard.opacity(0.72))
+    }
+
+    private var selectedSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedTab.title)
+                    .font(.system(size: 20, weight: .bold))
+                Text(selectedTab.subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+            }
+
+            switch selectedTab {
+            case .accounts:
+                accountPoolSection
+            case .agents:
+                agentIntegrationsSection
+            case .general:
+                updateSection
+            case .pet:
+                petSection
+                thirdPartyPetResourcesSection
+            }
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -219,6 +329,115 @@ struct SettingsView: View {
 
     private var petPreviewIdentity: String {
         settings.availablePets.map(\.id).joined(separator: "|")
+    }
+
+    private var accountPoolSection: some View {
+        SettingsSection(
+            title: "已连接",
+            subtitle: "账号凭据保持隔离；新增账号或 API Key 请使用主界面的加号。"
+        ) {
+            VStack(spacing: 0) {
+                if store.isLoggedIn {
+                    accountPoolRow(
+                        asset: .codex,
+                        title: store.snapshot.companionAccountName,
+                        subtitle: store.snapshot.accountEmail,
+                        badge: store.snapshot.planName.isEmpty ? "当前 Codex" : store.snapshot.planName,
+                        badgeColor: Color.codexGreen
+                    )
+                    CodexDivider()
+                }
+
+                ForEach(multiAgentSettings.codexAccounts) { connection in
+                    accountPoolRow(
+                        asset: .codex,
+                        title: connection.label,
+                        subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
+                        badge: connection.authenticationState == .connected ? "已连接" : "待登录",
+                        badgeColor: connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber
+                    )
+                    CodexDivider()
+                }
+
+                ForEach(multiAgentSettings.deepSeekConnections) { connection in
+                    accountPoolRow(
+                        asset: .deepSeek,
+                        title: connection.label,
+                        subtitle: "sk-•••• \(connection.keySuffix)",
+                        badge: deepSeekPoolBadge(connection),
+                        badgeColor: deepSeekPoolColor(connection)
+                    )
+                    CodexDivider()
+                }
+
+                if !store.isLoggedIn,
+                   multiAgentSettings.codexAccounts.isEmpty,
+                   multiAgentSettings.deepSeekConnections.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "person.2.badge.plus")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(Color.codexMuted)
+                        Text("账户池为空")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("回到主界面，通过加号添加 Codex 账号或 DeepSeek API Key。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.codexMuted)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 128)
+                    .padding(16)
+                }
+            }
+            .settingsGroupSurface()
+        }
+    }
+
+    private func accountPoolRow(
+        asset: BrandAssetID,
+        title: String,
+        subtitle: String,
+        badge: String,
+        badgeColor: Color
+    ) -> some View {
+        HStack(spacing: 12) {
+            BrandIconView(asset: asset, size: 38, cornerRadius: 10)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text(badge)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(badgeColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(badgeColor.opacity(0.10), in: Capsule())
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 64)
+    }
+
+    private func deepSeekPoolBadge(_ connection: DeepSeekAPIConnection) -> String {
+        guard connection.authenticationState == .connected else { return "异常" }
+        guard let total = connection.balance?.total else { return "待查询" }
+        return "¥\(total)"
+    }
+
+    private func deepSeekPoolColor(_ connection: DeepSeekAPIConnection) -> Color {
+        switch ProviderBalanceIndicator.resolve(
+            total: connection.balance?.total,
+            authenticationState: connection.authenticationState
+        ) {
+        case .healthy: Color.codexGreen
+        case .low: Color.codexAmber
+        case .depleted: Color.codexRed
+        }
     }
 
     private var accountCard: some View {

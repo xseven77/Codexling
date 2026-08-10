@@ -81,31 +81,33 @@ struct CompanionDashboardView: View {
     /// 独立横版：`GeometryReader` 贴合 AppKit contentLayoutRect，避免 frame/content 偏差。
     private var horizontalDashboardWindowLayout: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                dashboardConnectionBar
-                HStack(alignment: .top, spacing: 0) {
-                    CompanionSidebar(
-                        snapshot: store.snapshot,
-                        activity: activityStore.snapshot,
-                        integrations: multiAgentSettings.integrations,
-                        settings: settings,
-                        frameStore: frameStore,
-                        todayMinutes: companionStatsStore.todayMinutes,
-                        fillColumnHeight: true
-                    )
-                    .frame(width: DetachedWindowMetrics.sidebarWidth)
-                    .zIndex(2)
+            HStack(alignment: .top, spacing: 0) {
+                CompanionSidebar(
+                    snapshot: store.snapshot,
+                    activity: activityStore.snapshot,
+                    integrations: multiAgentSettings.integrations,
+                    settings: settings,
+                    frameStore: frameStore,
+                    todayMinutes: companionStatsStore.todayMinutes,
+                    fillColumnHeight: true
+                )
+                .frame(width: DetachedWindowMetrics.sidebarWidth)
+                .zIndex(2)
 
-                    VStack(spacing: 0) {
-                        horizontalDashboardMainContent
-                            .layoutPriority(1)
-                        Spacer(minLength: 0)
-                        horizontalDashboardSyncFooter
-                            .layoutPriority(1)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .background(Color.codexCard.opacity(0.96))
+                VStack(spacing: 0) {
+                    dashboardConnectionBar
+                    CompanionHorizontalAccountHeader(
+                        snapshot: store.snapshot,
+                        activity: activityStore.snapshot
+                    )
+                    horizontalDashboardMainContent
+                        .layoutPriority(1)
+                    Spacer(minLength: 0)
+                    horizontalDashboardSyncFooter
+                        .layoutPriority(1)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(Color.codexCard.opacity(0.96))
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
             .background {
@@ -115,21 +117,25 @@ struct CompanionDashboardView: View {
     }
 
     private var horizontalDashboardCompactLayout: some View {
-        VStack(spacing: 0) {
-            dashboardConnectionBar
-            HStack(alignment: .top, spacing: 0) {
-                CompanionSidebar(
-                    snapshot: store.snapshot,
-                    activity: activityStore.snapshot,
-                    integrations: multiAgentSettings.integrations,
-                    settings: settings,
-                    frameStore: frameStore,
-                    todayMinutes: companionStatsStore.todayMinutes,
-                    expandsVertically: false
-                )
-                .frame(width: DetachedWindowMetrics.sidebarWidth)
-                .zIndex(2)
+        HStack(alignment: .top, spacing: 0) {
+            CompanionSidebar(
+                snapshot: store.snapshot,
+                activity: activityStore.snapshot,
+                integrations: multiAgentSettings.integrations,
+                settings: settings,
+                frameStore: frameStore,
+                todayMinutes: companionStatsStore.todayMinutes,
+                expandsVertically: false
+            )
+            .frame(width: DetachedWindowMetrics.sidebarWidth)
+            .zIndex(2)
 
+            VStack(spacing: 0) {
+                dashboardConnectionBar
+                CompanionHorizontalAccountHeader(
+                    snapshot: store.snapshot,
+                    activity: activityStore.snapshot
+                )
                 horizontalDashboardRightColumn
             }
         }
@@ -172,7 +178,7 @@ struct CompanionDashboardView: View {
 
             selectedConnectionSection
         }
-        .padding(.top, layout == .window ? 40 : 25)
+        .padding(.top, layout == .window ? 12 : 15)
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -436,12 +442,6 @@ private struct DashboardConnectionSwitcher: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            if !compact {
-                Text("我的连接")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color.codexMuted)
-                    .textCase(.uppercase)
-            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     if showsCurrentCodex {
@@ -1323,6 +1323,86 @@ private struct CompanionPetHeader: View {
     }
 }
 
+/// 横版右侧的账号上下文。左栏代表通用 Pet，不承载任何单账号信息。
+private struct CompanionHorizontalAccountHeader: View {
+    let snapshot: CodexUsageSnapshot
+    let activity: CodexActivitySnapshot
+    @Environment(\.openURL) private var openURL
+
+    private var planBadge: String {
+        snapshot.planName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                BrandIconView(asset: .codex, size: 38, cornerRadius: 10)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(snapshot.companionAccountName)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.codexInk)
+                            .lineLimit(1)
+                        if !planBadge.isEmpty {
+                            Text(planBadge)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color.codexGreen)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.codexGreen.opacity(0.10), in: Capsule())
+                        }
+                    }
+                    Text(snapshot.accountEmail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 10)
+
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(activity.state.statusColor)
+                        .frame(width: 6, height: 6)
+                    Text(activity.state.taskLabel)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(activity.state.statusColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(activity.state.statusColor.opacity(0.10), in: Capsule())
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 9)
+
+            CodexDivider()
+
+            HStack(spacing: 8) {
+                Text(snapshot.subscriptionCompactSummaryLine ?? "订阅状态暂不可用")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(
+                        snapshot.showsSubscriptionExpiryReminder ? Color.codexAmber : Color.codexMuted
+                    )
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                ChatGPTBillingCompactLink(
+                    title: "官方 Billing",
+                    fontSize: 10
+                ) {
+                    openURL(ChatGPTWebLinks.billingPage)
+                }
+            }
+            .frame(height: 32)
+        }
+        .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
+        .background(Color.codexCard.opacity(0.96))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
+    }
+}
+
 /// 竖向布局的账号行：把侧栏那块两行账号信息压成一条。
 private struct CompanionAccountRow: View {
     let snapshot: CodexUsageSnapshot
@@ -1479,7 +1559,6 @@ private struct SubscriptionExpiryReminderBanner: View {
 
 private struct CompanionSidebar: View {
     private static let sidebarSpace = "companionSidebar"
-    private static let accountTopPadding: CGFloat = 45
 
     let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
@@ -1491,7 +1570,6 @@ private struct CompanionSidebar: View {
     var fillColumnHeight = false
     var expandsVertically = true
     @State private var ripples: [CodexMaterialWaveToken] = []
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let centersPetVertically = expandsVertically && !fillColumnHeight
@@ -1519,12 +1597,6 @@ private struct CompanionSidebar: View {
         }
         .overlay(alignment: .bottom) {
             sidebarFooter
-        }
-        .overlay(alignment: .topLeading) {
-            accountSummary
-                .padding(.top, Self.accountTopPadding)
-                .padding(.horizontal, 16)
-                .frame(width: DetachedWindowMetrics.sidebarWidth, alignment: .leading)
         }
         .companionPetInteraction(
             space: Self.sidebarSpace,
@@ -1570,55 +1642,6 @@ private struct CompanionSidebar: View {
                 .padding(.top, 9)
                 .padding(.bottom, 19)
         }
-    }
-
-    private var accountSummary: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(snapshot.companionAccountName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.codexInk)
-                        .lineLimit(1)
-                    if !snapshot.companionPlanBadgeText.isEmpty {
-                        Text(snapshot.companionPlanBadgeText)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.codexGreen)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            .background(Color.codexGreen.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
-                    }
-                }
-                Text(snapshot.accountEmail)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(Color.codexMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 8)
-
-            CodexDivider()
-
-            Group {
-                if let summaryLine = snapshot.subscriptionCompactSummaryLine {
-                    ChatGPTBillingCompactLink(
-                        title: summaryLine,
-                        emphasizesExpiry: snapshot.showsSubscriptionExpiryReminder
-                    ) {
-                        openURL(ChatGPTWebLinks.billingPage)
-                    }
-                } else {
-                    ChatGPTBillingCompactLink(title: "订阅与账单") {
-                        openURL(ChatGPTWebLinks.billingPage)
-                    }
-                }
-            }
-            .padding(.top, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
     }
 
     private var petView: some View {
