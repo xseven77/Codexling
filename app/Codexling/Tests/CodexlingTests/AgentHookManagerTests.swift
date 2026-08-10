@@ -92,6 +92,25 @@ final class AgentHookManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.threadTitle, "Claude Code · Desktop")
         XCTAssertEqual(snapshot.activeTaskCount, 2)
         XCTAssertEqual(Set(snapshot.activeTasks.map(\.title)), ["Hermes · CLI", "Claude Code · Desktop"])
+        XCTAssertEqual(Set(snapshot.localAgentTasks.map(\.title)), ["Hermes · CLI", "Claude Code · Desktop"])
+    }
+
+    func testHookEventReducerKeepsIdleAgentInPetLocalSummaryOnly() {
+        let now = Date()
+        var reducer = AgentEventActivityReducer()
+        reducer.ingest(NormalizedAgentEvent(
+            agentID: .hermes,
+            surfaceID: .hermesCLI,
+            sessionID: "hermes-session",
+            event: .sessionStarted,
+            timestamp: now
+        ))
+
+        let snapshot = reducer.mergedSnapshot(base: .unavailable, now: now.addingTimeInterval(1))
+        XCTAssertTrue(snapshot.activeTasks.isEmpty)
+        XCTAssertEqual(snapshot.activeTaskCount, 0)
+        XCTAssertEqual(snapshot.localAgentTasks.map(\.title), ["Hermes · CLI"])
+        XCTAssertEqual(snapshot.localAgentTasks.first?.state, .idle)
     }
 
     func testBridgeWireFormatDecodesStringIdentifiers() throws {

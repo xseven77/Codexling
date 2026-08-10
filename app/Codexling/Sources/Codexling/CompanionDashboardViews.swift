@@ -87,12 +87,14 @@ struct CompanionDashboardView: View {
                     CompanionSidebar(
                         snapshot: store.snapshot,
                         activity: activityStore.snapshot,
+                        integrations: multiAgentSettings.integrations,
                         settings: settings,
                         frameStore: frameStore,
                         todayMinutes: companionStatsStore.todayMinutes,
                         fillColumnHeight: true
                     )
                     .frame(width: DetachedWindowMetrics.sidebarWidth)
+                    .zIndex(2)
 
                     VStack(spacing: 0) {
                         horizontalDashboardMainContent
@@ -119,12 +121,14 @@ struct CompanionDashboardView: View {
                 CompanionSidebar(
                     snapshot: store.snapshot,
                     activity: activityStore.snapshot,
+                    integrations: multiAgentSettings.integrations,
                     settings: settings,
                     frameStore: frameStore,
                     todayMinutes: companionStatsStore.todayMinutes,
                     expandsVertically: false
                 )
                 .frame(width: DetachedWindowMetrics.sidebarWidth)
+                .zIndex(2)
 
                 horizontalDashboardRightColumn
             }
@@ -259,10 +263,12 @@ struct CompanionDashboardView: View {
             CompanionPetHeader(
                 snapshot: store.snapshot,
                 activity: activityStore.snapshot,
+                integrations: multiAgentSettings.integrations,
                 settings: settings,
                 frameStore: frameStore,
                 todayMinutes: companionStatsStore.todayMinutes
             )
+            .zIndex(5)
 
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
@@ -979,6 +985,204 @@ private struct CompanionStatusCapsule: View {
     }
 }
 
+private struct CompanionLocalAgentRow: Identifiable {
+    let id: AgentID
+    let name: String
+    let asset: BrandAssetID
+    let state: CodexActivityState
+    let summary: String
+    let hookState: AgentHookInstallationState
+}
+
+/// Preview-aligned Pet-local Agent summary. It intentionally uses integration
+/// and Hook activity data, not the selected account, so account switching does
+/// not change what the Pet sees on this Mac.
+private struct CompanionLocalAgentsControl: View {
+    let activity: CodexActivitySnapshot
+    let integrations: [AgentIntegrationStatus]
+    var panelHorizontalOffset: CGFloat = 0
+    var opensUpward = false
+    @State private var isExpanded = false
+
+    private var rows: [CompanionLocalAgentRow] {
+        integrations
+            .filter { integration in
+                integration.cliInstalled
+                    || integration.desktopInstalled
+                    || hasObservedActivity(for: integration)
+            }
+            .sorted { $0.priority < $1.priority }
+            .map { integration in
+                let task = latestTask(for: integration)
+                return CompanionLocalAgentRow(
+                    id: integration.id,
+                    name: integration.name,
+                    asset: .agent(integration.id),
+                    state: task?.state ?? .idle,
+                    summary: summary(for: task, integration: integration),
+                    hookState: integration.hookState
+                )
+            }
+    }
+
+    private var hookSummary: (text: String, color: Color) {
+        guard !rows.isEmpty else { return ("未发现 Agent", Color.codexMuted) }
+        if rows.contains(where: { row in
+            if case .conflict = row.hookState { return true }
+            if case .failed = row.hookState { return true }
+            return false
+        }) {
+            return ("Hooks 异常", Color.red)
+        }
+        let installedCount = rows.filter { $0.hookState == .installed }.count
+        if installedCount == rows.count { return ("Hooks 正常", Color.codexGreen) }
+        return ("Hooks \(installedCount)/\(rows.count)", Color.codexAmber)
+    }
+
+    var body: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+        } label: {
+            HStack(spacing: 8) {
+                HStack(spacing: -5) {
+                    ForEach(rows.prefix(3)) { row in
+                        BrandIconView(asset: row.asset, size: 20, cornerRadius: 7)
+                    }
+                }
+                Text(rows.isEmpty ? "未发现本地 Agent" : "\(rows.count) 个本地 Agent")
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            }
+            .foregroundStyle(rows.isEmpty ? Color.codexMuted : Color.codexGreen)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(Color.codexGreen.opacity(0.08), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.codexGreen.opacity(0.42), lineWidth: 1)
+            }
+        }
+        .buttonStyle(CodexPressableStyle(cornerRadius: 15))
+        .accessibilityLabel(rows.isEmpty ? "未发现本地 Agent" : "\(rows.count) 个本地 Agent")
+        .accessibilityValue(isExpanded ? "已展开" : "已收起")
+        .overlay(alignment: opensUpward ? .bottom : .top) {
+            if isExpanded {
+                localTasksPanel
+                    .offset(x: panelHorizontalOffset, y: opensUpward ? -38 : 38)
+                    .transition(
+                        .scale(scale: 0.97, anchor: opensUpward ? .bottom : .top)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(30)
+            }
+        }
+        .zIndex(isExpanded ? 30 : 1)
+    }
+
+    private var localTasksPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Pet 看到的本地任务")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("仅 Pet 汇总，不属于当前账号")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer(minLength: 4)
+                Text(hookSummary.text)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(hookSummary.color)
+                    .padding(.top, 5)
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) { isExpanded = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(width: 34, height: 34)
+                        .background(Color.codexMist.opacity(0.72), in: Circle())
+                }
+                .buttonStyle(CodexPressableCircleStyle())
+                .accessibilityLabel("收起本地任务")
+            }
+
+            VStack(spacing: 12) {
+                ForEach(rows) { row in
+                    localAgentRow(row)
+                }
+                if rows.isEmpty {
+                    Text("安装或启用 Agent 后会在这里显示本机任务状态。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.top, 15)
+        }
+        .padding(14)
+        .frame(width: 286, alignment: .leading)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.codexLine, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
+    }
+
+    private func localAgentRow(_ row: CompanionLocalAgentRow) -> some View {
+        HStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                BrandIconView(asset: row.asset, size: 34, cornerRadius: 10)
+                Circle()
+                    .fill(row.state.statusColor)
+                    .frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(Color.codexCard, lineWidth: 1.3))
+                    .offset(x: 2, y: 2)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.name)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(row.summary)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(row.state.activityLabel)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(row.state == .idle ? Color.codexMuted : row.state.statusColor)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(row.name)，\(row.summary)，\(row.state.activityLabel)")
+    }
+
+    private func latestTask(for integration: AgentIntegrationStatus) -> CodexTaskActivity? {
+        (activity.localAgentTasks + activity.activeTasks)
+            .filter { $0.agentDisplayName == integration.name }
+            .max(by: { $0.updatedAt < $1.updatedAt })
+    }
+
+    private func hasObservedActivity(for integration: AgentIntegrationStatus) -> Bool {
+        latestTask(for: integration) != nil
+    }
+
+    private func summary(
+        for task: CodexTaskActivity?,
+        integration: AgentIntegrationStatus
+    ) -> String {
+        guard let task else {
+            return integration.hookState == .installed ? "Hooks 已就绪" : "等待 Hook 接入"
+        }
+        if task.title == integration.name || task.title.hasPrefix("\(integration.name) ·") {
+            return task.detail.replacingOccurrences(of: "\(integration.name) ", with: "")
+        }
+        return task.title
+    }
+}
+
 /// Pet 承载区的点击交互：涟漪 + 随机动作 + 无障碍，侧栏与顶部形象区共用。
 private struct CompanionPetInteraction: ViewModifier {
     let space: String
@@ -1039,6 +1243,7 @@ private struct CompanionPetHeader: View {
 
     let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
+    let integrations: [AgentIntegrationStatus]
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
@@ -1075,6 +1280,12 @@ private struct CompanionPetHeader: View {
                     waveColorMode: settings.statusBarWaveColorMode
                 )
 
+                CompanionLocalAgentsControl(
+                    activity: activity,
+                    integrations: integrations
+                )
+                .padding(.top, 7)
+
                 Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
@@ -1092,7 +1303,6 @@ private struct CompanionPetHeader: View {
             ripples: $ripples,
             fallbackRippleLocation: CGPoint(x: 146, y: 110)
         )
-        .clipped()
         .overlay(alignment: .bottom) {
             CodexDivider()
         }
@@ -1259,6 +1469,7 @@ private struct CompanionSidebar: View {
 
     let snapshot: CodexUsageSnapshot
     let activity: CodexActivitySnapshot
+    let integrations: [AgentIntegrationStatus]
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
@@ -1294,7 +1505,6 @@ private struct CompanionSidebar: View {
         }
         .overlay(alignment: .bottom) {
             sidebarFooter
-                .allowsHitTesting(false)
         }
         .overlay(alignment: .topLeading) {
             accountSummary
@@ -1308,7 +1518,6 @@ private struct CompanionSidebar: View {
             ripples: $ripples,
             fallbackRippleLocation: CGPoint(x: 94, y: 220)
         )
-        .clipped()
         .overlay(alignment: .trailing) {
             CodexDivider(.vertical)
         }
@@ -1332,6 +1541,14 @@ private struct CompanionSidebar: View {
                 waveEnabled: settings.statusBarWaveEnabled,
                 waveColorMode: settings.statusBarWaveColorMode
             )
+
+            CompanionLocalAgentsControl(
+                activity: activity,
+                integrations: integrations,
+                panelHorizontalOffset: 48,
+                opensUpward: true
+            )
+            .padding(.top, 7)
 
             Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
                 .font(.system(size: 11))

@@ -108,6 +108,9 @@ struct CodexActivitySnapshot: Equatable, Sendable {
     var activeTaskCount: Int
     var updatedAt: Date
     var activeTasks: [CodexTaskActivity] = []
+    /// Recently observed native/Hook tasks, including idle Agents. This powers
+    /// the Pet-local overview without mixing those tasks into account scope.
+    var localAgentTasks: [CodexTaskActivity] = []
 
     static let unavailable = CodexActivitySnapshot(
         state: .unavailable,

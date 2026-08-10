@@ -181,8 +181,13 @@ struct AgentEventActivityReducer {
         let hookTasks = hookCandidates
             .filter { $0.snapshot.state.isEngagedForUnifiedActivity }
             .map { $0.snapshot.activeTasks[0] }
+        let observedHookTasks = hookCandidates.compactMap { $0.snapshot.localAgentTasks.first }
         var merged = selected.snapshot
         merged.activeTasks = (base.activeTasks + hookTasks)
+            .reduce(into: [String: CodexTaskActivity]()) { result, task in result[task.id] = task }
+            .values
+            .sorted { lhs, rhs in lhs.updatedAt > rhs.updatedAt }
+        merged.localAgentTasks = (base.activeTasks + base.localAgentTasks + observedHookTasks)
             .reduce(into: [String: CodexTaskActivity]()) { result, task in result[task.id] = task }
             .values
             .sorted { lhs, rhs in lhs.updatedAt > rhs.updatedAt }
@@ -219,7 +224,8 @@ struct AgentEventActivityReducer {
             threadTitle: title,
             activeTaskCount: state.isEngagedForUnifiedActivity ? 1 : 0,
             updatedAt: entry.event.timestamp,
-            activeTasks: state.isEngagedForUnifiedActivity ? [task] : []
+            activeTasks: state.isEngagedForUnifiedActivity ? [task] : [],
+            localAgentTasks: [task]
         )
     }
 
