@@ -18,7 +18,9 @@ final class MultiAgentSettingsStore {
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
     private(set) var isMutatingConnections = false
+    private(set) var isCodexOAuthInProgress = false
     private(set) var lastMessage: String?
+    private var activeCodexOAuthService: CodexUsageService?
     var selectedConnectionKey: String {
         didSet { UserDefaults.standard.set(selectedConnectionKey, forKey: Self.selectedConnectionDefaultsKey) }
     }
@@ -176,6 +178,12 @@ final class MultiAgentSettingsStore {
         codexAppServerSupervisor.stopAll()
     }
 
+    func cancelCurrentCodexOAuth() {
+        guard isCodexOAuthInProgress, let service = activeCodexOAuthService else { return }
+        lastMessage = "正在取消 Codex 登录…"
+        Task { await service.cancelOAuthAuthorization() }
+    }
+
     func addCodexAccount() async -> Bool {
         guard !isMutatingConnections else { return false }
         isMutatingConnections = true
@@ -188,8 +196,14 @@ final class MultiAgentSettingsStore {
             let tokenStore = CodexOAuthTokenStore(
                 fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
             )
-            let snapshot = try await CodexUsageService(tokenStore: tokenStore)
-                .connectAndFetch(forceLogin: true)
+            let service = CodexUsageService(tokenStore: tokenStore)
+            activeCodexOAuthService = service
+            isCodexOAuthInProgress = true
+            defer {
+                activeCodexOAuthService = nil
+                isCodexOAuthInProgress = false
+            }
+            let snapshot = try await service.connectAndFetch(forceLogin: true)
             connection.label = normalizedLabel(
                 snapshot.accountName ?? snapshot.accountEmail,
                 fallback: fallback
@@ -205,7 +219,11 @@ final class MultiAgentSettingsStore {
             if let pendingConnection {
                 try? codexRuntimeManager.removeRuntime(for: pendingConnection)
             }
-            lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            if error as? CodexUsageError == .oauthCancelled || error is CancellationError {
+                lastMessage = "已取消 Codex 登录"
+            } else {
+                lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            }
             return false
         }
     }
@@ -218,8 +236,14 @@ final class MultiAgentSettingsStore {
             let tokenStore = CodexOAuthTokenStore(
                 fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
             )
-            let snapshot = try await CodexUsageService(tokenStore: tokenStore)
-                .connectAndFetch(forceLogin: true)
+            let service = CodexUsageService(tokenStore: tokenStore)
+            activeCodexOAuthService = service
+            isCodexOAuthInProgress = true
+            defer {
+                activeCodexOAuthService = nil
+                isCodexOAuthInProgress = false
+            }
+            let snapshot = try await service.connectAndFetch(forceLogin: true)
             guard let index = codexAccounts.firstIndex(where: { $0.id == connection.id }) else {
                 return false
             }
@@ -233,7 +257,11 @@ final class MultiAgentSettingsStore {
             lastMessage = "已登录并更新 \(codexAccounts[index].label)"
             return true
         } catch {
-            lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            if error as? CodexUsageError == .oauthCancelled || error is CancellationError {
+                lastMessage = "已取消 Codex 登录"
+            } else {
+                lastMessage = "Codex 登录失败：\(error.localizedDescription)"
+            }
             return false
         }
     }

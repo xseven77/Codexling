@@ -47,6 +47,9 @@ struct AccountConnectionsModalView: View {
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.52 : 0.24), radius: 28, y: 14)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("添加账号或 API Key")
+        .onDisappear {
+            store.cancelCurrentCodexOAuth()
+        }
     }
 
     private var modalHeader: some View {
@@ -64,7 +67,7 @@ struct AccountConnectionsModalView: View {
                     .padding(.top, 2)
             }
             Spacer(minLength: 8)
-            Button(action: onClose) {
+            Button(action: closeModal) {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.codexMuted)
@@ -121,7 +124,8 @@ struct AccountConnectionsModalView: View {
                 connectionOption(
                     asset: .codex,
                     title: "登录另一个 Codex 账号",
-                    subtitle: "通过官方 OAuth 授权"
+                    subtitle: "通过官方 OAuth 授权",
+                    supportsOAuthCancellation: true
                 ) {
                     resetFields()
                     Task {
@@ -141,10 +145,10 @@ struct AccountConnectionsModalView: View {
                 }
             }
             if let message = store.lastMessage,
-               message.contains("失败") {
+               message.contains("失败") || message.contains("取消") {
                 Text(message)
                     .font(.system(size: 9))
-                    .foregroundStyle(Color.codexRed)
+                    .foregroundStyle(message.contains("失败") ? Color.codexRed : Color.codexMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -154,38 +158,63 @@ struct AccountConnectionsModalView: View {
         asset: BrandAssetID,
         title: String,
         subtitle: String,
+        supportsOAuthCancellation: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                BrandIconView(asset: asset, size: 38, cornerRadius: 10)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                    Text(subtitle)
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.codexMuted)
+        ZStack(alignment: .trailing) {
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    BrandIconView(asset: asset, size: 38, cornerRadius: 10)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(subtitle)
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    Spacer()
+                    if supportsOAuthCancellation && store.isCodexOAuthInProgress {
+                        Color.clear.frame(width: 58, height: 1)
+                    } else if store.isMutatingConnections {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.codexMuted)
+                    }
                 }
-                Spacer()
-                if store.isMutatingConnections {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.codexMuted)
+                .padding(.horizontal, 10)
+                .frame(height: 58)
+                .contentShape(Rectangle())
+                .background(optionSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .strokeBorder(Color.codexLine, lineWidth: 1)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 58)
-            .contentShape(Rectangle())
-            .background(optionSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(Color.codexLine, lineWidth: 1)
+            .buttonStyle(CodexPressableCardStyle(cornerRadius: 13))
+            .disabled(store.isMutatingConnections)
+
+            if supportsOAuthCancellation && store.isCodexOAuthInProgress {
+                Button {
+                    store.cancelCurrentCodexOAuth()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("取消")
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexRed)
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .background(Color.codexRed.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 15))
+                .padding(.trailing, 9)
+                .accessibilityLabel("取消 Codex OAuth 登录")
             }
         }
-        .buttonStyle(CodexPressableCardStyle(cornerRadius: 13))
-        .disabled(store.isMutatingConnections)
     }
 
     private var deepSeekForm: some View {
@@ -239,6 +268,11 @@ struct AccountConnectionsModalView: View {
     private func resetFields() {
         label = ""
         apiKey = ""
+    }
+
+    private func closeModal() {
+        store.cancelCurrentCodexOAuth()
+        onClose()
     }
 
     private var modalSurface: Color {

@@ -43,6 +43,8 @@ actor CodexUsageService {
     private let redirectURI = "http://localhost:1455/auth/callback"
     private let scopes = ["openid", "email", "profile", "offline_access"]
     private let tokenStore: CodexOAuthTokenStore
+    private var activeOAuthCallbackServer: OAuthCallbackServer?
+    private var oauthCancellationRequested = false
 
     init(tokenStore: CodexOAuthTokenStore = CodexOAuthTokenStore()) {
         self.tokenStore = tokenStore
@@ -71,6 +73,16 @@ actor CodexUsageService {
         tokenStore.clear()
     }
 
+    /// Stops the in-flight browser authorization wait immediately. The caller
+    /// still owns the browser tab, but Codexling no longer accepts its callback.
+    func cancelOAuthAuthorization() {
+        if let activeOAuthCallbackServer {
+            activeOAuthCallbackServer.cancel()
+        } else {
+            oauthCancellationRequested = true
+        }
+    }
+
     func migrateLegacyTokenIfNeeded() -> Bool {
         guard !tokenStore.hasStoredToken() else { return false }
         return tokenStore.load() != nil
@@ -94,10 +106,21 @@ actor CodexUsageService {
     }
 
     private func startOAuth(forceLogin: Bool) async throws -> CodexOAuthToken {
+        if oauthCancellationRequested {
+            oauthCancellationRequested = false
+            throw CodexUsageError.oauthCancelled
+        }
         let state = randomBase64URL(byteCount: 24)
         let verifier = randomBase64URL(byteCount: 32)
         let challenge = sha256Base64URL(verifier)
         let callbackServer = OAuthCallbackServer(expectedState: state)
+        activeOAuthCallbackServer = callbackServer
+        defer {
+            if activeOAuthCallbackServer === callbackServer {
+                activeOAuthCallbackServer = nil
+            }
+            oauthCancellationRequested = false
+        }
 
         var components = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -842,6 +865,7 @@ private struct CodexOAuthLegacyKeychain: Sendable {
 
 final class OAuthCallbackServer: @unchecked Sendable {
     private let expectedState: String
+    private let stateLock = NSLock()
     private var listener: NWListener?
     private var continuation: CheckedContinuation<String, Error>?
 
@@ -851,7 +875,9 @@ final class OAuthCallbackServer: @unchecked Sendable {
 
     func waitForCode(timeoutSeconds: TimeInterval) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
+            stateLock.lock()
             self.continuation = continuation
+            stateLock.unlock()
             startListener()
 
             DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
@@ -868,7 +894,14 @@ final class OAuthCallbackServer: @unchecked Sendable {
         do {
             let port = NWEndpoint.Port(rawValue: 1455)!
             let listener = try NWListener(using: .tcp, on: port)
+            stateLock.lock()
+            guard continuation != nil else {
+                stateLock.unlock()
+                listener.cancel()
+                return
+            }
             self.listener = listener
+            stateLock.unlock()
             listener.newConnectionHandler = { [weak self] connection in
                 self?.handle(connection)
             }
@@ -954,10 +987,16 @@ final class OAuthCallbackServer: @unchecked Sendable {
     }
 
     private func finish(_ result: Result<String, Error>) {
-        guard let continuation else { return }
+        stateLock.lock()
+        guard let continuation else {
+            stateLock.unlock()
+            return
+        }
         self.continuation = nil
+        let listener = listener
+        self.listener = nil
+        stateLock.unlock()
         listener?.cancel()
-        listener = nil
 
         switch result {
         case .success(let code):

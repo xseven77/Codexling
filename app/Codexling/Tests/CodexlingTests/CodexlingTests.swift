@@ -1679,6 +1679,25 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(snapshot.hoverSubtitle.isEmpty)
     }
 
+    func testOAuthCallbackServerCanBeCancelledImmediately() async throws {
+        let server = OAuthCallbackServer(expectedState: "test-state")
+        let waiting = Task {
+            try await server.waitForCode(timeoutSeconds: 5)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        server.cancel()
+
+        do {
+            _ = try await waiting.value
+            XCTFail("Expected OAuth cancellation")
+        } catch let error as CodexUsageError {
+            XCTAssertEqual(error, .oauthCancelled)
+        } catch {
+            XCTFail("Unexpected cancellation error: \(error)")
+        }
+    }
+
     @MainActor
     func testLegacyTaskColorPreferenceMigratesToFollowQuota() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"

@@ -650,18 +650,32 @@ private struct ManagedCodexDashboardCard: View {
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                     Spacer()
                     if connection.authenticationState != .connected {
-                        Button {
-                            Task { await store.authenticateCodexAccount(connection) }
-                        } label: {
-                            Text("官方登录")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.white)
-                                .padding(.horizontal, 13)
-                                .frame(height: 32)
-                                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        if store.isCodexOAuthInProgress {
+                            Button {
+                                store.cancelCurrentCodexOAuth()
+                            } label: {
+                                Label("取消登录", systemImage: "xmark")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.codexRed)
+                                    .padding(.horizontal, 13)
+                                    .frame(height: 32)
+                                    .background(Color.codexRed.opacity(0.09), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                        } else {
+                            Button {
+                                Task { await store.authenticateCodexAccount(connection) }
+                            } label: {
+                                Text("官方登录")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.white)
+                                    .padding(.horizontal, 13)
+                                    .frame(height: 32)
+                                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
+                            .disabled(store.isMutatingConnections)
                         }
-                        .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
-                        .disabled(store.isMutatingConnections)
                     }
                 }
             }
