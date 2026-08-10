@@ -5,6 +5,8 @@
 > 依据：[多 Agent、Pet、登录与额度能力调研](agent-pet-auth-quota-research.md)  
 > 目标：将当前仅支持 Codex 的菜单栏 companion，演进为同时支持国内外 Agent、订阅额度和第三方 API Key 预算的本地控制面。
 
+> **优先级更新（2026-08-10）：** 后续首批开发顺序已调整为 Codex、Hermes、Claude Code CLI、Claude Code Desktop、Reasonix；多账号优先支持多 Codex 与多个 DeepSeek 官方 API Key。新的范围、里程碑和验证结论以[优先开发方案](prioritized-agent-account-development-plan.md)为准。本文其余通用架构、隐私和安全原则继续有效。
+
 ## 1. 方案摘要
 
 Codexling 下一阶段不做“另一个聊天客户端”，而做四件事：
