@@ -270,8 +270,6 @@ struct CompanionDashboardView: View {
                 todayMinutes: companionStatsStore.todayMinutes
             )
 
-            CompanionAccountRow(snapshot: store.snapshot)
-
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
                 store: multiAgentSettings,
@@ -283,6 +281,8 @@ struct CompanionDashboardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.codexCard.opacity(0.96))
             .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
+
+            CompanionAccountRow(snapshot: store.snapshot)
 
             VStack(alignment: .leading, spacing: 0) {
                 ActivityHeading(
