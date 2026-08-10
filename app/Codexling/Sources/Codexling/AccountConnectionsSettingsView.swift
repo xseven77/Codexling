@@ -106,12 +106,15 @@ struct AccountConnectionsModalView: View {
                             .font(.system(size: 10, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .frame(height: 30)
+                            .contentShape(Rectangle())
                             .background(
                                 selectedTab == tab ? selectedTabSurface : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                             )
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .foregroundStyle(selectedTab == tab ? Color.codexInk : Color.codexMuted)
                 }
             }

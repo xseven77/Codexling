@@ -468,8 +468,10 @@ private struct DashboardConnectionSwitcher: View {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .foregroundStyle(Color.codexMuted)
             .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
