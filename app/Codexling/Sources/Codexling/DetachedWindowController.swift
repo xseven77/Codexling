@@ -192,7 +192,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     /// 竖向实测内容高度。
     private var dashboardMeasuredHeight: CGFloat?
     private var settingsMeasuredContentHeight: CGFloat?
-    private var pinHostingView: NSHostingView<WindowPinButton>!
+    private var titleControlsHostingView: NSHostingView<WindowTitleControls>!
 
     init(
         store: UsageSnapshotStore,
@@ -252,14 +252,14 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             )
         )
         window.title = "Codexling"
+        contentMode = .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
         applyWindowChrome()
-        installPinButton()
+        installTitleControls()
         applyAlwaysOnTop()
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.isOpaque = false
         hostingController.view.layer?.backgroundColor = NSColor.codexDashboardChrome.cgColor
         window.contentViewController = hostingController
-        contentMode = .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
         applyWindowInteraction(for: contentMode)
         applyWindowSurface(for: contentMode)
         applyContentSizeLimits(for: contentMode)
@@ -325,7 +325,13 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func refreshThemeAppearance() {
         applyWindowChrome()
-        updatePinButtonAppearance()
+        updateTitleControlsAppearance()
+    }
+
+    @objc private func toggleDashboardOrientation() {
+        guard case let .dashboard(_, orientation) = contentMode else { return }
+        settings.dashboardOrientation = orientation == .horizontal ? .vertical : .horizontal
+        updateTitleControlsAppearance()
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -333,20 +339,20 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         applyAlwaysOnTop()
     }
 
-    private func installPinButton() {
+    private func installTitleControls() {
         let accessory = NSTitlebarAccessoryViewController()
         accessory.layoutAttribute = .right
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 28))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 66, height: 28))
         let hostingView = NSHostingView(
-            rootView: makePinButton()
+            rootView: makeTitleControls()
         )
-        hostingView.frame = NSRect(x: 3, y: 0, width: 28, height: 28)
+        hostingView.frame = NSRect(x: 3, y: 0, width: 60, height: 28)
         container.addSubview(hostingView)
 
         accessory.view = container
         window.addTitlebarAccessoryViewController(accessory)
-        pinHostingView = hostingView
+        titleControlsHostingView = hostingView
     }
 
     private func applyAlwaysOnTop() {
@@ -366,18 +372,29 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         } else {
             window.level = .normal
         }
-        updatePinButtonAppearance()
+        updateTitleControlsAppearance()
     }
 
-    private func updatePinButtonAppearance() {
-        guard let pinHostingView else { return }
-        pinHostingView.rootView = makePinButton()
+    private func updateTitleControlsAppearance() {
+        guard let titleControlsHostingView else { return }
+        titleControlsHostingView.rootView = makeTitleControls()
     }
 
-    private func makePinButton() -> WindowPinButton {
-        WindowPinButton(
+    private func makeTitleControls() -> WindowTitleControls {
+        let orientation: DashboardOrientation?
+        if case let .dashboard(_, dashboardOrientation) = contentMode {
+            orientation = dashboardOrientation
+        } else {
+            orientation = nil
+        }
+
+        return WindowTitleControls(
+            orientation: orientation,
             isPinned: settings.windowAlwaysOnTop,
-            action: { [weak self] in
+            onToggleOrientation: { [weak self] in
+                self?.toggleDashboardOrientation()
+            },
+            onTogglePin: { [weak self] in
                 self?.toggleAlwaysOnTop()
             }
         )
@@ -395,6 +412,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             dashboardMeasuredHeight = nil
         }
         contentMode = mode
+        updateTitleControlsAppearance()
         applyWindowInteraction(for: mode)
         applyBackgroundDragging(for: mode)
         applyWindowSurface(for: mode)
@@ -727,20 +745,41 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-private struct WindowPinButton: View {
+private struct WindowTitleControls: View {
+    let orientation: DashboardOrientation?
     let isPinned: Bool
-    let action: () -> Void
+    let onToggleOrientation: () -> Void
+    let onTogglePin: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: isPinned ? "pin.fill" : "pin")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.codexInk)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+        HStack(spacing: 2) {
+            if let orientation {
+                let target = orientation == .horizontal
+                    ? DashboardOrientation.vertical
+                    : DashboardOrientation.horizontal
+                Button(action: onToggleOrientation) {
+                    Image(systemName: target.symbolName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.codexInk)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                .help("切换到\(target.title)版")
+                .accessibilityLabel("切换到\(target.title)版")
+            }
+
+            Button(action: onTogglePin) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+            .help(isPinned ? "取消置顶" : "置顶窗口")
+            .accessibilityLabel(isPinned ? "取消窗口置顶" : "窗口置顶")
         }
-        .buttonStyle(CodexPressableStyle(cornerRadius: 8))
-        .help(isPinned ? "取消置顶" : "置顶窗口")
-        .accessibilityLabel(isPinned ? "取消窗口置顶" : "窗口置顶")
+        .frame(width: 60, height: 28, alignment: .trailing)
     }
 }
