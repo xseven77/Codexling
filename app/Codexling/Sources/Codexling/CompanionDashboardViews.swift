@@ -4,6 +4,7 @@ import SwiftUI
 struct CompanionDashboardView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
+    @Bindable var multiAgentSettings: MultiAgentSettingsStore
     @Bindable var activityStore: CodexActivityStore
     @Bindable var frameStore: PetFrameStore
     @Bindable var companionStatsStore: CompanionStatsStore
@@ -67,26 +68,29 @@ struct CompanionDashboardView: View {
     /// 独立横版：`GeometryReader` 贴合 AppKit contentLayoutRect，避免 frame/content 偏差。
     private var horizontalDashboardWindowLayout: some View {
         GeometryReader { geometry in
-            HStack(alignment: .top, spacing: 0) {
-                CompanionSidebar(
-                    snapshot: store.snapshot,
-                    activity: activityStore.snapshot,
-                    settings: settings,
-                    frameStore: frameStore,
-                    todayMinutes: companionStatsStore.todayMinutes,
-                    fillColumnHeight: true
-                )
-                .frame(width: DetachedWindowMetrics.sidebarWidth)
+            VStack(spacing: 0) {
+                dashboardConnectionBar
+                HStack(alignment: .top, spacing: 0) {
+                    CompanionSidebar(
+                        snapshot: store.snapshot,
+                        activity: activityStore.snapshot,
+                        settings: settings,
+                        frameStore: frameStore,
+                        todayMinutes: companionStatsStore.todayMinutes,
+                        fillColumnHeight: true
+                    )
+                    .frame(width: DetachedWindowMetrics.sidebarWidth)
 
-                VStack(spacing: 0) {
-                    horizontalDashboardMainContent
-                        .layoutPriority(1)
-                    Spacer(minLength: 0)
-                    horizontalDashboardSyncFooter
-                        .layoutPriority(1)
+                    VStack(spacing: 0) {
+                        horizontalDashboardMainContent
+                            .layoutPriority(1)
+                        Spacer(minLength: 0)
+                        horizontalDashboardSyncFooter
+                            .layoutPriority(1)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(Color.codexCard.opacity(0.96))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(Color.codexCard.opacity(0.96))
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
             .background {
@@ -96,18 +100,21 @@ struct CompanionDashboardView: View {
     }
 
     private var horizontalDashboardCompactLayout: some View {
-        HStack(alignment: .top, spacing: 0) {
-            CompanionSidebar(
-                snapshot: store.snapshot,
-                activity: activityStore.snapshot,
-                settings: settings,
-                frameStore: frameStore,
-                todayMinutes: companionStatsStore.todayMinutes,
-                expandsVertically: false
-            )
-            .frame(width: DetachedWindowMetrics.sidebarWidth)
+        VStack(spacing: 0) {
+            dashboardConnectionBar
+            HStack(alignment: .top, spacing: 0) {
+                CompanionSidebar(
+                    snapshot: store.snapshot,
+                    activity: activityStore.snapshot,
+                    settings: settings,
+                    frameStore: frameStore,
+                    todayMinutes: companionStatsStore.todayMinutes,
+                    expandsVertically: false
+                )
+                .frame(width: DetachedWindowMetrics.sidebarWidth)
 
-            horizontalDashboardRightColumn
+                horizontalDashboardRightColumn
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background {
@@ -146,12 +153,25 @@ struct CompanionDashboardView: View {
             )
             .padding(.top, 19)
 
-            quotaSection
+            selectedConnectionSection
         }
         .padding(.top, layout == .window ? 40 : 25)
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var dashboardConnectionBar: some View {
+        DashboardConnectionSwitcher(
+            snapshot: store.snapshot,
+            store: multiAgentSettings,
+            onAdd: onOpenSettings
+        )
+        .padding(.horizontal, 16)
+        .frame(height: 59)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.codexCard.opacity(0.96))
+        .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
     }
 
     private var horizontalDashboardSyncFooter: some View {
@@ -231,6 +251,18 @@ struct CompanionDashboardView: View {
 
             CompanionAccountRow(snapshot: store.snapshot)
 
+            DashboardConnectionSwitcher(
+                snapshot: store.snapshot,
+                store: multiAgentSettings,
+                onAdd: onOpenSettings,
+                compact: true
+            )
+            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+            .frame(height: 59)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.codexCard.opacity(0.96))
+            .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
+
             VStack(alignment: .leading, spacing: 0) {
                 ActivityHeading(
                     activity: activityStore.snapshot,
@@ -251,7 +283,7 @@ struct CompanionDashboardView: View {
                 )
                 .padding(.top, 15)
 
-                verticalQuotaSection
+                selectedVerticalConnectionSection
             }
             .padding(.top, 13)
             .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
@@ -334,7 +366,344 @@ struct CompanionDashboardView: View {
         }
         .padding(.top, 14)
     }
+
+    @ViewBuilder
+    private var selectedConnectionSection: some View {
+        if let connection = multiAgentSettings.selectedDeepSeekConnection {
+            DeepSeekDashboardCard(connection: connection) {
+                Task { await multiAgentSettings.refreshDeepSeekConnection(connection) }
+            }
+            .padding(.top, 18)
+        } else if let connection = multiAgentSettings.selectedCodexAccount {
+            ManagedCodexDashboardCard(connection: connection, store: multiAgentSettings)
+                .padding(.top, 18)
+        } else {
+            quotaSection
+        }
+    }
+
+    @ViewBuilder
+    private var selectedVerticalConnectionSection: some View {
+        if let connection = multiAgentSettings.selectedDeepSeekConnection {
+            DeepSeekDashboardCard(connection: connection) {
+                Task { await multiAgentSettings.refreshDeepSeekConnection(connection) }
+            }
+            .padding(.top, 14)
+        } else if let connection = multiAgentSettings.selectedCodexAccount {
+            ManagedCodexDashboardCard(connection: connection, store: multiAgentSettings)
+                .padding(.top, 14)
+        } else {
+            verticalQuotaSection
+        }
+    }
 }
+
+private struct DashboardConnectionSwitcher: View {
+    let snapshot: CodexUsageSnapshot
+    @Bindable var store: MultiAgentSettingsStore
+    let onAdd: () -> Void
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            if !compact {
+                Text("我的连接")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.codexMuted)
+                    .textCase(.uppercase)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    connectionButton(
+                        asset: .codex,
+                        title: "Codex",
+                        subtitle: snapshot.companionAccountName,
+                        color: Color.codexGreen,
+                        selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey
+                    ) { store.selectCurrentCodexConnection() }
+                    ForEach(store.codexAccounts) { connection in
+                        connectionButton(
+                            asset: .codex,
+                            title: "Codex",
+                            subtitle: connection.label,
+                            color: Color.codexGreen,
+                            selected: store.isSelected(connection),
+                            needsAttention: connection.authenticationState != .connected
+                        ) { store.selectCodexConnection(connection) }
+                    }
+                    ForEach(store.deepSeekConnections) { connection in
+                        connectionButton(
+                            asset: .deepSeek,
+                            title: "DeepSeek",
+                            subtitle: connection.label,
+                            color: .blue,
+                            selected: store.isSelected(connection),
+                            needsAttention: connection.authenticationState != .connected
+                        ) { store.selectDeepSeekConnection(connection) }
+                    }
+                }
+            }
+            Button(action: onAdd) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.codexMuted)
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Color.codexLine, style: StrokeStyle(lineWidth: 1, dash: [3]))
+            }
+            .help("添加 Codex 账号或 DeepSeek API Key")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("我的连接")
+    }
+
+    private func connectionButton(
+        asset: BrandAssetID,
+        title: String,
+        subtitle: String,
+        color: Color,
+        selected: Bool,
+        needsAttention: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                BrandIconView(
+                    asset: asset,
+                    size: 32,
+                    cornerRadius: 11
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 10, weight: .bold))
+                    Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
+                }
+                if needsAttention {
+                    Circle().fill(Color.codexAmber).frame(width: 6, height: 6)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 42)
+            .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)，\(subtitle)")
+        .accessibilityValue(selected ? "已选择" : "未选择")
+    }
+}
+
+private struct ManagedCodexDashboardCard: View {
+    let connection: CodexAccountConnection
+    @Bindable var store: MultiAgentSettingsStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                BrandIconView(asset: .codex, size: 40, cornerRadius: 11)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text("Codex").font(.system(size: 20, weight: .bold))
+                        Text(connection.usage?.planType ?? "官方 CLI")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.codexGreen.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    Text([connection.label, connection.usage?.email].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 9)).foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
+                        .frame(width: 6, height: 6)
+                    Text(connection.authenticationState == .connected ? "已连接" : "待登录")
+                }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background((connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber).opacity(0.10), in: Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("当前任务")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.codexMuted)
+                        .textCase(.uppercase)
+                    Spacer()
+                    Text("独立 CODEX_HOME · \(connection.relativeHomeDirectory.prefix(8))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                VStack(spacing: 5) {
+                    Text(connection.authenticationState == .connected ? "现在很安静" : "等待官方登录")
+                        .font(.system(size: 12, weight: .bold))
+                    Text(connection.authenticationState == .connected
+                         ? "这个账号暂时没有由 Hook 上报的进行中任务"
+                         : "使用官方 codex login，不读取或复制其他账号的 token")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                .frame(maxWidth: .infinity, minHeight: 94)
+                HStack {
+                    Button("检查登录") { Task { await store.refreshCodexAccounts() } }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    if connection.authenticationState != .connected {
+                        Button("官方登录") { store.launchCodexLogin(for: connection) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            .padding(16)
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(Color.codexLine) }
+            .padding(.top, 20)
+
+            if let usage = connection.usage,
+               usage.primary != nil || usage.secondary != nil {
+                HStack {
+                    Text("额度").font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Text("来源：Codex App Server")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                .padding(.top, 16)
+                HStack(spacing: 8) {
+                    if let primary = usage.primary {
+                        ManagedCodexQuotaRing(label: quotaLabel(primary), window: primary)
+                    }
+                    if let secondary = usage.secondary {
+                        ManagedCodexQuotaRing(label: quotaLabel(secondary), window: secondary)
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private func quotaLabel(_ window: CodexAccountRateLimitWindow) -> String {
+        guard let minutes = window.windowDurationMinutes else { return "额度" }
+        if minutes >= 24 * 60 { return "本周" }
+        if minutes >= 60 { return "\(minutes / 60) 小时" }
+        return "\(minutes) 分钟"
+    }
+}
+
+private struct ManagedCodexQuotaRing: View {
+    let label: String
+    let window: CodexAccountRateLimitWindow
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().stroke(Color.codexLine, lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: CGFloat(window.remainingPercent) / 100)
+                    .stroke(Color.codexGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(window.remainingPercent)")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(.system(size: 10, weight: .bold))
+                Text("剩余 \(window.remainingPercent)%")
+                    .font(.system(size: 8))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 15).strokeBorder(Color.codexLine) }
+    }
+}
+
+private struct DeepSeekDashboardCard: View {
+    let connection: DeepSeekAPIConnection
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                BrandIconView(asset: .deepSeek, size: 40, cornerRadius: 11)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("DeepSeek").font(.system(size: 20, weight: .bold))
+                    Text("\(connection.label) · sk-•••• \(connection.keySuffix)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
+                        .frame(width: 6, height: 6)
+                    Text(connection.authenticationState == .connected ? "余额正常" : "需要检查")
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background((connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber).opacity(0.10), in: Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("可用余额")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.codexMuted)
+                    .textCase(.uppercase)
+                if let balance = connection.balance {
+                    Text(balance.currency == "CNY"
+                         ? "¥\(NSDecimalNumber(decimal: balance.total).stringValue)"
+                         : "\(balance.currency) \(NSDecimalNumber(decimal: balance.total).stringValue)")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .padding(.top, 4)
+                    Text("充值 \(NSDecimalNumber(decimal: balance.toppedUp).stringValue) · 赠送 \(NSDecimalNumber(decimal: balance.granted).stringValue)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.top, 2)
+                } else {
+                    Text("—").font(.system(size: 36, weight: .bold)).foregroundStyle(Color.codexMuted).padding(.top, 4)
+                }
+                HStack(spacing: 8) {
+                    Button(action: onRefresh) {
+                        Label("查询余额", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button(action: {}) { Image(systemName: "gearshape") }
+                        .buttonStyle(.bordered)
+                        .disabled(true)
+                }
+                .padding(.top, 16)
+            }
+            .padding(20)
+            .background(
+                LinearGradient(colors: [Color.purple.opacity(0.07), Color.codexCard], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.purple.opacity(0.15)) }
+            .padding(.top, 20)
+
+            Label("Key 保存在 macOS Keychain，只用于查询 DeepSeek 官方余额接口；余额属于账户，并非此 Key 独享。", systemImage: "checkmark.shield")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
+                .padding(.top, 12)
+        }
+    }
+}
+
 
 enum DashboardMeasuredContentSizeKey: PreferenceKey {
     static let defaultValue = CGSize.zero

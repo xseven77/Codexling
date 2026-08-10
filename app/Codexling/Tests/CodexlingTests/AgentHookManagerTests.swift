@@ -69,6 +69,118 @@ final class AgentHookManagerTests: XCTestCase {
         XCTAssertEqual(result?.state, .waitingForUser)
     }
 
+    func testHookEventReducerLetsWaitingAgentWinAndKeepsAllActiveTasks() {
+        let now = Date()
+        var reducer = AgentEventActivityReducer()
+        reducer.ingest(NormalizedAgentEvent(
+            agentID: .hermes,
+            surfaceID: .hermesCLI,
+            sessionID: "hermes-session",
+            event: .toolStarted,
+            timestamp: now
+        ))
+        reducer.ingest(NormalizedAgentEvent(
+            agentID: .claudeCode,
+            surfaceID: .claudeCodeDesktop,
+            sessionID: "claude-session",
+            event: .permissionRequested,
+            timestamp: now.addingTimeInterval(1)
+        ))
+
+        let snapshot = reducer.mergedSnapshot(base: .unavailable, now: now.addingTimeInterval(2))
+        XCTAssertEqual(snapshot.state, .waitingForUser)
+        XCTAssertEqual(snapshot.threadTitle, "Claude Code · Desktop")
+        XCTAssertEqual(snapshot.activeTaskCount, 2)
+        XCTAssertEqual(Set(snapshot.activeTasks.map(\.title)), ["Hermes · CLI", "Claude Code · Desktop"])
+    }
+
+    func testBridgeWireFormatDecodesStringIdentifiers() throws {
+        let connectionID = UUID()
+        let json = """
+        {"schemaVersion":1,"agentID":"agent.hermes","surfaceID":"surface.hermes-cli","connectionID":"\(connectionID.uuidString)","sessionID":"session-1","event":"permission.requested","timestamp":"2026-08-10T12:00:00Z"}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let event = try decoder.decode(NormalizedAgentEvent.self, from: Data(json.utf8))
+        XCTAssertEqual(event.agentID, .hermes)
+        XCTAssertEqual(event.surfaceID, .hermesCLI)
+        XCTAssertEqual(event.connectionID?.rawValue, connectionID)
+        XCTAssertEqual(event.event, .permissionRequested)
+    }
+
+    func testCodexAppServerCapabilityGateRequiresAllUsedMethods() {
+        let probe = CodexAppServerCapabilityProbe()
+        let supported = probe.inspect(schemaData: Data(
+            #"{"methods":["initialize","account/read","account/rateLimits/read","thread/list"]}"#.utf8
+        ))
+        XCTAssertTrue(supported.supported)
+
+        let unsupported = probe.inspect(schemaData: Data(#"{"methods":["initialize","account/read"]}"#.utf8))
+        XCTAssertFalse(unsupported.supported)
+        XCTAssertEqual(Set(unsupported.missingMethods), ["account/rateLimits/read", "thread/list"])
+    }
+
+    func testCodexAppServerParsesAccountAndRateLimitFixture() throws {
+        let account: [String: Any] = [
+            "id": 2,
+            "result": [
+                "account": ["type": "chatgpt", "email": "work@example.com", "planType": "team"],
+                "requiresOpenaiAuth": true,
+            ],
+        ]
+        let limits: [String: Any] = [
+            "id": 3,
+            "result": [
+                "rateLimits": [
+                    "primary": ["usedPercent": 18, "windowDurationMins": 300, "resetsAt": 1_800_000_000],
+                    "secondary": ["usedPercent": 24, "windowDurationMins": 10_080, "resetsAt": 1_800_100_000],
+                ],
+            ],
+        ]
+        let snapshot = try CodexAppServerSnapshotParser().parse(
+            accountResponse: account,
+            rateLimitResponse: limits
+        )
+        XCTAssertEqual(snapshot.email, "work@example.com")
+        XCTAssertEqual(snapshot.planType, "team")
+        XCTAssertEqual(snapshot.primary?.remainingPercent, 82)
+        XCTAssertEqual(snapshot.secondary?.remainingPercent, 76)
+    }
+
+    func testHookEventReducerExpiresCompletionAndRemovesEndedSession() {
+        let now = Date()
+        var reducer = AgentEventActivityReducer()
+        let completed = NormalizedAgentEvent(
+            agentID: .reasonix,
+            surfaceID: .reasonixCLI,
+            sessionID: "reasonix-session",
+            event: .turnCompleted,
+            timestamp: now
+        )
+        reducer.ingest(completed)
+        XCTAssertEqual(reducer.mergedSnapshot(base: .unavailable, now: now).state, .completed)
+        XCTAssertEqual(
+            reducer.mergedSnapshot(base: .unavailable, now: now.addingTimeInterval(16)).state,
+            .unavailable
+        )
+
+        reducer.ingest(NormalizedAgentEvent(
+            agentID: .hermes,
+            surfaceID: .hermesCLI,
+            sessionID: "ended",
+            event: .toolStarted,
+            timestamp: now
+        ))
+        reducer.ingest(NormalizedAgentEvent(
+            agentID: .hermes,
+            surfaceID: .hermesCLI,
+            sessionID: "ended",
+            event: .sessionEnded,
+            timestamp: now.addingTimeInterval(1)
+        ))
+        XCTAssertEqual(reducer.mergedSnapshot(base: .unavailable, now: now.addingTimeInterval(2)).state, .unavailable)
+    }
+
     func testCodexRuntimeCreatesSeparateFileCredentialHomes() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexling-runtime-tests-\(UUID().uuidString)", isDirectory: true)

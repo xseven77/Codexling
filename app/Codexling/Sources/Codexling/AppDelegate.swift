@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = AppSettingsStore()
     private let multiAgentSettingsStore = MultiAgentSettingsStore()
     private let activityStore = CodexActivityStore()
+    private let agentEventSocketService = AgentEventSocketService()
     private let frameStore = PetFrameStore()
     private let companionStatsStore = CompanionStatsStore()
     private let updateController = AppUpdateController()
@@ -82,6 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         startAutoRefreshTimer()
         activityStore.start()
+        do {
+            try agentEventSocketService.start { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.activityStore.ingest(event)
+                }
+            }
+        } catch {
+            NSLog("Codexling Agent event listener unavailable: %@", error.localizedDescription)
+        }
         companionStatsStore.start()
         let petSelectionMonitor = CodexPetSelectionMonitor { [weak self] in
             self?.settingsStore.refreshPetsAndSyncSelectionFromCodex()
@@ -97,6 +107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        multiAgentSettingsStore.stopCodexAppServers()
+        agentEventSocketService.stop()
         activityStore.stop()
         companionStatsStore.stop()
         frameStore.stop()

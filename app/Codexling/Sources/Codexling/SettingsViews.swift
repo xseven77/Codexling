@@ -342,14 +342,9 @@ struct SettingsView: View {
 
     private func agentIntegrationRow(_ integration: AgentIntegrationStatus) -> some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(agentColor(integration.id).opacity(0.10))
-                Text(agentMonogram(integration.id))
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(agentColor(integration.id))
-            }
-            .frame(width: 38, height: 38)
+            BrandIconView(
+                asset: .agent(integration.id)
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
@@ -467,26 +462,6 @@ struct SettingsView: View {
         case .installed: Color.codexGreen
         case .conflict, .failed: Color.codexRed
         case .notInstalled, .unavailable: Color.codexMuted
-        }
-    }
-
-    private func agentMonogram(_ agentID: AgentID) -> String {
-        switch agentID {
-        case .codex: "CX"
-        case .hermes: "HE"
-        case .claudeCode: "CL"
-        case .reasonix: "RX"
-        default: "AI"
-        }
-    }
-
-    private func agentColor(_ agentID: AgentID) -> Color {
-        switch agentID {
-        case .codex: Color.codexGreen
-        case .hermes: Color.purple
-        case .claudeCode: Color.orange
-        case .reasonix: Color.blue
-        default: Color.codexMuted
         }
     }
 

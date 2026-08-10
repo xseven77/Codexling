@@ -25,7 +25,6 @@ import {
 import { useMemo, useState } from "react";
 
 type ConnectionKind = "agent" | "provider";
-type ConnectionTone = "green" | "blue" | "purple" | "orange";
 type PreviewMode = "companion" | "desktop";
 
 export type Connection = {
@@ -37,8 +36,7 @@ export type Connection = {
   accountEmail: string;
   subscriptionSummary: string;
   billingUrl: string;
-  mark: string;
-  tone: ConnectionTone;
+  brand: string;
   plan: string;
   state: string;
   stateTone: "working" | "waiting" | "idle" | "healthy";
@@ -60,8 +58,7 @@ export const connections: Connection[] = [
     accountEmail: "qiizo@codexling.dev",
     subscriptionSummary: "当前周期至 8月18日 · 自动续费",
     billingUrl: "https://chatgpt.com/#settings/Billing",
-    mark: "CX",
-    tone: "green",
+    brand: "codex",
     plan: "Team",
     state: "工作中",
     stateTone: "working",
@@ -79,8 +76,7 @@ export const connections: Connection[] = [
     accountEmail: "me@example.com",
     subscriptionSummary: "当前周期至 8月26日 · 自动续费",
     billingUrl: "https://chatgpt.com/#settings/Billing",
-    mark: "CX",
-    tone: "green",
+    brand: "codex",
     plan: "Plus",
     state: "空闲",
     stateTone: "idle",
@@ -97,8 +93,7 @@ export const connections: Connection[] = [
     accountEmail: "qiizo@moonshot.cn",
     subscriptionSummary: "会员有效至 9月3日 · 自动续费",
     billingUrl: "https://www.kimi.com/code",
-    mark: "K",
-    tone: "blue",
+    brand: "kimi-code",
     plan: "会员",
     state: "待确认",
     stateTone: "waiting",
@@ -116,8 +111,7 @@ export const connections: Connection[] = [
     accountEmail: "sk-••••••••7A2F",
     subscriptionSummary: "按量计费 · 当前余额 ¥42.80",
     billingUrl: "https://platform.deepseek.com/usage",
-    mark: "DS",
-    tone: "purple",
+    brand: "deepseek",
     plan: "API Provider",
     state: "余额正常",
     stateTone: "healthy",
@@ -126,13 +120,6 @@ export const connections: Connection[] = [
     detail: "sk-•••• 7A2F · 刚刚更新",
   },
 ];
-
-const toneClass: Record<ConnectionTone, string> = {
-  green: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  blue: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  purple: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
-  orange: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
-};
 
 const statusClass = {
   working: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
@@ -153,8 +140,15 @@ function WindowDots() {
 
 function ConnectionMark({ connection, small = false }: { connection: Connection; small?: boolean }) {
   return (
-    <span className={`grid shrink-0 place-items-center rounded-[11px] font-bold tracking-[-0.04em] ${toneClass[connection.tone]} ${small ? "h-8 w-8 text-[9px]" : "h-10 w-10 text-[11px]"}`}>
-      {connection.mark}
+    <span className={`grid shrink-0 place-items-center rounded-[11px] bg-[var(--preview-card)] ring-1 ring-[color:var(--preview-line)] ${small ? "h-8 w-8 p-1.5" : "h-10 w-10 p-2"}`}>
+      <Image
+        src={`/brand-assets/${connection.brand}/color.svg`}
+        alt={`${connection.agent} logo`}
+        width={small ? 24 : 30}
+        height={small ? 24 : 30}
+        unoptimized
+        className="h-full w-full object-contain"
+      />
     </span>
   );
 }

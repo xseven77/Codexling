@@ -4,9 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class MultiAgentSettingsStore {
+    static let currentCodexConnectionKey = "codex.current"
+    private static let selectedConnectionDefaultsKey = "dashboard.selectedConnection"
     private let hookManager: AgentHookManager
     private let registryStorage: ConnectionRegistryStorage
     private let codexRuntimeManager: CodexAccountRuntimeManager
+    private let codexAppServerSupervisor: CodexAppServerSupervisor
     private let credentialStore: any DeepSeekCredentialStoring
     private let deepSeekBalanceService: DeepSeekBalanceService
 
@@ -16,23 +19,32 @@ final class MultiAgentSettingsStore {
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
     private(set) var isMutatingConnections = false
     private(set) var lastMessage: String?
+    var selectedConnectionKey: String {
+        didSet { UserDefaults.standard.set(selectedConnectionKey, forKey: Self.selectedConnectionDefaultsKey) }
+    }
 
     init(
         hookManager: AgentHookManager = AgentHookManager(),
         registryStorage: ConnectionRegistryStorage = ConnectionRegistryStorage(),
         codexRuntimeManager: CodexAccountRuntimeManager = CodexAccountRuntimeManager(),
+        codexAppServerSupervisor: CodexAppServerSupervisor = CodexAppServerSupervisor(),
         credentialStore: any DeepSeekCredentialStoring = DeepSeekCredentialStore(),
         deepSeekBalanceService: DeepSeekBalanceService = DeepSeekBalanceService()
     ) {
         self.hookManager = hookManager
         self.registryStorage = registryStorage
         self.codexRuntimeManager = codexRuntimeManager
+        self.codexAppServerSupervisor = codexAppServerSupervisor
         self.credentialStore = credentialStore
         self.deepSeekBalanceService = deepSeekBalanceService
+        selectedConnectionKey = UserDefaults.standard.string(forKey: Self.selectedConnectionDefaultsKey)
+            ?? Self.currentCodexConnectionKey
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
         refresh()
+        validateSelectedConnection()
+        Task { await refreshCodexAccounts() }
     }
 
     func refresh() {
@@ -75,6 +87,75 @@ final class MultiAgentSettingsStore {
         lastMessage = nil
     }
 
+    func selectCurrentCodexConnection() {
+        selectedConnectionKey = Self.currentCodexConnectionKey
+    }
+
+    func selectCodexConnection(_ connection: CodexAccountConnection) {
+        selectedConnectionKey = "codex.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    func selectDeepSeekConnection(_ connection: DeepSeekAPIConnection) {
+        selectedConnectionKey = "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    func isSelected(_ connection: CodexAccountConnection) -> Bool {
+        selectedConnectionKey == "codex.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    func isSelected(_ connection: DeepSeekAPIConnection) -> Bool {
+        selectedConnectionKey == "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    var selectedCodexAccount: CodexAccountConnection? {
+        codexAccounts.first(where: isSelected)
+    }
+
+    var selectedDeepSeekConnection: DeepSeekAPIConnection? {
+        deepSeekConnections.first(where: isSelected)
+    }
+
+    func refreshCodexAccounts() async {
+        let manager = codexRuntimeManager
+        let supervisor = codexAppServerSupervisor
+        let accounts = codexAccounts
+        let results = await Task.detached {
+            accounts.map { connection -> CodexAccountRefreshResult in
+                let state = manager.authenticationState(for: connection)
+                guard state == .connected, connection.isEnabled else {
+                    return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
+                }
+                do {
+                    let usage = try supervisor.snapshot(
+                        for: connection,
+                        homeURL: manager.homeURL(for: connection),
+                        executableURL: manager.locateCodexExecutable()
+                    )
+                    return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: usage)
+                } catch {
+                    return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
+                }
+            }
+        }.value
+        var changed = false
+        for result in results {
+            guard let index = codexAccounts.firstIndex(where: { $0.id == result.id }) else { continue }
+            if codexAccounts[index].authenticationState != result.state {
+                codexAccounts[index].authenticationState = result.state
+                changed = true
+            }
+            if let usage = result.usage, codexAccounts[index].usage != usage {
+                codexAccounts[index].usage = usage
+                changed = true
+            }
+        }
+        if changed { try? saveRegistry() }
+    }
+
+    func stopCodexAppServers() {
+        codexAppServerSupervisor.stopAll()
+    }
+
     func addCodexAccount(label: String) {
         guard !isMutatingConnections else { return }
         isMutatingConnections = true
@@ -87,6 +168,7 @@ final class MultiAgentSettingsStore {
             codexAccounts.append(connection)
             try saveRegistry()
             try codexRuntimeManager.launchLogin(for: connection)
+            selectCodexConnection(connection)
             lastMessage = "已创建 \(connection.label)，正在打开官方 codex login"
         } catch {
             lastMessage = "添加 Codex 账号失败：\(error.localizedDescription)"
@@ -108,7 +190,9 @@ final class MultiAgentSettingsStore {
         defer { isMutatingConnections = false }
         do {
             try codexRuntimeManager.removeRuntime(for: connection)
+            codexAppServerSupervisor.remove(connectionID: connection.id)
             codexAccounts.removeAll { $0.id == connection.id }
+            validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已移除 \(connection.label) 的独立运行目录"
         } catch {
@@ -141,6 +225,7 @@ final class MultiAgentSettingsStore {
                 createdAt: Date()
             )
             deepSeekConnections.append(connection)
+            selectDeepSeekConnection(connection)
             try saveRegistry()
             lastMessage = "DeepSeek Key 已验证并安全保存"
             return true
@@ -179,6 +264,7 @@ final class MultiAgentSettingsStore {
         do {
             try credentialStore.delete(handle: connection.credentialHandle)
             deepSeekConnections.removeAll { $0.id == connection.id }
+            validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已从 Keychain 移除 \(connection.label)"
         } catch {
@@ -201,4 +287,17 @@ final class MultiAgentSettingsStore {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : String(trimmed.prefix(60))
     }
+
+    private func validateSelectedConnection() {
+        let valid = selectedConnectionKey == Self.currentCodexConnectionKey
+            || codexAccounts.contains(where: isSelected)
+            || deepSeekConnections.contains(where: isSelected)
+        if !valid { selectedConnectionKey = Self.currentCodexConnectionKey }
+    }
+}
+
+private struct CodexAccountRefreshResult: Sendable {
+    let id: ConnectionID
+    let state: ConnectionAuthenticationState
+    let usage: CodexAccountUsageSnapshot?
 }

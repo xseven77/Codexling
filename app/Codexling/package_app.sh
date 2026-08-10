@@ -68,6 +68,7 @@ cp "Resources/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 cp "../landing/public/brand/codexling-logo.webp" "${APP_BUNDLE}/Contents/Resources/codexling-logo.webp"
 cp "Resources/github-mark.svg" "${APP_BUNDLE}/Contents/Resources/github-mark.svg"
 cp -R "Resources/Pets" "${APP_BUNDLE}/Contents/Resources/Pets"
+cp -R "../../assets/brands" "${APP_BUNDLE}/Contents/Resources/BrandAssets"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 chmod +x "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
 

@@ -8,12 +8,12 @@ import { StatusBarCapsulePreview } from "./StatusBarCapsulePreview";
 type PetEdge = "top" | "right" | "bottom" | "left";
 
 const desktopTasks = [
-  { id: "codex-1", agent: "Codex", logo: "/agents/openai.png", title: "重构账户切换逻辑", detail: "正在修改 4 个文件", state: "工作中", dot: "bg-violet-500" },
-  { id: "kimi-1", agent: "Kimi Code", logo: "/agents/kimi.jpg", title: "是否执行完整测试？", detail: "等待你的确认", state: "待确认", dot: "bg-orange-500" },
-  { id: "qwen-1", agent: "Qwen Code", logo: "/agents/qwen.png", title: "补充本地 Hook 兼容层", detail: "正在思考", state: "思考中", dot: "bg-blue-500" },
-  { id: "codex-2", agent: "Codex", logo: "/agents/openai.png", title: "排查 Pet 边缘定位", detail: "运行本地预览", state: "工作中", dot: "bg-violet-500" },
-  { id: "kimi-2", agent: "Kimi Code", logo: "/agents/kimi.jpg", title: "验证横竖屏布局", detail: "已完成", state: "已完成", dot: "bg-emerald-500" },
-  { id: "qwen-2", agent: "Qwen Code", logo: "/agents/qwen.png", title: "整理任务摘要", detail: "Hooks 已就绪", state: "空闲", dot: "bg-slate-300" },
+  { id: "codex-1", agent: "Codex", logo: "/brand-assets/codex/color.svg", title: "重构账户切换逻辑", detail: "正在修改 4 个文件", state: "工作中", dot: "bg-violet-500" },
+  { id: "kimi-1", agent: "Kimi Code", logo: "/brand-assets/kimi-code/color.svg", title: "是否执行完整测试？", detail: "等待你的确认", state: "待确认", dot: "bg-orange-500" },
+  { id: "qwen-1", agent: "Qwen Code", logo: "/brand-assets/qwen-code/color.svg", title: "补充本地 Hook 兼容层", detail: "正在思考", state: "思考中", dot: "bg-blue-500" },
+  { id: "codex-2", agent: "Codex", logo: "/brand-assets/codex/color.svg", title: "排查 Pet 边缘定位", detail: "运行本地预览", state: "工作中", dot: "bg-violet-500" },
+  { id: "kimi-2", agent: "Kimi Code", logo: "/brand-assets/kimi-code/color.svg", title: "验证横竖屏布局", detail: "已完成", state: "已完成", dot: "bg-emerald-500" },
+  { id: "qwen-2", agent: "Qwen Code", logo: "/brand-assets/qwen-code/color.svg", title: "整理任务摘要", detail: "Hooks 已就绪", state: "空闲", dot: "bg-slate-300" },
 ] as const;
 
 const edgeLabels: Array<{ id: PetEdge; label: string }> = [

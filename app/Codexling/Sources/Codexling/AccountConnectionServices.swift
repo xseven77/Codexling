@@ -55,7 +55,7 @@ enum CodexAccountRuntimeError: LocalizedError {
     }
 }
 
-struct CodexAccountRuntimeManager {
+struct CodexAccountRuntimeManager: @unchecked Sendable {
     let fileManager: FileManager
     let runtimesRoot: URL
 
@@ -111,6 +111,28 @@ struct CodexAccountRuntimeManager {
         NSWorkspace.shared.open(launcher)
     }
 
+    func authenticationState(for connection: CodexAccountConnection) -> ConnectionAuthenticationState {
+        guard let codex = try? locateCodexExecutable(),
+              let home = try? homeURL(for: connection) else {
+            return .invalid
+        }
+        let process = Process()
+        process.executableURL = codex
+        process.arguments = ["login", "status"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_HOME"] = home.path
+        process.environment = environment
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0 ? .connected : .needsLogin
+        } catch {
+            return .invalid
+        }
+    }
+
     func removeRuntime(for connection: CodexAccountConnection) throws {
         let home = try homeURL(for: connection)
         guard home.deletingLastPathComponent().standardizedFileURL == runtimesRoot.standardizedFileURL else {
@@ -121,7 +143,7 @@ struct CodexAccountRuntimeManager {
         }
     }
 
-    private func locateCodexExecutable() throws -> URL {
+    func locateCodexExecutable() throws -> URL {
         let home = fileManager.homeDirectoryForCurrentUser
         let candidates = [
             "/opt/homebrew/bin/codex",

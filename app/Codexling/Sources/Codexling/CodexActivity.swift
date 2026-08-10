@@ -656,6 +656,8 @@ final class CodexActivityStore {
     var onSnapshotChanged: ((CodexActivitySnapshot) -> Void)?
 
     private let service: CodexActivityService
+    private var baseSnapshot = CodexActivitySnapshot.unavailable
+    private var agentEventReducer = AgentEventActivityReducer()
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var snapshotStabilizer = CodexActivitySnapshotStabilizer()
@@ -681,6 +683,11 @@ final class CodexActivityStore {
         refreshTask = nil
     }
 
+    func ingest(_ event: NormalizedAgentEvent) {
+        agentEventReducer.ingest(event)
+        publishMergedSnapshot()
+    }
+
     private func refresh() {
         guard refreshTask == nil else { return }
         let service = self.service
@@ -696,10 +703,16 @@ final class CodexActivityStore {
             ) else {
                 return
             }
-            if stable != snapshot {
-                snapshot = stable
-                onSnapshotChanged?(stable)
-            }
+            baseSnapshot = stable
+            publishMergedSnapshot()
+        }
+    }
+
+    private func publishMergedSnapshot(now: Date = Date()) {
+        let merged = agentEventReducer.mergedSnapshot(base: baseSnapshot, now: now)
+        if merged != snapshot {
+            snapshot = merged
+            onSnapshotChanged?(merged)
         }
     }
 }

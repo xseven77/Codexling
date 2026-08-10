@@ -258,6 +258,21 @@ Claude Code Desktop 不单独创建第二套 Pet adapter。先安装一个只上
 
 Reasonix Attached 模式只有在对应版本能稳定提供审批通知事件时才启用 `waitingForUser`；否则该状态只由 ACP managed session 提供。
 
+### 3.7 Agent / Provider 品牌资产
+
+Preview 与原生 App 必须共用项目根目录 `assets/brands/catalog/` 中的同一套本地品牌资产，不在运行时下载，也不再用英文名缩写生成临时 Logo。Landing 在 `predev` / `prebuild` 阶段将目录同步到 `/brand-assets/`；macOS 打包脚本将完整目录复制到 App Bundle 的 `Contents/Resources/BrandAssets`。若某个资源确实缺失，原生 App 只显示中性的系统占位图标，不能回退为字母方块。
+
+当前目录包含 44 组 Agent 与 Provider 资产，优先对象包括 Codex、Hermes、Claude Code、Reasonix、DeepSeek，同时覆盖 GitHub Copilot、Gemini CLI、Cursor、Windsurf、Qwen Code、Kimi Code、OpenCode、OpenHands、Qoder、OpenAI、Anthropic、Gemini、OpenRouter、Moonshot、Mistral、Groq、Ollama 等常用对象。每组可包含：
+
+```text
+assets/brands/catalog/<slug>/
+├── icon.svg                 # 小尺寸列表 / 状态栏
+├── color.svg                # 彩色卡片 / 账号切换器（可选）
+└── logo.svg | logo.png      # 大卡片 / 品牌详情（可选）
+```
+
+`assets/brands/catalog.json` 记录可机器读取的分组与来源；`assets/brands/README.md` 和 `THIRD_PARTY_LICENSES/` 固定上游 commit、许可证与商标边界。品牌 Logo 仅用于识别第三方连接，不暗示 Codexling 得到厂商背书。
+
 #### 3.6.4 Hook 隐私边界
 
 各厂商 hook payload 可能包含 `transcript_path`、`tool_input`、`tool_response`、shell command、args、prompt、最后一条 assistant message 或环境信息。以下字段不得进入 bridge payload、cache、diagnostics、崩溃信息或 UI：
@@ -348,6 +363,9 @@ Pet 只需要知道“谁、哪次 session、处于什么状态、何时更新�
 | Claude Desktop | `/Applications/Claude.app` 存在；官方提供 `claude://code/new` | launcher 通过；完整观测待版本矩阵 |
 | Reasonix | `v1.21.5`；`reasonix acp --help` 暴露 workspace/profile/model 等参数 | 通过 |
 | Reasonix Pet events | ACP 可提供 tool/plan/permission；Attached hooks 覆盖 prompt/tool/stop | Managed 通过；Attached approval 待验证 |
+| 统一品牌资产 | Landing 构建同步 44 组目录；App Bundle 同样包含 44 组；Preview 旧 `/agents/*` 引用为 0 | 通过 |
+| 原生 App 品牌渲染 | Codex 连接栏及 Codex/Hermes/Claude Code/Reasonix 设置行均加载实际图形资产；无字母缩写兜底 | 通过 |
+| Preview 交互与资源 | 17 个可见 `/brand-assets/*` 图片全部完成加载；切换到 DeepSeek 后 `aria-pressed=true` | 通过 |
 | Reasonix Desktop | `/Applications/Reasonix.app` 存在 | 发现通过 |
 | DeepSeek | 官方 `GET /user/balance` schema 返回 CNY/USD、total/granted/topped-up | 协议通过；未使用真实 Key 发请求 |
 | Swift 领域模型 | 多账号复合主键、surface 分离、DeepSeek account scope 单测 | 通过（见测试结果） |

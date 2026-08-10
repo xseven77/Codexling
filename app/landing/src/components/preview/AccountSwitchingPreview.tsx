@@ -12,19 +12,6 @@ const PREVIEW_SIZE: Record<PreviewLayout, { width: number; height: number }> = {
   vertical: { width: 390, height: 950 },
 };
 
-const toneClass = {
-  green: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  blue: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  purple: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
-  orange: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
-};
-
-const agentLogos: Record<Connection["agent"], string> = {
-  Codex: "/agents/openai.png",
-  "Kimi Code": "/agents/kimi.jpg",
-  DeepSeek: "/agents/deepseek.png",
-};
-
 function WindowDots() {
   return (
     <div className="flex gap-2" aria-hidden>
@@ -45,7 +32,7 @@ function LayoutIcon({ layout }: { layout: PreviewLayout }) {
 
 function ConnectionMark({ connection, size = "md" }: { connection: Connection; size?: "sm" | "md" }) {
   const pixels = size === "sm" ? 28 : 36;
-  return <span className={`grid shrink-0 place-items-center overflow-hidden rounded-[10px] ${toneClass[connection.tone]} ${size === "sm" ? "h-7 w-7" : "h-9 w-9"}`}><Image src={agentLogos[connection.agent]} alt={`${connection.agent} Logo`} width={pixels} height={pixels} className="h-full w-full object-cover" /></span>;
+  return <span className={`grid shrink-0 place-items-center overflow-hidden rounded-[10px] bg-[var(--preview-card)] ring-1 ring-[color:var(--preview-line)] ${size === "sm" ? "h-7 w-7 p-1" : "h-9 w-9 p-1.5"}`}><Image src={`/brand-assets/${connection.brand}/color.svg`} alt={`${connection.agent} Logo`} width={pixels} height={pixels} unoptimized className="h-full w-full object-contain" /></span>;
 }
 
 function StatusCapsule() {
@@ -59,9 +46,9 @@ function StatusCapsule() {
 }
 
 const localTasks = [
-  { id: "codex-work", agent: "Codex", logo: "/agents/openai.png", task: "优化多账号切换", state: "工作中", tone: "bg-violet-500" },
-  { id: "kimi-personal", agent: "Kimi Code", logo: "/agents/kimi.jpg", task: "是否执行完整测试？", state: "待确认", tone: "bg-orange-500" },
-  { id: "qwen-local", agent: "Qwen Code", logo: "/agents/qwen.png", task: "Hooks 已就绪", state: "空闲", tone: "bg-gray-300" },
+  { id: "codex-work", agent: "Codex", logo: "/brand-assets/codex/color.svg", task: "优化多账号切换", state: "工作中", tone: "bg-violet-500" },
+  { id: "kimi-personal", agent: "Kimi Code", logo: "/brand-assets/kimi-code/color.svg", task: "是否执行完整测试？", state: "待确认", tone: "bg-orange-500" },
+  { id: "qwen-local", agent: "Qwen Code", logo: "/brand-assets/qwen-code/color.svg", task: "Hooks 已就绪", state: "空闲", tone: "bg-gray-300" },
 ];
 
 const petTasksPopoverPlacement: Record<PreviewLayout, string> = {
@@ -104,7 +91,7 @@ function PetPanel({ vertical = false, tasksOpen, onTasksEnter, onTasksLeave, onT
       {!vertical && (
         <div className="absolute left-1/2 top-12 z-10 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap text-[8px] text-[var(--preview-muted)]">
           <span className="font-semibold uppercase tracking-[0.12em]">任务来源</span>
-          <span className="h-3.5 w-3.5 overflow-hidden rounded-[5px]"><Image src="/agents/kimi.jpg" alt="Kimi Code Logo" width={14} height={14} className="h-full w-full object-cover" /></span>
+          <span className="h-3.5 w-3.5 overflow-hidden rounded-[5px]"><Image src="/brand-assets/kimi-code/color.svg" alt="Kimi Code Logo" width={14} height={14} unoptimized className="h-full w-full object-contain" /></span>
           <span className="font-bold text-[var(--preview-ink)]">Kimi Code</span>
           <span className="h-1.5 w-1.5 rounded-full bg-orange-500" />
         </div>

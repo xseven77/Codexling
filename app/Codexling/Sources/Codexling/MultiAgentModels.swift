@@ -140,12 +140,29 @@ enum ConnectionAuthenticationState: String, Codable, Sendable {
     case invalid
 }
 
+struct CodexAccountRateLimitWindow: Equatable, Codable, Sendable {
+    let usedPercent: Int
+    let resetsAt: Date?
+    let windowDurationMinutes: Int?
+
+    var remainingPercent: Int { 100 - usedPercent }
+}
+
+struct CodexAccountUsageSnapshot: Equatable, Codable, Sendable {
+    let email: String?
+    let planType: String?
+    let primary: CodexAccountRateLimitWindow?
+    let secondary: CodexAccountRateLimitWindow?
+    let fetchedAt: Date
+}
+
 struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
     let id: ConnectionID
     var label: String
     let relativeHomeDirectory: String
     var authenticationState: ConnectionAuthenticationState
     var isEnabled: Bool
+    var usage: CodexAccountUsageSnapshot? = nil
     let createdAt: Date
 }
 
@@ -242,6 +259,52 @@ struct NormalizedAgentEvent: Codable, Sendable {
         self.toolCategory = toolCategory
         self.outcome = outcome
         self.timestamp = timestamp
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case agentID
+        case surfaceID
+        case connectionID
+        case sessionID
+        case turnID
+        case event
+        case toolCategory
+        case outcome
+        case timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        agentID = AgentID(rawValue: try container.decode(String.self, forKey: .agentID))
+        surfaceID = try container.decode(AgentSurfaceID.self, forKey: .surfaceID)
+        if let rawConnectionID = try container.decodeIfPresent(String.self, forKey: .connectionID),
+           let uuid = UUID(uuidString: rawConnectionID) {
+            connectionID = ConnectionID(rawValue: uuid)
+        } else {
+            connectionID = nil
+        }
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
+        event = try container.decode(NormalizedAgentEventName.self, forKey: .event)
+        toolCategory = try container.decodeIfPresent(AgentToolCategory.self, forKey: .toolCategory)
+        outcome = try container.decodeIfPresent(String.self, forKey: .outcome)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(agentID.rawValue, forKey: .agentID)
+        try container.encode(surfaceID, forKey: .surfaceID)
+        try container.encodeIfPresent(connectionID?.rawValue.uuidString.lowercased(), forKey: .connectionID)
+        try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(turnID, forKey: .turnID)
+        try container.encode(event, forKey: .event)
+        try container.encodeIfPresent(toolCategory, forKey: .toolCategory)
+        try container.encodeIfPresent(outcome, forKey: .outcome)
+        try container.encode(timestamp, forKey: .timestamp)
     }
 }
 

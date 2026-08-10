@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "sources": {
+    "lobe-icons": {
+      "url": "https://github.com/lobehub/lobe-icons",
+      "commit": "f07e9be35aef452ce735f95ea8204a14ecc513f7",
+      "license": "MIT"
+    },
+    "hermes-agent": {
+      "url": "https://github.com/hermes-agent-org/hermes",
+      "commit": "036cbdfa0a3158454a0a2a7a7388cf70353326b4",
+      "license": "MIT"
+    },
+    "reasonix": {
+      "url": "https://github.com/esengine/DeepSeek-Reasonix",
+      "commit": "e83b8dbe0e79b04284b4cc181d24127821c4513d",
+      "license": "MIT"
+    }
+  },
+  "priority": ["codex", "hermes-agent", "claude-code", "reasonix", "deepseek"],
+  "agents": [
+    "codex", "hermes-agent", "claude-code", "reasonix", "github-copilot",
+    "gemini-cli", "cursor", "windsurf", "qwen-code", "kimi-code",
+    "opencode", "openhands", "qoder", "kiro", "replit", "devin", "openclaw",
+    "pi-agent", "antigravity"
+  ],
+  "providers": [
+    "openai", "anthropic", "deepseek", "google-gemini", "moonshot", "qwen",
+    "openrouter", "mistral", "groq", "together", "ollama", "cohere",
+    "perplexity", "azure-ai", "aws-bedrock", "siliconflow", "zhipu",
+    "minimax", "hugging-face", "nvidia", "xai", "fireworks", "vertex-ai",
+    "cloudflare-workers-ai", "lm-studio"
+  ]
+}

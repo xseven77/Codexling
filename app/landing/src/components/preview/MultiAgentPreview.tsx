@@ -33,7 +33,7 @@ type Tone = "green" | "purple" | "blue" | "orange" | "gray" | "red";
 type Agent = {
   id: string;
   name: string;
-  mark: string;
+  brand: string;
   tone: Tone;
   state: string;
   stateTone: Tone;
@@ -48,7 +48,7 @@ type Agent = {
 type Provider = {
   id: string;
   name: string;
-  mark: string;
+  brand: string;
   tone: Tone;
   state: string;
   stateTone: Tone;
@@ -63,7 +63,7 @@ const agents: Agent[] = [
   {
     id: "codex",
     name: "Codex",
-    mark: "CX",
+    brand: "codex",
     tone: "green",
     state: "工作中",
     stateTone: "purple",
@@ -77,7 +77,7 @@ const agents: Agent[] = [
   {
     id: "kimi",
     name: "Kimi Code",
-    mark: "K",
+    brand: "kimi-code",
     tone: "blue",
     state: "待确认",
     stateTone: "orange",
@@ -91,7 +91,7 @@ const agents: Agent[] = [
   {
     id: "qwen",
     name: "Qwen Code",
-    mark: "Q",
+    brand: "qwen-code",
     tone: "purple",
     state: "空闲",
     stateTone: "gray",
@@ -105,7 +105,7 @@ const agents: Agent[] = [
   {
     id: "claude",
     name: "Claude Code",
-    mark: "CL",
+    brand: "claude-code",
     tone: "orange",
     state: "未连接",
     stateTone: "gray",
@@ -119,7 +119,7 @@ const agents: Agent[] = [
   {
     id: "qoder",
     name: "Qoder",
-    mark: "QD",
+    brand: "qoder",
     tone: "red",
     state: "未安装",
     stateTone: "gray",
@@ -136,7 +136,7 @@ const providers: Provider[] = [
   {
     id: "deepseek",
     name: "DeepSeek",
-    mark: "DS",
+    brand: "deepseek",
     tone: "blue",
     state: "可用",
     stateTone: "green",
@@ -149,7 +149,7 @@ const providers: Provider[] = [
   {
     id: "openrouter",
     name: "OpenRouter",
-    mark: "OR",
+    brand: "openrouter",
     tone: "purple",
     state: "可用",
     stateTone: "green",
@@ -162,7 +162,7 @@ const providers: Provider[] = [
   {
     id: "moonshot",
     name: "Moonshot",
-    mark: "MO",
+    brand: "moonshot",
     tone: "gray",
     state: "需要 Key",
     stateTone: "orange",
@@ -175,7 +175,7 @@ const providers: Provider[] = [
   {
     id: "siliconflow",
     name: "SiliconFlow",
-    mark: "SF",
+    brand: "siliconflow",
     tone: "orange",
     state: "凭证失效",
     stateTone: "red",
@@ -197,21 +197,30 @@ const toneStyles: Record<Tone, string> = {
 };
 
 function Mark({
-  label,
-  tone,
+  brand,
   large = false,
 }: {
-  label: string;
-  tone: Tone;
+  brand: string;
   large?: boolean;
 }) {
   return (
     <span
-      className={`grid shrink-0 place-items-center rounded-[12px] font-bold tracking-[-0.04em] ${toneStyles[tone]} ${
-        large ? "h-11 w-11 text-[13px]" : "h-9 w-9 text-[11px]"
+      className={`grid shrink-0 place-items-center rounded-[12px] bg-[var(--preview-card)] ring-1 ring-[color:var(--preview-line)] ${
+        large ? "h-11 w-11 p-2" : "h-9 w-9 p-1.5"
       }`}
     >
-      {label}
+      <Image
+        src={`/brand-assets/${brand}/color.svg`}
+        alt=""
+        width={large ? 34 : 28}
+        height={large ? 34 : 28}
+        unoptimized
+        onError={(event) => {
+          event.currentTarget.onerror = null;
+          event.currentTarget.src = `/brand-assets/${brand}/icon.svg`;
+        }}
+        className="h-full w-full object-contain"
+      />
     </span>
   );
 }
@@ -471,7 +480,7 @@ function Overview({
                 onClick={() => openAgent(agent.id)}
                 className="group flex w-full items-center gap-3 rounded-[14px] border border-[color:var(--preview-line)] px-3 py-3 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-black/15 hover:shadow-sm active:translate-y-0 dark:hover:border-white/20"
               >
-                <Mark label={agent.mark} tone={agent.tone} />
+                <Mark brand={agent.brand} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-[12px] font-bold text-[var(--preview-ink)]">
@@ -638,7 +647,7 @@ function AgentsView({
                     : "hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
                 }`}
               >
-                <Mark label={item.mark} tone={item.tone} />
+                <Mark brand={item.brand} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-[12px] font-bold text-[var(--preview-ink)]">
@@ -670,8 +679,7 @@ function AgentsView({
         </section>
 
         <DetailPanel
-          mark={agent.mark}
-          tone={agent.tone}
+          brand={agent.brand}
           name={agent.name}
           state={<StateBadge label={agent.state} tone={agent.stateTone} />}
           rows={[
@@ -748,7 +756,7 @@ function ProvidersView({
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <Mark label={item.mark} tone={item.tone} />
+                  <Mark brand={item.brand} />
                   <div>
                     <div className="text-[12px] font-bold text-[var(--preview-ink)]">
                       {item.name}
@@ -776,8 +784,7 @@ function ProvidersView({
         </section>
 
         <DetailPanel
-          mark={provider.mark}
-          tone={provider.tone}
+          brand={provider.brand}
           name={provider.name}
           state={<StateBadge label={provider.state} tone={provider.stateTone} />}
           rows={[
@@ -796,8 +803,7 @@ function ProvidersView({
 }
 
 function DetailPanel({
-  mark,
-  tone,
+  brand,
   name,
   state,
   rows,
@@ -806,8 +812,7 @@ function DetailPanel({
   onAction,
   onOfficial,
 }: {
-  mark: string;
-  tone: Tone;
+  brand: string;
   name: string;
   state: React.ReactNode;
   rows: [string, string][];
@@ -819,7 +824,7 @@ function DetailPanel({
   return (
     <aside className="flex min-h-[460px] flex-col rounded-[18px] border border-[color:var(--preview-line)] bg-[var(--preview-card)] p-4 shadow-[var(--preview-card-shadow)]">
       <div className="flex items-center gap-3">
-        <Mark label={mark} tone={tone} large />
+        <Mark brand={brand} large />
         <div className="min-w-0">
           <div className="truncate text-[15px] font-bold text-[var(--preview-ink)]">
             {name}
@@ -884,8 +889,7 @@ function ConnectionSheet({
 
   const isAgent = kind === "agent";
   const name = item?.name ?? "Connection";
-  const mark = item?.mark ?? "C";
-  const tone = item?.tone ?? "gray";
+  const brand = item?.brand ?? "codex";
 
   const submit = () => {
     setPhase("checking");
@@ -903,7 +907,7 @@ function ConnectionSheet({
       <section className="relative flex h-full w-[342px] flex-col rounded-[19px] border border-white/20 bg-[var(--preview-card)] p-5 shadow-2xl">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <Mark label={mark} tone={tone} large />
+            <Mark brand={brand} large />
             <div>
               <div className="text-[10px] text-[var(--preview-muted)]">
                 {isAgent ? "连接 Agent" : "连接 API Provider"}

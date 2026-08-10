@@ -6,10 +6,10 @@ import { useEffect, useState } from "react";
 import { StatusBarCapsulePreview } from "./StatusBarCapsulePreview";
 
 const notchItems = [
-  { id: "codex-work", name: "Codex", account: "Work", logo: "/agents/openai.png", status: "工作中", task: "重构账户切换逻辑", detail: "正在修改 4 个文件", quota: "5h 82% · 周 76%", dot: "bg-[#2e6bff]" },
-  { id: "codex-personal", name: "Codex", account: "Personal", logo: "/agents/openai.png", status: "空闲", task: "当前没有运行任务", detail: "最近同步于 2 分钟前", quota: "5h 54% · 周 91%", dot: "bg-[#aeb5b3]" },
-  { id: "kimi", name: "Kimi Code", account: "Personal", logo: "/agents/kimi.jpg", status: "待确认", task: "是否执行完整测试？", detail: "确认后继续运行测试", quota: "5h 28% · 周 63%", dot: "bg-[#f27314]" },
-  { id: "deepseek", name: "DeepSeek", account: "Personal Key", logo: "/agents/deepseek.png", status: "余额正常", task: "API Key 可继续使用", detail: "官方余额接口刚刚更新", quota: "¥42.80", dot: "bg-[#1fa55a]" },
+  { id: "codex-work", name: "Codex", account: "Work", logo: "/brand-assets/codex/color.svg", status: "工作中", task: "重构账户切换逻辑", detail: "正在修改 4 个文件", quota: "5h 82% · 周 76%", dot: "bg-[#2e6bff]" },
+  { id: "codex-personal", name: "Codex", account: "Personal", logo: "/brand-assets/codex/color.svg", status: "空闲", task: "当前没有运行任务", detail: "最近同步于 2 分钟前", quota: "5h 54% · 周 91%", dot: "bg-[#aeb5b3]" },
+  { id: "kimi", name: "Kimi Code", account: "Personal", logo: "/brand-assets/kimi-code/color.svg", status: "待确认", task: "是否执行完整测试？", detail: "确认后继续运行测试", quota: "5h 28% · 周 63%", dot: "bg-[#f27314]" },
+  { id: "deepseek", name: "DeepSeek", account: "Personal Key", logo: "/brand-assets/deepseek/color.svg", status: "余额正常", task: "API Key 可继续使用", detail: "官方余额接口刚刚更新", quota: "¥42.80", dot: "bg-[#1fa55a]" },
 ] as const;
 
 type DisplayMode = "notch" | "floating";

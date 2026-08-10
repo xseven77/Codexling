@@ -61,6 +61,7 @@ struct DetachedUsageWindowView: View {
                 CompanionDashboardView(
                     store: store,
                     settings: settings,
+                    multiAgentSettings: multiAgentSettings,
                     activityStore: activityStore,
                     frameStore: frameStore,
                     companionStatsStore: companionStatsStore,

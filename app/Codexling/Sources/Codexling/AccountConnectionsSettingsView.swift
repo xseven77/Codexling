@@ -95,7 +95,7 @@ struct AccountConnectionsSettingsView: View {
 
     private func codexRow(_ connection: CodexAccountConnection) -> some View {
         HStack(spacing: 12) {
-            connectionMark("CX", color: Color.codexGreen)
+            BrandIconView(asset: .codex, size: 36)
             VStack(alignment: .leading, spacing: 3) {
                 Text(connection.label)
                     .font(.system(size: 12, weight: .semibold))
@@ -123,7 +123,7 @@ struct AccountConnectionsSettingsView: View {
 
     private func deepSeekRow(_ connection: DeepSeekAPIConnection) -> some View {
         HStack(spacing: 12) {
-            connectionMark("DS", color: .blue)
+            BrandIconView(asset: .deepSeek, size: 36)
             VStack(alignment: .leading, spacing: 3) {
                 Text(connection.label)
                     .font(.system(size: 12, weight: .semibold))
@@ -156,14 +156,6 @@ struct AccountConnectionsSettingsView: View {
         }
         .padding(.horizontal, 14)
         .frame(minHeight: 64)
-    }
-
-    private func connectionMark(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .bold, design: .rounded))
-            .foregroundStyle(color)
-            .frame(width: 36, height: 36)
-            .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func balanceText(_ balance: ProviderBalanceSnapshot) -> String {
