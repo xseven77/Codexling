@@ -179,6 +179,60 @@ struct CodexTaskActivity: Identifiable, Equatable, Sendable {
     var workspaceName: String? = nil
     var gitBranch: String? = nil
     var model: String? = nil
+
+    /// Hook-backed tasks carry the Agent name in `title`/`model`; native Codex
+    /// tasks carry the model name instead, so Codex is the safe fallback.
+    var agentDisplayName: String {
+        for agent in BuiltInAgentCatalog.prioritized {
+            if model == agent.displayName
+                || title == agent.displayName
+                || title.hasPrefix("\(agent.displayName) ·") {
+                return agent.displayName
+            }
+        }
+        return "Codex"
+    }
+}
+
+struct CompanionAgentStatus: Identifiable, Equatable, Sendable {
+    var id: String { agentName }
+    let agentName: String
+    let state: CodexActivityState
+    let taskCount: Int
+    let updatedAt: Date
+}
+
+extension CodexActivitySnapshot {
+    /// One ticker item per running Agent. Multiple concurrent tasks from the
+    /// same Agent are represented by the freshest state plus a task count.
+    var activeAgentStatuses: [CompanionAgentStatus] {
+        let sortedTasks = activeTasks.sorted { $0.updatedAt > $1.updatedAt }
+        var statuses: [CompanionAgentStatus] = []
+
+        for task in sortedTasks {
+            let agentName = task.agentDisplayName
+            if let index = statuses.firstIndex(where: { $0.agentName == agentName }) {
+                let current = statuses[index]
+                statuses[index] = CompanionAgentStatus(
+                    agentName: current.agentName,
+                    state: current.state,
+                    taskCount: current.taskCount + 1,
+                    updatedAt: current.updatedAt
+                )
+            } else {
+                statuses.append(
+                    CompanionAgentStatus(
+                        agentName: agentName,
+                        state: task.state,
+                        taskCount: 1,
+                        updatedAt: task.updatedAt
+                    )
+                )
+            }
+        }
+
+        return statuses
+    }
 }
 
 struct ParsedCodexThreadActivity: Equatable, Sendable {

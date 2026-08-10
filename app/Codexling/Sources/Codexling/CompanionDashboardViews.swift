@@ -855,27 +855,47 @@ enum CompanionCopy {
     }
 }
 
-/// 陪伴胶囊：Pet 名 + 当前活动状态，横竖两版只有高度不同。
+/// 陪伴胶囊：轮播当前正在工作的 Agent 状态，横竖两版共用。
 private struct CompanionStatusCapsule: View {
     let activity: CodexActivitySnapshot
     let quotaHealth: QuotaHealthLevel
-    let petName: String?
     let height: CGFloat
     let waveEnabled: Bool
     let waveColorMode: StatusCapsuleColorMode
     @Environment(\.colorScheme) private var colorScheme
+    @State private var selectedIndex = 0
+
+    private var statuses: [CompanionAgentStatus] { activity.activeAgentStatuses }
+
+    private var displayedStatus: CompanionAgentStatus? {
+        guard !statuses.isEmpty else { return nil }
+        return statuses[min(selectedIndex, statuses.count - 1)]
+    }
+
+    private var displayedState: CodexActivityState {
+        displayedStatus?.state ?? .idle
+    }
+
+    private var rotationIdentity: String {
+        statuses
+            .map { "\($0.id):\($0.state.rawValue):\($0.taskCount)" }
+            .joined(separator: "|")
+    }
 
     private var showsActivityFlow: Bool {
-        waveEnabled && activity.state.showsActivityWave
+        waveEnabled && displayedStatus != nil && displayedState.showsActivityWave
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(activity.state.statusColor)
-                .frame(width: 8, height: 8)
-            Text("\(petName ?? "Pet") · \(activity.state.companionText)")
-                .lineLimit(1)
+        ZStack {
+            statusRow
+                .id(displayedStatus?.id ?? "idle")
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .top).combined(with: .opacity)
+                    )
+                )
         }
         .font(.system(size: 11, weight: .semibold))
         .padding(.horizontal, 10)
@@ -898,11 +918,60 @@ private struct CompanionStatusCapsule: View {
                     .strokeBorder(Color.white.opacity(0.72), lineWidth: 0.7)
             }
         }
+        .clipped()
+        .task(id: rotationIdentity) {
+            selectedIndex = 0
+            guard statuses.count > 1 else { return }
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, statuses.count > 1 else { return }
+                withAnimation(.easeInOut(duration: 0.32)) {
+                    selectedIndex = (selectedIndex + 1) % statuses.count
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        if let displayedStatus {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(displayedStatus.state.statusColor)
+                    .frame(width: 8, height: 8)
+                Text(statusText(for: displayedStatus))
+                    .lineLimit(1)
+            }
+        } else {
+            Text("暂无进行中的 Agent")
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+        }
+    }
+
+    private func statusText(for status: CompanionAgentStatus) -> String {
+        let count = status.taskCount > 1 ? " · \(status.taskCount) 个任务" : ""
+        return "\(status.agentName) · \(status.state.companionText)\(count)"
+    }
+
+    private var accessibilityText: String {
+        guard let displayedStatus else { return "暂无进行中的 Agent" }
+        let position = statuses.count > 1
+            ? "，第 \(selectedIndex + 1) 个，共 \(statuses.count) 个 Agent"
+            : ""
+        return "\(statusText(for: displayedStatus))\(position)"
     }
 
     private var waveInk: NSColor {
         waveColorMode.resolvedNSColor(
-            activityState: activity.state,
+            activityState: displayedState,
             quotaHealth: quotaHealth
         ) ?? (colorScheme == .dark
             ? NSColor.white.withAlphaComponent(0.18)
@@ -1001,7 +1070,6 @@ private struct CompanionPetHeader: View {
                         window: snapshot.primaryWindow,
                         isLoggedIn: true
                     ),
-                    petName: settings.selectedPet?.displayName,
                     height: 28,
                     waveEnabled: settings.statusBarWaveEnabled,
                     waveColorMode: settings.statusBarWaveColorMode
@@ -1260,7 +1328,6 @@ private struct CompanionSidebar: View {
                     window: snapshot.primaryWindow,
                     isLoggedIn: true
                 ),
-                petName: settings.selectedPet?.displayName,
                 height: 30,
                 waveEnabled: settings.statusBarWaveEnabled,
                 waveColorMode: settings.statusBarWaveColorMode

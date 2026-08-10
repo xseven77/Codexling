@@ -1305,6 +1305,48 @@ final class CodexlingTests: XCTestCase {
         )
     }
 
+    func testActiveAgentStatusesGroupTasksAndKeepFreshestAgentState() {
+        let now = Date()
+        let snapshot = CodexActivitySnapshot(
+            state: .executing,
+            detail: "多个 Agent 正在工作",
+            threadTitle: "多 Agent",
+            activeTaskCount: 3,
+            updatedAt: now,
+            activeTasks: [
+                CodexTaskActivity(
+                    id: "codex-task",
+                    state: .thinking,
+                    detail: "Codex 正在思考",
+                    title: "规划轮播状态",
+                    updatedAt: now.addingTimeInterval(-2),
+                    model: "gpt-5.6-sol"
+                ),
+                CodexTaskActivity(
+                    id: "hermes-new",
+                    state: .executing,
+                    detail: "Hermes 正在使用工具",
+                    title: "Hermes · CLI",
+                    updatedAt: now,
+                    model: "Hermes"
+                ),
+                CodexTaskActivity(
+                    id: "hermes-old",
+                    state: .thinking,
+                    detail: "Hermes 正在思考",
+                    title: "Hermes · CLI",
+                    updatedAt: now.addingTimeInterval(-5),
+                    model: "Hermes"
+                )
+            ]
+        )
+
+        XCTAssertEqual(snapshot.activeAgentStatuses.map(\.agentName), ["Hermes", "Codex"])
+        XCTAssertEqual(snapshot.activeAgentStatuses[0].state, .executing)
+        XCTAssertEqual(snapshot.activeAgentStatuses[0].taskCount, 2)
+        XCTAssertEqual(snapshot.activeAgentStatuses[1].taskCount, 1)
+    }
+
     func testActivityServicePrefersIndexedThreadNameAndLoadsTaskMetadata() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-title-db-\(UUID().uuidString)", isDirectory: true)
