@@ -197,6 +197,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var dashboardMeasurementIdentity: String?
     private var settingsMeasuredContentHeight: CGFloat?
     private var titleControlsView: TitleControlsView!
+    private var connectionSwitcherHoverObserver: Any?
+    private var connectionSwitcherHoverReenableWorkItem: DispatchWorkItem?
 
     init(
         store: UsageSnapshotStore,
@@ -266,6 +268,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         )
         window.delegate = self
         window.isReleasedWhenClosed = false
+        installConnectionSwitcherHoverObserver()
         // The status-bar capsule is a direct action. Avoid AppKit's default
         // document-window reveal animation so the result follows mouse-up.
         window.animationBehavior = .none
@@ -652,6 +655,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         endUserMoveTracking()
+        if let observer = connectionSwitcherHoverObserver {
+            NotificationCenter.default.removeObserver(observer)
+            connectionSwitcherHoverObserver = nil
+        }
         onClose?()
     }
 
@@ -749,6 +756,36 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             // Settings contains drag-sensitive controls, so it retains normal
             // content interaction and uses the title bar for window movement.
             window.isMovableByWindowBackground = false
+        }
+    }
+
+    /// 监听连接切换器的 hover 状态：鼠标在切换器上时禁用窗口背景拖拽，
+    /// 防止拖拽排序 logo 时误触发窗口移动。
+    /// 退出 hover 时加短延迟，避免拖拽过程中鼠标短暂离开区域导致窗口跳动。
+    private func installConnectionSwitcherHoverObserver() {
+        connectionSwitcherHoverObserver = NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleConnectionSwitcherHover(_:)),
+            name: .connectionSwitcherHoverChanged,
+            object: nil
+        )
+    }
+
+    @MainActor
+    @objc private func handleConnectionSwitcherHover(_ notification: Notification) {
+        guard case .dashboard = contentMode,
+              let hovering = notification.userInfo?["hovering"] as? Bool
+        else { return }
+
+        connectionSwitcherHoverReenableWorkItem?.cancel()
+        if hovering {
+            window.isMovableByWindowBackground = false
+        } else {
+            let work = DispatchWorkItem { [weak self] in
+                self?.window.isMovableByWindowBackground = true
+            }
+            connectionSwitcherHoverReenableWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
         }
     }
 

@@ -17,6 +17,7 @@ final class MultiAgentSettingsStore {
     private(set) var mutatingAgentIDs: Set<AgentID> = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
+    private(set) var connectionOrder: [String] = []
     private(set) var isMutatingConnections = false
     private(set) var isRefreshingConnections = false
     private(set) var isCodexOAuthInProgress = false
@@ -46,6 +47,7 @@ final class MultiAgentSettingsStore {
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
+        connectionOrder = registry.connectionOrder
         refresh()
         validateSelectedConnection()
         if startsAutomaticRefresh {
@@ -323,6 +325,7 @@ final class MultiAgentSettingsStore {
             try codexRuntimeManager.removeRuntime(for: connection)
             codexAppServerSupervisor.remove(connectionID: connection.id)
             codexAccounts.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == "codex.\(connection.id.rawValue.uuidString.lowercased())" }
             validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已移除 \(connection.label) 的独立运行目录"
@@ -414,6 +417,7 @@ final class MultiAgentSettingsStore {
         do {
             try credentialStore.delete(handle: connection.credentialHandle)
             deepSeekConnections.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == "deepseek.\(connection.id.rawValue.uuidString.lowercased())" }
             validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已从 Keychain 移除 \(connection.label)"
@@ -422,6 +426,84 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    // MARK: - Connection Ordering
+
+    func connectionKey(for account: CodexAccountConnection) -> String {
+        "codex.\(account.id.rawValue.uuidString.lowercased())"
+    }
+
+    func connectionKey(for connection: DeepSeekAPIConnection) -> String {
+        "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    /// 所有可用连接的 key，按用户偏好排序。未在 order 中出现的新连接自动追加到末尾。
+    var orderedConnectionKeys: [String] {
+        var known: Set<String> = []
+        var result: [String] = []
+
+        for key in connectionOrder {
+            guard connectionExists(key), !known.contains(key) else { continue }
+            result.append(key)
+            known.insert(key)
+        }
+
+        // 追加新连接（当前 Codex / codexAccounts / deepSeekConnections）
+        func appendIfNew(_ key: String) {
+            guard !known.contains(key), connectionExists(key) else { return }
+            result.append(key)
+            known.insert(key)
+        }
+
+        appendIfNew(Self.currentCodexConnectionKey)
+        for account in codexAccounts {
+            appendIfNew(connectionKey(for: account))
+        }
+        for conn in deepSeekConnections {
+            appendIfNew(connectionKey(for: conn))
+        }
+
+        return result
+    }
+
+    /// 拖拽排序后写入并持久化。
+    func moveConnection(fromOffsets source: IndexSet, toOffset destination: Int) {
+        moveConnectionInMemory(fromOffsets: source, toOffset: destination)
+        do {
+            try saveRegistry()
+        } catch {
+            NSLog("Codexling persist connection order failed: %@", error.localizedDescription)
+        }
+    }
+
+    /// 仅更新内存中的排序，不写盘。拖拽过程中高频调用；落盘推迟到 performDrop。
+    func moveConnectionInMemory(fromOffsets source: IndexSet, toOffset destination: Int) {
+        var keys = orderedConnectionKeys
+        keys.move(fromOffsets: source, toOffset: destination)
+        connectionOrder = keys
+    }
+
+    /// 将当前 connectionOrder 写入磁盘。
+    func persistConnectionOrder() throws {
+        try saveRegistry()
+    }
+
+    private func connectionExists(_ key: String) -> Bool {
+        if key == Self.currentCodexConnectionKey { return true }
+        if key.hasPrefix("codex.") {
+            let uuidString = String(key.dropFirst("codex.".count))
+            guard let uuid = UUID(uuidString: uuidString) else { return false }
+            return codexAccounts.contains(where: { $0.id.rawValue == uuid })
+        }
+        if key.hasPrefix("deepseek.") {
+            let uuidString = String(key.dropFirst("deepseek.".count))
+            guard let uuid = UUID(uuidString: uuidString) else { return false }
+            return deepSeekConnections.contains(where: { $0.id.rawValue == uuid })
+        }
+        return false
+    }
+
+    // MARK: - Helpers
+
     private func displayName(for agentID: AgentID) -> String {
         BuiltInAgentCatalog.prioritized.first(where: { $0.id == agentID })?.displayName ?? "Agent"
     }
@@ -429,7 +511,8 @@ final class MultiAgentSettingsStore {
     private func saveRegistry() throws {
         try registryStorage.save(ConnectionRegistrySnapshot(
             codexAccounts: codexAccounts,
-            deepSeekConnections: deepSeekConnections
+            deepSeekConnections: deepSeekConnections,
+            connectionOrder: connectionOrder
         ))
     }
 

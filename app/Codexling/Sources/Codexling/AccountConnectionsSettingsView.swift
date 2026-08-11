@@ -1,4 +1,6 @@
 import SwiftUI
+@preconcurrency import AppKit
+import SwiftUI
 
 private enum ConnectionPickerTab: String, CaseIterable, Identifiable {
     case agent
@@ -221,8 +223,11 @@ struct AccountConnectionsModalView: View {
         VStack(alignment: .leading, spacing: 12) {
             TextField("连接名称", text: $label)
                 .textFieldStyle(.roundedBorder)
-            SecureField("sk-…", text: $apiKey)
-                .textFieldStyle(.roundedBorder)
+            PlainTextField(text: $apiKey, placeholder: "sk-…")
+                .frame(height: 28)
+            Text("Key 明文显示，可选中复制", tableName: nil, bundle: nil, comment: "")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
             if let message = store.lastMessage, message.contains("失败") {
                 Text(message)
                     .font(.system(size: 9))
@@ -299,5 +304,76 @@ struct AccountConnectionsModalView: View {
 
     private var closeButtonSurface: Color {
         colorScheme == .dark ? Color.black.opacity(0.12) : Color.black.opacity(0.035)
+    }
+}
+
+// MARK: - Plain TextField (NSTextField wrapper)
+
+/// 用原生 NSTextField 包装的文本输入框。Overlay/modal 中
+/// SwiftUI 的 TextField 快捷键可能失效；通过 NSTextField 子类
+/// 的 performKeyEquivalent 手动接管 Cmd+C/V/X/A。
+private struct PlainTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = KeyShortcutTextField()
+        field.placeholderString = placeholder
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.delegate = context.coordinator
+        field.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        field.lineBreakMode = .byTruncatingTail
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    /// 重写 performKeyEquivalent 接管快捷键，天然在 MainActor 无警告。
+    private final class KeyShortcutTextField: NSTextField {
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  let chars = event.charactersIgnoringModifiers?.lowercased()
+            else { return super.performKeyEquivalent(with: event) }
+
+            switch chars {
+            case "c":
+                currentEditor()?.copy(nil)
+                return true
+            case "v":
+                currentEditor()?.paste(nil)
+                return true
+            case "x":
+                currentEditor()?.cut(nil)
+                return true
+            case "a":
+                currentEditor()?.selectAll(nil)
+                return true
+            default:
+                break
+            }
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        let parent: PlainTextField
+
+        init(_ parent: PlainTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
     }
 }

@@ -1,13 +1,13 @@
 import Foundation
-import LocalAuthentication
-import Security
 
 struct ConnectionRegistrySnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion = currentSchemaVersion
     var codexAccounts: [CodexAccountConnection] = []
     var deepSeekConnections: [DeepSeekAPIConnection] = []
+    /// 用户拖拽排序后的连接 key 顺序。缺失的连接自动追加；已移除的连接自动清理。
+    var connectionOrder: [String] = []
 }
 
 struct ConnectionRegistryStorage {
@@ -25,7 +25,7 @@ struct ConnectionRegistryStorage {
         decoder.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: fileURL),
               let snapshot = try? decoder.decode(ConnectionRegistrySnapshot.self, from: data),
-              snapshot.schemaVersion == ConnectionRegistrySnapshot.currentSchemaVersion else {
+              snapshot.schemaVersion <= ConnectionRegistrySnapshot.currentSchemaVersion else {
             return ConnectionRegistrySnapshot()
         }
         return snapshot
@@ -180,61 +180,36 @@ enum DeepSeekCredentialError: LocalizedError {
 }
 
 struct DeepSeekCredentialStore: DeepSeekCredentialStoring {
-    static let service = "com.qiizo.Codexling.credentials"
+    private let credentialsDir: URL
 
-    static func nonInteractiveQuery(handle: String) -> [String: Any] {
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        return [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: handle,
-            kSecUseAuthenticationContext as String: context,
-        ]
+    init(credentialsDir: URL? = nil) {
+        self.credentialsDir = credentialsDir ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/deepseek_credentials")
     }
 
-    private func throwCredentialError(for status: OSStatus) throws -> Never {
-        if status == errSecInteractionNotAllowed || status == errSecAuthFailed {
-            throw DeepSeekCredentialError.interactionRequired
-        }
-        throw DeepSeekCredentialError.keychain(status)
+    private func fileURL(for handle: String) -> URL {
+        credentialsDir.appendingPathComponent("\(handle).json")
     }
 
     func save(apiKey: String, handle: String) throws {
+        try FileManager.default.createDirectory(at: credentialsDir, withIntermediateDirectories: true)
         let data = Data(apiKey.utf8)
-        let query = Self.nonInteractiveQuery(handle: handle)
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var insert = query
-            insert[kSecValueData as String] = data
-            let status = SecItemAdd(insert as CFDictionary, nil)
-            guard status == errSecSuccess else { throw DeepSeekCredentialError.keychain(status) }
-        } else if updateStatus != errSecSuccess {
-            try throwCredentialError(for: updateStatus)
-        }
+        try data.write(to: fileURL(for: handle), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL(for: handle).path)
     }
 
     func read(handle: String) throws -> String {
-        var query = Self.nonInteractiveQuery(handle: handle)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status != errSecItemNotFound else { throw DeepSeekCredentialError.missing }
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let value = String(data: data, encoding: .utf8) else {
-            try throwCredentialError(for: status)
+        let data = try Data(contentsOf: fileURL(for: handle))
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw DeepSeekCredentialError.missing
         }
         return value
     }
 
     func delete(handle: String) throws {
-        let query = Self.nonInteractiveQuery(handle: handle)
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            try throwCredentialError(for: status)
+        let url = fileURL(for: handle)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
     }
 }

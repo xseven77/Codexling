@@ -69,6 +69,7 @@ struct SettingsView: View {
     @State private var isRestartingCodex = false
     @State private var pendingHookAction: PendingAgentHookAction?
     @State private var pendingAccountRemoval: PendingAccountRemoval?
+    @State private var showsConnectionSheet = false
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @State private var selectedTab: SettingsTab = .accounts
@@ -98,6 +99,25 @@ struct SettingsView: View {
                 guard layout == .window else { return }
                 onMeasuredContentHeightChange(-1)
             }
+            .overlay {
+                if showsConnectionSheet {
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.25))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { showsConnectionSheet = false }
+
+                        AccountConnectionsModalView(store: multiAgentSettings) {
+                            showsConnectionSheet = false
+                        }
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    }
+                    .zIndex(20)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
     }
 
     private var alertContent: some View {
@@ -398,9 +418,25 @@ struct SettingsView: View {
     private var accountPoolSection: some View {
         SettingsSection(
             title: "已连接",
-            subtitle: "按供应商分组，凭据彼此隔离；新增连接请使用主界面的加号。"
+            subtitle: "按供应商分组，凭据彼此隔离。"
         ) {
             VStack(spacing: 12) {
+                // 添加按钮置顶，避免数据多时需滚动到底部
+                if store.isLoggedIn
+                    || !multiAgentSettings.codexAccounts.isEmpty
+                    || !multiAgentSettings.deepSeekConnections.isEmpty {
+                    Button {
+                        showsConnectionSheet = true
+                    } label: {
+                        Label("添加供应商", systemImage: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 40)
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 9))
+                    .foregroundStyle(Color.accentColor)
+                }
+
                 if store.isLoggedIn || !multiAgentSettings.codexAccounts.isEmpty {
                     accountProviderGroup(
                         name: "Codex",
@@ -468,18 +504,25 @@ struct SettingsView: View {
                 if !store.isLoggedIn,
                    multiAgentSettings.codexAccounts.isEmpty,
                    multiAgentSettings.deepSeekConnections.isEmpty {
-                    VStack(spacing: 8) {
+                    VStack(spacing: 12) {
                         Image(systemName: "person.2.badge.plus")
                             .font(.system(size: 22, weight: .medium))
                             .foregroundStyle(Color.codexMuted)
                         Text("账户池为空")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("回到主界面，通过加号添加 Codex 账号或 DeepSeek API Key。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.codexMuted)
-                            .multilineTextAlignment(.center)
+
+                        Button {
+                            showsConnectionSheet = true
+                        } label: {
+                            Label("添加供应商", systemImage: "plus")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 16)
+                                .frame(height: 36)
+                        }
+                        .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                        .foregroundStyle(Color.accentColor)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 128)
+                    .frame(maxWidth: .infinity, minHeight: 148)
                     .padding(16)
                     .settingsGroupSurface()
                 }

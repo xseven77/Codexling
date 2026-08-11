@@ -36,3 +36,4 @@ app/landing/package-lock.json
 
 # pnpm local store (content-addressable cache)
 .pnpm-store/
+.reasonix/

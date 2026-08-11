@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    /// DashboardConnectionSwitcher hover 变化时发送，userInfo["hovering"]: Bool
+    static let connectionSwitcherHoverChanged = Notification.Name("ConnectionSwitcherHoverChanged")
+}
+
 struct CompanionDashboardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: UsageSnapshotStore
@@ -370,7 +375,7 @@ struct CompanionDashboardView: View {
                 todayMinutes: companionStatsStore.todayMinutes,
                 selectedTaskID: $selectedTaskID
             )
-            .zIndex(5)
+            .zIndex(30)
 
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
@@ -383,7 +388,7 @@ struct CompanionDashboardView: View {
             .frame(height: 59)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.codexCard.opacity(0.96))
-            .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
+            .overlay(alignment: .bottom) { CodexDivider() }
 
             if multiAgentSettings.selectedDeepSeekConnection == nil {
                 CompanionAccountRow(context: selectedProviderContext)
@@ -402,8 +407,10 @@ struct CompanionDashboardView: View {
             // stacking branch-specific top padding.
             .padding(.top, 18)
             .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-            .padding(.bottom, 36)
+            .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 : 36)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 0))
+            .zIndex(30)
         }
     }
 
@@ -530,6 +537,27 @@ struct CompanionDashboardView: View {
     }
 }
 
+// MARK: - Connection Credential Badge
+
+fileprivate enum CredentialBadge {
+    case account(Color)
+    case apiKey(Color)
+
+    var systemName: String {
+        switch self {
+        case .account: "checkmark.seal.fill"
+        case .apiKey: "key.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .account(let color): color
+        case .apiKey(let color): color
+        }
+    }
+}
+
 private struct DashboardConnectionSwitcher: View {
     let snapshot: CodexUsageSnapshot
     let showsCurrentCodex: Bool
@@ -537,58 +565,133 @@ private struct DashboardConnectionSwitcher: View {
     let onAdd: () -> Void
     var compact = false
 
-    private enum CredentialBadge {
-        case account(Color)
-        case apiKey(Color)
+    @State private var draggingItemKey: String? = nil
+    @State private var dragOffset: CGSize = .zero
 
-        var systemName: String {
-            switch self {
-            case .account: "checkmark.seal.fill"
-            case .apiKey: "key.fill"
+    /// 拖拽排序后的统一连接项列表。
+    private var orderedItems: [ConnectionSwitcherItem] {
+        store.orderedConnectionKeys.compactMap { key -> ConnectionSwitcherItem? in
+            if key == MultiAgentSettingsStore.currentCodexConnectionKey {
+                guard showsCurrentCodex else { return nil }
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .codex,
+                    title: "Codex",
+                    subtitle: snapshot.companionAccountName,
+                    color: Color.codexGreen,
+                    selected: store.selectedConnectionKey == key,
+                    credential: .account(currentCodexQuotaColor),
+                    action: { store.selectCurrentCodexConnection() }
+                )
             }
-        }
-
-        var tint: Color {
-            switch self {
-            case .account(let color): color
-            case .apiKey(let color): color
+            if key.hasPrefix("codex."),
+               let account = store.codexAccounts.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .codex,
+                    title: "Codex",
+                    subtitle: account.label,
+                    color: Color.codexGreen,
+                    selected: store.isSelected(account),
+                    credential: .account(codexQuotaColor(for: account)),
+                    action: { store.selectCodexConnection(account) }
+                )
             }
+            if key.hasPrefix("deepseek."),
+               let conn = store.deepSeekConnections.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .deepSeek,
+                    title: "DeepSeek",
+                    subtitle: conn.label,
+                    color: .deepSeekBrand,
+                    selected: store.isSelected(conn),
+                    credential: .apiKey(balanceColor(for: conn)),
+                    action: { store.selectDeepSeekConnection(conn) }
+                )
+            }
+            return nil
         }
     }
 
+    /// Compact 模式下每个 icon slot 宽度（42pt icon + 7pt spacing）。
+    private var slotWidth: CGFloat { 49 }
+
     var body: some View {
         HStack(spacing: 7) {
-            ScrollView(.horizontal, showsIndicators: false) {
+            if compact {
                 HStack(spacing: 7) {
-                    if showsCurrentCodex {
+                    ForEach(orderedItems) { item in
+                        let isDragging = draggingItemKey == item.key
                         connectionButton(
-                            asset: .codex,
-                            title: "Codex",
-                            subtitle: snapshot.companionAccountName,
-                            color: Color.codexGreen,
-                            selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey,
-                            credential: .account(currentCodexQuotaColor)
-                        ) { store.selectCurrentCodexConnection() }
+                            asset: item.asset,
+                            title: item.title,
+                            subtitle: item.subtitle,
+                            color: item.color,
+                            selected: item.selected,
+                            credential: item.credential,
+                            action: item.action
+                        )
+                        .offset(x: isDragging ? dragOffset.width : 0,
+                                y: isDragging ? dragOffset.height : 0)
+                        .scaleEffect(isDragging ? 1.18 : 1.0)
+                        .shadow(color: isDragging ? .black.opacity(0.22) : .clear,
+                                radius: isDragging ? 10 : 0,
+                                y: isDragging ? 5 : 0)
+                        .zIndex(isDragging ? 10 : 0)
+                        .gesture(
+                            DragGesture(minimumDistance: 3, coordinateSpace: .named("switcher"))
+                                .onChanged { value in
+                                    if draggingItemKey == nil {
+                                        draggingItemKey = item.key
+                                        NSCursor.closedHand.push()
+                                    }
+                                    dragOffset = value.translation
+                                }
+                                .onEnded { value in
+                                    NSCursor.closedHand.pop()
+                                    let currentIdx = orderedItems.firstIndex(where: { $0.key == item.key }) ?? 0
+                                    let offsetSteps = Int(round(value.translation.width / slotWidth))
+                                    let targetIdx = max(0, min(orderedItems.count - 1, currentIdx + offsetSteps))
+
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        draggingItemKey = nil
+                                        dragOffset = .zero
+                                        if targetIdx != currentIdx {
+                                            store.moveConnection(
+                                                fromOffsets: IndexSet(integer: currentIdx),
+                                                toOffset: targetIdx > currentIdx ? targetIdx + 1 : targetIdx
+                                            )
+                                        }
+                                    }
+                                }
+                        )
                     }
-                    ForEach(store.codexAccounts) { connection in
-                        connectionButton(
-                            asset: .codex,
-                            title: "Codex",
-                            subtitle: connection.label,
-                            color: Color.codexGreen,
-                            selected: store.isSelected(connection),
-                            credential: .account(codexQuotaColor(for: connection))
-                        ) { store.selectCodexConnection(connection) }
+                }
+                .coordinateSpace(name: "switcher")
+                .onHover { hovering in
+                    guard draggingItemKey == nil else { return }
+                    if hovering {
+                        NSCursor.openHand.set()
+                    } else {
+                        NSCursor.arrow.set()
                     }
-                    ForEach(store.deepSeekConnections) { connection in
-                        connectionButton(
-                            asset: .deepSeek,
-                            title: "DeepSeek",
-                            subtitle: connection.label,
-                            color: .deepSeekBrand,
-                            selected: store.isSelected(connection),
-                            credential: .apiKey(balanceColor(for: connection))
-                        ) { store.selectDeepSeekConnection(connection) }
+                }
+                Spacer(minLength: 0)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(orderedItems) { item in
+                            connectionButton(
+                                asset: item.asset,
+                                title: item.title,
+                                subtitle: item.subtitle,
+                                color: item.color,
+                                selected: item.selected,
+                                credential: item.credential,
+                                action: item.action
+                            )
+                        }
                     }
                 }
             }
@@ -607,6 +710,13 @@ private struct DashboardConnectionSwitcher: View {
             }
             .help("添加 Codex 账号或 DeepSeek API Key")
         }
+        .onHover { hovering in
+            NotificationCenter.default.post(
+                name: .connectionSwitcherHoverChanged,
+                object: nil,
+                userInfo: ["hovering": hovering]
+            )
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("我的连接")
     }
@@ -620,30 +730,29 @@ private struct DashboardConnectionSwitcher: View {
         credential: CredentialBadge,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Group {
-                if compact {
+        Group {
+            if compact {
+                connectionIcon(asset: asset, credential: credential)
+                    .frame(width: 42, height: 42)
+            } else {
+                HStack(spacing: 6) {
                     connectionIcon(asset: asset, credential: credential)
-                        .frame(width: 42, height: 42)
-                } else {
-                    HStack(spacing: 6) {
-                        connectionIcon(asset: asset, credential: credential)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(.system(size: 10, weight: .bold))
-                            Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
-                        }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.system(size: 10, weight: .bold))
+                        Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
                     }
-                    .padding(.horizontal, 10)
-                    .frame(height: 42)
                 }
-            }
-            .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
+                .padding(.horizontal, 10)
+                .frame(height: 42)
             }
         }
-        .buttonStyle(CodexPressableCardStyle(cornerRadius: 11))
+        .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .onTapGesture(perform: action)
         .accessibilityLabel("\(title)，\(subtitle)")
         .accessibilityValue(selected ? "已选择" : "未选择")
     }
@@ -690,6 +799,21 @@ private struct DashboardConnectionSwitcher: View {
             authenticationState: connection.authenticationState
         ).color
     }
+}
+
+// MARK: - Drag-and-Drop Support
+
+private struct ConnectionSwitcherItem: Identifiable {
+    let key: String
+    let asset: BrandAssetID
+    let title: String
+    let subtitle: String
+    let color: Color
+    let selected: Bool
+    let credential: CredentialBadge
+    let action: () -> Void
+
+    var id: String { key }
 }
 
 private struct ManagedCodexDashboardCard: View {
