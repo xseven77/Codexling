@@ -192,9 +192,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     /// 竖向实测内容高度。
     private var dashboardMeasuredHeight: CGFloat?
     private var settingsMeasuredContentHeight: CGFloat?
-    private var titleControlsAccessory: NSTitlebarAccessoryViewController!
-    private var titleControlsContainer: NSView!
-    private var titleControlsHostingView: NSHostingView<WindowTitleControls>!
+    private var titleControlsView: TitleControlsView!
 
     init(
         store: UsageSnapshotStore,
@@ -256,12 +254,12 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.title = "Codexling"
         contentMode = .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
         applyWindowChrome()
-        installTitleControls()
         applyAlwaysOnTop()
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.isOpaque = false
         hostingController.view.layer?.backgroundColor = NSColor.codexDashboardChrome.cgColor
         window.contentViewController = hostingController
+        installTitleControls()
         applyWindowInteraction(for: contentMode)
         applyWindowSurface(for: contentMode)
         applyContentSizeLimits(for: contentMode)
@@ -342,20 +340,21 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func installTitleControls() {
-        let accessory = NSTitlebarAccessoryViewController()
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 66, height: 28))
-        let hostingView = NSHostingView(
-            rootView: makeTitleControls()
+        let controlsView = TitleControlsView(
+            onToggleOrientation: { [weak self] in
+                self?.toggleDashboardOrientation()
+            },
+            onTogglePin: { [weak self] in
+                self?.toggleAlwaysOnTop()
+            }
         )
-        hostingView.frame = NSRect(x: 3, y: 0, width: 60, height: 28)
-        container.addSubview(hostingView)
-
-        accessory.view = container
-        window.addTitlebarAccessoryViewController(accessory)
-        titleControlsAccessory = accessory
-        titleControlsContainer = container
-        titleControlsHostingView = hostingView
+        controlsView.frame = NSRect(x: 0, y: 0, width: 66, height: 28)
+        controlsView.autoresizingMask = []
+        if let frameView = window.contentView?.superview {
+            frameView.addSubview(controlsView, positioned: .above, relativeTo: nil)
+        }
+        titleControlsView = controlsView
+        updateTitleControlsAppearance()
         updateTitleControlsPlacement()
     }
 
@@ -380,62 +379,54 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func updateTitleControlsAppearance() {
-        guard let titleControlsHostingView else { return }
-        titleControlsHostingView.rootView = makeTitleControls()
-        updateTitleControlsPlacement()
-    }
-
-    private func updateTitleControlsPlacement() {
-        guard let titleControlsAccessory,
-              let titleControlsContainer,
-              let titleControlsHostingView else { return }
-
-        let usesPetColumn = if case .dashboard(_, .horizontal) = contentMode { true } else { false }
-        let showsOrientationToggle = if case .dashboard = contentMode { true } else { false }
-        let targetAttribute: NSLayoutConstraint.Attribute = usesPetColumn ? .left : .right
-
-        if usesPetColumn {
-            // The horizontal layout's left column is the generic Pet surface.
-            // Place window controls at that column's top-right, after the
-            // traffic lights, rather than over the account-specific content.
-            titleControlsContainer.frame.size = NSSize(width: 118, height: 28)
-            titleControlsHostingView.frame = NSRect(x: 55, y: 0, width: 60, height: 28)
-        } else if showsOrientationToggle {
-            titleControlsContainer.frame.size = NSSize(width: 66, height: 28)
-            titleControlsHostingView.frame = NSRect(x: 3, y: 0, width: 60, height: 28)
-        } else {
-            // Settings only shows the pin. Keep the accessory's hit region to
-            // the visible 28pt button so it cannot cover the SwiftUI close.
-            titleControlsContainer.frame.size = NSSize(width: 34, height: 28)
-            titleControlsHostingView.frame = NSRect(x: 3, y: 0, width: 28, height: 28)
-        }
-
-        guard titleControlsAccessory.layoutAttribute != targetAttribute else { return }
-        if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === titleControlsAccessory }) {
-            window.removeTitlebarAccessoryViewController(at: index)
-        }
-        titleControlsAccessory.layoutAttribute = targetAttribute
-        window.addTitlebarAccessoryViewController(titleControlsAccessory)
-    }
-
-    private func makeTitleControls() -> WindowTitleControls {
+        guard let titleControlsView else { return }
         let orientation: DashboardOrientation?
         if case let .dashboard(_, dashboardOrientation) = contentMode {
             orientation = dashboardOrientation
         } else {
             orientation = nil
         }
-
-        return WindowTitleControls(
+        titleControlsView.update(
             orientation: orientation,
             isPinned: settings.windowAlwaysOnTop,
-            onToggleOrientation: { [weak self] in
-                self?.toggleDashboardOrientation()
-            },
-            onTogglePin: { [weak self] in
-                self?.toggleAlwaysOnTop()
-            }
+            appearance: window.effectiveAppearance
         )
+        updateTitleControlsPlacement()
+    }
+
+    private func updateTitleControlsPlacement() {
+        guard let titleControlsView,
+              let frameView = window.contentView?.superview else { return }
+
+        let usesPetColumn = if case .dashboard(_, .horizontal) = contentMode { true } else { false }
+        let showsOrientationToggle = if case .dashboard = contentMode { true } else { false }
+        let controlWidth: CGFloat = showsOrientationToggle ? 66 : 28
+        let trailingInset: CGFloat = 18
+        let x: CGFloat
+        if usesPetColumn {
+            // Horizontal dashboard: align with the right edge of the generic
+            // Pet column, not the window's account-content edge.
+            x = DetachedWindowMetrics.sidebarWidth - controlWidth - trailingInset
+        } else {
+            // Vertical dashboard and settings: pin directly to the window's
+            // visual trailing edge. This avoids AppKit's unreliable `.right`
+            // titlebar accessory hit-test path.
+            x = frameView.bounds.width - controlWidth - trailingInset
+        }
+
+        // Use a stable top inset instead of reading standard-button frames
+        // while AppKit is in the middle of an orientation resize.
+        // The 12pt symbols are vertically centered inside the 28pt hit box;
+        // placing that box at the frame's top aligns symbol centers with the
+        // standard traffic-light controls.
+        let topInset: CGFloat = 0
+        titleControlsView.frame = NSRect(
+            x: round(x),
+            y: round(frameView.bounds.maxY - topInset - 28),
+            width: controlWidth,
+            height: 28
+        )
+        frameView.addSubview(titleControlsView, positioned: .above, relativeTo: nil)
     }
 
     private func applyContentLayout(_ mode: DetachedWindowContentMode) {
@@ -484,6 +475,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             )
             scheduleSettingsHeightMeasurement()
         }
+        updateTitleControlsPlacement()
     }
 
     private func applyWindowInteraction(for mode: DetachedWindowContentMode) {
@@ -705,7 +697,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard !isProgrammaticResize, let window = notification.object as? NSWindow else { return }
+        guard let window = notification.object as? NSWindow else { return }
+        updateTitleControlsPlacement()
+        guard !isProgrammaticResize else { return }
 
         switch contentMode {
         case .dashboard:
@@ -783,41 +777,135 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-private struct WindowTitleControls: View {
-    let orientation: DashboardOrientation?
-    let isPinned: Bool
-    let onToggleOrientation: () -> Void
-    let onTogglePin: () -> Void
+private final class TitleControlsView: NSView {
+    private let orientationButton = TitleMaterialWaveButton(frame: .zero)
+    private let pinButton = TitleMaterialWaveButton(frame: .zero)
+    private let onToggleOrientation: () -> Void
+    private let onTogglePin: () -> Void
 
-    var body: some View {
-        HStack(spacing: 2) {
-            if let orientation {
-                let target = orientation == .horizontal
-                    ? DashboardOrientation.vertical
-                    : DashboardOrientation.horizontal
-                Button(action: onToggleOrientation) {
-                    Image(systemName: target.symbolName)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.codexInk)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
-                .help("切换到\(target.title)版")
-                .accessibilityLabel("切换到\(target.title)版")
-            }
+    init(onToggleOrientation: @escaping () -> Void, onTogglePin: @escaping () -> Void) {
+        self.onToggleOrientation = onToggleOrientation
+        self.onTogglePin = onTogglePin
+        super.init(frame: .zero)
 
-            Button(action: onTogglePin) {
-                Image(systemName: isPinned ? "pin.fill" : "pin")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.codexInk)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(CodexPressableStyle(cornerRadius: 8))
-            .help(isPinned ? "取消置顶" : "置顶窗口")
-            .accessibilityLabel(isPinned ? "取消窗口置顶" : "窗口置顶")
+        orientationButton.target = self
+        orientationButton.action = #selector(toggleOrientation)
+        pinButton.target = self
+        pinButton.action = #selector(togglePin)
+        addSubview(orientationButton)
+        addSubview(pinButton)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func update(orientation: DashboardOrientation?, isPinned: Bool, appearance: NSAppearance) {
+        self.appearance = appearance
+        orientationButton.isHidden = orientation == nil
+
+        if let orientation {
+            let target = orientation == .horizontal
+                ? DashboardOrientation.vertical
+                : DashboardOrientation.horizontal
+            orientationButton.frame = NSRect(x: 0, y: 0, width: 32, height: 28)
+            orientationButton.update(
+                symbolName: target.symbolName,
+                help: "切换到\(target.title)版"
+            )
+            pinButton.frame = NSRect(x: 34, y: 0, width: 32, height: 28)
+        } else {
+            pinButton.frame = NSRect(x: 0, y: 0, width: 28, height: 28)
         }
-        .frame(width: orientation == nil ? 28 : 60, height: 28, alignment: .trailing)
+
+        pinButton.update(
+            symbolName: isPinned ? "pin.fill" : "pin",
+            help: isPinned ? "取消窗口置顶" : "窗口置顶"
+        )
+    }
+
+    @objc private func toggleOrientation() {
+        onToggleOrientation()
+    }
+
+    @objc private func togglePin() {
+        onTogglePin()
+    }
+}
+
+private final class TitleMaterialWaveButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        focusRingType = .none
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func update(symbolName: String, help: String) {
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: help)?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+        contentTintColor = .labelColor
+        toolTip = help
+        setAccessibilityLabel(help)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        addMaterialWave(at: convert(event.locationInWindow, from: nil))
+        super.mouseDown(with: event)
+    }
+
+    private func addMaterialWave(at point: NSPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        wantsLayer = true
+        guard let layer else { return }
+
+        let diameter = hypot(bounds.width, bounds.height) * 2.1
+        let ripple = CAShapeLayer()
+        ripple.frame = bounds
+        ripple.path = CGPath(
+            ellipseIn: CGRect(
+                x: point.x - diameter / 2,
+                y: point.y - diameter / 2,
+                width: diameter,
+                height: diameter
+            ),
+            transform: nil
+        )
+        ripple.fillColor = NSColor.systemGreen.withAlphaComponent(0.18).cgColor
+        layer.addSublayer(ripple)
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.04
+        scale.toValue = 1.0
+        scale.duration = 0.42
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = 1.0
+        opacity.toValue = 0.0
+        opacity.beginTime = CACurrentMediaTime() + 0.12
+        opacity.duration = 0.42
+        opacity.fillMode = .forwards
+        opacity.isRemovedOnCompletion = false
+
+        ripple.add(scale, forKey: "scale")
+        ripple.add(opacity, forKey: "opacity")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
+            ripple.removeFromSuperlayer()
+        }
     }
 }

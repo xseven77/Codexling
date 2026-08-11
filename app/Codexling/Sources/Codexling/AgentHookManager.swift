@@ -1,6 +1,7 @@
 import Foundation
 
 enum AgentHookInstallationState: Equatable, Sendable {
+    case builtIn
     case notInstalled
     case installed
     case unavailable(String)
@@ -68,7 +69,12 @@ struct AgentHookManager {
             let cliInstalled = locateExecutable(for: descriptor.id) != nil
             let desktopInstalled = desktopApplicationExists(for: descriptor.id)
             let hookState: AgentHookInstallationState
-            if !cliInstalled && !desktopInstalled {
+            if descriptor.id == .codex {
+                // Codex activity is observed through Codexling's built-in App
+                // Server/local activity adapters. Never require or mutate a
+                // user-level Codex Hook configuration.
+                hookState = .builtIn
+            } else if !cliInstalled && !desktopInstalled {
                 hookState = .unavailable("未发现官方 CLI 或 Desktop")
             } else {
                 hookState = isHookInstalled(for: descriptor.id) ? .installed : .notInstalled
@@ -90,16 +96,13 @@ struct AgentHookManager {
     }
 
     func installHook(for agentID: AgentID) throws {
+        guard agentID != .codex else {
+            throw AgentHookManagerError.unsupportedAgent
+        }
         let helper = try installBridgeHelperIfNeeded()
         switch agentID {
         case .codex:
-            try mergeNestedJSONHooks(
-                at: configURL(for: agentID),
-                agentID: agentID,
-                surface: .codexCLI,
-                events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop", "SessionEnd"],
-                helper: helper
-            )
+            throw AgentHookManagerError.unsupportedAgent
         case .claudeCode:
             try mergeNestedJSONHooks(
                 at: configURL(for: agentID),
@@ -125,7 +128,9 @@ struct AgentHookManager {
 
     func uninstallHook(for agentID: AgentID) throws {
         switch agentID {
-        case .codex, .claudeCode:
+        case .codex:
+            throw AgentHookManagerError.unsupportedAgent
+        case .claudeCode:
             try removeNestedJSONHooks(at: configURL(for: agentID))
         case .reasonix:
             try removeDirectJSONHooks(at: configURL(for: agentID))
@@ -245,6 +250,10 @@ struct AgentHookManager {
     }
 
     private func integrationDetail(for agentID: AgentID, cliInstalled: Bool, desktopInstalled: Bool) -> String {
+        if agentID == .codex {
+            return "内置 · App Server / 本地活动"
+        }
+
         let source: String
         switch (cliInstalled, desktopInstalled) {
         case (true, true): source = "CLI + Desktop"
@@ -253,7 +262,7 @@ struct AgentHookManager {
         case (false, false): source = "未安装"
         }
         let observation = switch agentID {
-        case .codex: "App Server / Hooks"
+        case .codex: "App Server / 本地活动"
         case .hermes: "Gateway / ACP / Hooks"
         case .claudeCode: "agents --json / Hooks"
         case .reasonix: "ACP / Hooks"

@@ -3,24 +3,19 @@ import XCTest
 @testable import Codexling
 
 final class AgentHookManagerTests: XCTestCase {
-    func testCodexInstallAndUninstallPreserveExistingHooks() throws {
+    func testCodexUsesBuiltInAdapterAndRejectsHookMutation() throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let config = fixture.home.appendingPathComponent(".codex/hooks.json")
-        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"existing-hook"}]}]}}"#
-            .data(using: .utf8)!
-            .write(to: config)
 
-        try fixture.manager.installHook(for: .codex)
-        let installed = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(installed.contains("existing-hook"))
-        XCTAssertTrue(installed.contains(AgentHookManager.commandMarker))
-
-        try fixture.manager.uninstallHook(for: .codex)
-        let uninstalled = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(uninstalled.contains("existing-hook"))
-        XCTAssertFalse(uninstalled.contains(AgentHookManager.commandMarker))
+        let codex = try XCTUnwrap(fixture.manager.integrationStatuses().first { $0.id == .codex })
+        XCTAssertEqual(codex.hookState, .builtIn)
+        XCTAssertEqual(codex.detail, "内置 · App Server / 本地活动")
+        XCTAssertThrowsError(try fixture.manager.installHook(for: .codex)) {
+            XCTAssertEqual($0 as? AgentHookManagerError, .unsupportedAgent)
+        }
+        XCTAssertThrowsError(try fixture.manager.uninstallHook(for: .codex)) {
+            XCTAssertEqual($0 as? AgentHookManagerError, .unsupportedAgent)
+        }
     }
 
     func testReasonixUsesDirectHookEntriesAndRemovesOnlyCodexling() throws {

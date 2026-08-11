@@ -999,7 +999,7 @@ private struct CompanionStatusCapsule: View {
     }
 }
 
-private struct CompanionLocalAgentRow: Identifiable {
+private struct CompanionLocalAgentRow: Identifiable, Equatable {
     let id: AgentID
     let name: String
     let asset: BrandAssetID
@@ -1012,6 +1012,7 @@ private struct CompanionLocalAgentRow: Identifiable {
 /// and Hook activity data, not the selected account, so account switching does
 /// not change what the Pet sees on this Mac.
 private struct CompanionLocalAgentsControl: View {
+    @Environment(\.colorScheme) private var colorScheme
     let activity: CodexActivitySnapshot
     let integrations: [AgentIntegrationStatus]
     var panelHorizontalOffset: CGFloat = 0
@@ -1021,36 +1022,22 @@ private struct CompanionLocalAgentsControl: View {
     private var rows: [CompanionLocalAgentRow] {
         integrations
             .filter { integration in
-                integration.cliInstalled
-                    || integration.desktopInstalled
-                    || hasObservedActivity(for: integration)
+                integration.hookState == .builtIn || integration.hookState == .installed
             }
             .sorted { $0.priority < $1.priority }
-            .map { integration in
-                let task = latestTask(for: integration)
+            .compactMap { integration in
+                guard let task = latestTask(for: integration), isOngoing(task.state) else {
+                    return nil
+                }
                 return CompanionLocalAgentRow(
                     id: integration.id,
                     name: integration.name,
                     asset: .agent(integration.id),
-                    state: task?.state ?? .idle,
+                    state: task.state,
                     summary: summary(for: task, integration: integration),
                     hookState: integration.hookState
                 )
             }
-    }
-
-    private var hookSummary: (text: String, color: Color) {
-        guard !rows.isEmpty else { return ("未发现 Agent", Color.codexMuted) }
-        if rows.contains(where: { row in
-            if case .conflict = row.hookState { return true }
-            if case .failed = row.hookState { return true }
-            return false
-        }) {
-            return ("Hooks 异常", Color.red)
-        }
-        let installedCount = rows.filter { $0.hookState == .installed }.count
-        if installedCount == rows.count { return ("Hooks 正常", Color.codexGreen) }
-        return ("Hooks \(installedCount)/\(rows.count)", Color.codexAmber)
     }
 
     var body: some View {
@@ -1063,7 +1050,12 @@ private struct CompanionLocalAgentsControl: View {
                         BrandIconView(asset: row.asset, size: 20, cornerRadius: 7)
                     }
                 }
-                Text(rows.isEmpty ? "未发现本地 Agent" : "\(rows.count) 个本地 Agent")
+                if rows.isEmpty {
+                    Circle()
+                        .fill(Color.codexMuted.opacity(0.7))
+                        .frame(width: 7, height: 7)
+                }
+                Text(rows.isEmpty ? "空闲" : "\(rows.count) 个进行中 Agent")
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -1079,45 +1071,75 @@ private struct CompanionLocalAgentsControl: View {
             }
         }
         .buttonStyle(CodexPressableStyle(cornerRadius: 15))
-        .accessibilityLabel(rows.isEmpty ? "未发现本地 Agent" : "\(rows.count) 个本地 Agent")
+        .accessibilityLabel(rows.isEmpty ? "本地 Agent 空闲" : "\(rows.count) 个进行中 Agent")
         .accessibilityValue(isExpanded ? "已展开" : "已收起")
-        .overlay(alignment: opensUpward ? .bottom : .top) {
-            if isExpanded {
-                localTasksPanel
-                    .offset(x: panelHorizontalOffset, y: opensUpward ? -38 : 38)
-                    .transition(
-                        .scale(scale: 0.97, anchor: opensUpward ? .bottom : .top)
-                            .combined(with: .opacity)
-                    )
-                    .zIndex(30)
-            }
+        .background {
+            CompanionLocalAgentsPanelPresenter(
+                isPresented: $isExpanded,
+                rows: rows,
+                horizontalOffset: panelHorizontalOffset,
+                opensUpward: opensUpward,
+                colorScheme: colorScheme
+            )
         }
         .zIndex(isExpanded ? 30 : 1)
     }
 
-    private var localTasksPanel: some View {
+    private func latestTask(for integration: AgentIntegrationStatus) -> CodexTaskActivity? {
+        (activity.localAgentTasks + activity.activeTasks)
+            .filter { $0.agentDisplayName == integration.name }
+            .max(by: { $0.updatedAt < $1.updatedAt })
+    }
+
+    private func isOngoing(_ state: CodexActivityState) -> Bool {
+        switch state {
+        case .thinking, .executing, .reviewing, .waitingForUser:
+            true
+        case .unavailable, .idle, .completed, .interrupted:
+            false
+        }
+    }
+
+    private func summary(
+        for task: CodexTaskActivity?,
+        integration: AgentIntegrationStatus
+    ) -> String {
+        guard let task else {
+            if integration.hookState == .builtIn { return "内置适配已就绪" }
+            return integration.hookState == .installed ? "Hooks 已就绪" : "等待 Hook 接入"
+        }
+        if task.title == integration.name || task.title.hasPrefix("\(integration.name) ·") {
+            return task.detail.replacingOccurrences(of: "\(integration.name) ", with: "")
+        }
+        return task.title
+    }
+}
+
+private struct CompanionLocalTasksPanelContent: View {
+    let rows: [CompanionLocalAgentRow]
+    let onClose: () -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pet 看到的本地任务")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("仅 Pet 汇总，不属于当前账号")
+                    Text("仅显示已接入且正在进行中的 Agent")
                         .font(.system(size: 9))
                         .foregroundStyle(Color.codexMuted)
                 }
                 Spacer(minLength: 4)
-                Text(hookSummary.text)
+                Text(rows.isEmpty ? "空闲" : "\(rows.count) 个进行中")
                     .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(hookSummary.color)
+                    .foregroundStyle(rows.isEmpty ? Color.codexMuted : Color.codexGreen)
                     .padding(.top, 5)
-                Button {
-                    withAnimation(.easeOut(duration: 0.16)) { isExpanded = false }
-                } label: {
+                Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.codexMuted)
                         .frame(width: 34, height: 34)
-                        .background(Color.codexMist.opacity(0.72), in: Circle())
+                        .background(Color.codexMist, in: Circle())
                 }
                 .buttonStyle(CodexPressableCircleStyle())
                 .accessibilityLabel("收起本地任务")
@@ -1128,22 +1150,34 @@ private struct CompanionLocalAgentsControl: View {
                     localAgentRow(row)
                 }
                 if rows.isEmpty {
-                    Text("安装或启用 Agent 后会在这里显示本机任务状态。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.codexMuted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 9) {
+                        Circle()
+                            .fill(Color.codexMuted.opacity(0.7))
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("当前空闲")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("已接入的 Agent 开始工作后会在这里显示。")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
                 }
             }
             .padding(.top, 15)
         }
         .padding(14)
         .frame(width: 286, alignment: .leading)
+        .foregroundStyle(Color.codexInk)
         .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.codexLine, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
+        .shadow(color: Color.black.opacity(0.22), radius: 18, x: 0, y: 10)
+        .padding(20)
     }
 
     private func localAgentRow(_ row: CompanionLocalAgentRow) -> some View {
@@ -1167,33 +1201,152 @@ private struct CompanionLocalAgentsControl: View {
             Spacer(minLength: 8)
             Text(row.state.activityLabel)
                 .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(row.state == .idle ? Color.codexMuted : row.state.statusColor)
+                .foregroundStyle(row.state.statusColor)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(row.name)，\(row.summary)，\(row.state.activityLabel)")
     }
+}
 
-    private func latestTask(for integration: AgentIntegrationStatus) -> CodexTaskActivity? {
-        (activity.localAgentTasks + activity.activeTasks)
-            .filter { $0.agentDisplayName == integration.name }
-            .max(by: { $0.updatedAt < $1.updatedAt })
+private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let rows: [CompanionLocalAgentRow]
+    let horizontalOffset: CGFloat
+    let opensUpward: Bool
+    let colorScheme: ColorScheme
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isPresented: $isPresented)
     }
 
-    private func hasObservedActivity(for integration: AgentIntegrationStatus) -> Bool {
-        latestTask(for: integration) != nil
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.anchorView = view
+        return view
     }
 
-    private func summary(
-        for task: CodexTaskActivity?,
-        integration: AgentIntegrationStatus
-    ) -> String {
-        guard let task else {
-            return integration.hookState == .installed ? "Hooks 已就绪" : "等待 Hook 接入"
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isPresented = $isPresented
+        context.coordinator.update(
+            rows: rows,
+            horizontalOffset: horizontalOffset,
+            opensUpward: opensUpward,
+            colorScheme: colorScheme
+        )
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.dismiss()
+    }
+
+    @MainActor
+    final class Coordinator {
+        weak var anchorView: NSView?
+        var isPresented: Binding<Bool>
+        private let controller = CompanionLocalAgentsPanelController()
+
+        init(isPresented: Binding<Bool>) {
+            self.isPresented = isPresented
+            controller.onDismiss = { [weak self] in
+                self?.isPresented.wrappedValue = false
+            }
         }
-        if task.title == integration.name || task.title.hasPrefix("\(integration.name) ·") {
-            return task.detail.replacingOccurrences(of: "\(integration.name) ", with: "")
+
+        func update(
+            rows: [CompanionLocalAgentRow],
+            horizontalOffset: CGFloat,
+            opensUpward: Bool,
+            colorScheme: ColorScheme
+        ) {
+            controller.update(rows: rows, colorScheme: colorScheme)
+            guard isPresented.wrappedValue, let anchorView else {
+                controller.dismiss()
+                return
+            }
+            DispatchQueue.main.async { [weak self, weak anchorView] in
+                guard let self, let anchorView, self.isPresented.wrappedValue else { return }
+                self.controller.show(
+                    relativeTo: anchorView,
+                    horizontalOffset: horizontalOffset,
+                    opensUpward: opensUpward
+                )
+            }
         }
-        return task.title
+
+        func dismiss() {
+            controller.dismiss()
+        }
+    }
+}
+
+@MainActor
+private final class CompanionLocalAgentsPanelController {
+    private let panel: NSPanel
+    private let hostingView: NSHostingView<AnyView>
+    var onDismiss: (() -> Void)?
+
+    init() {
+        let rootView = CompanionLocalTasksPanelContent(rows: [], onClose: {})
+        hostingView = NSHostingView(rootView: AnyView(rootView))
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 326, height: 180),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = false
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.transient, .canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentView = hostingView
+    }
+
+    func update(rows: [CompanionLocalAgentRow], colorScheme: ColorScheme) {
+        hostingView.rootView = AnyView(
+            CompanionLocalTasksPanelContent(
+                rows: rows,
+                onClose: { [weak self] in
+                    self?.dismiss()
+                    self?.onDismiss?()
+                }
+            )
+            .preferredColorScheme(colorScheme)
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        let fittingHeight = max(164, hostingView.fittingSize.height)
+        panel.setContentSize(NSSize(width: 326, height: fittingHeight))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 326, height: fittingHeight)
+    }
+
+    func show(relativeTo anchorView: NSView, horizontalOffset: CGFloat, opensUpward: Bool) {
+        guard let parentWindow = anchorView.window else { return }
+        let anchorInWindow = anchorView.convert(anchorView.bounds, to: nil)
+        let anchor = parentWindow.convertToScreen(anchorInWindow)
+        let size = panel.frame.size
+        var origin = NSPoint(
+            x: anchor.midX - size.width / 2 + horizontalOffset,
+            y: opensUpward ? anchor.maxY + 2 : anchor.minY - size.height - 2
+        )
+
+        if let visibleFrame = parentWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            origin.x = min(max(origin.x, visibleFrame.minX + 8), visibleFrame.maxX - size.width - 8)
+            origin.y = min(max(origin.y, visibleFrame.minY + 8), visibleFrame.maxY - size.height - 8)
+        }
+
+        panel.setFrameOrigin(origin)
+        if panel.parent !== parentWindow {
+            panel.parent?.removeChildWindow(panel)
+            parentWindow.addChildWindow(panel, ordered: .above)
+        }
+        panel.orderFront(nil)
+    }
+
+    func dismiss() {
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
     }
 }
 

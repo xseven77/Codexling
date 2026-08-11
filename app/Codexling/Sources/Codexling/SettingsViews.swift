@@ -544,7 +544,7 @@ struct SettingsView: View {
     private var agentIntegrationsSection: some View {
         SettingsSection(
             title: "Agents 与 Hooks",
-            subtitle: "按 Codex、Hermes、Claude Code、Reasonix 的优先级探测本机安装。Hook 只向本地 Bridge 上报脱敏生命周期状态。"
+            subtitle: "Codex 由 Codexling 内置适配，无需安装 Hook。其他 Agent 的 Hook 只向本地 Bridge 上报脱敏生命周期状态。"
         ) {
             VStack(spacing: 0) {
                 ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
@@ -578,7 +578,7 @@ struct SettingsView: View {
                 Text(integration.detail)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
-                Text(hookStatusLine(integration.hookState))
+                Text(hookStatusLine(integration))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(hookStatusColor(integration.hookState))
             }
@@ -592,12 +592,19 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func hookActionButton(_ integration: AgentIntegrationStatus) -> some View {
-        if multiAgentSettings.isMutating(integration.id) {
+        if integration.id == .codex {
+            Label("默认支持", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.codexGreen)
+                .frame(width: 74, alignment: .trailing)
+        } else if multiAgentSettings.isMutating(integration.id) {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 66)
         } else {
             switch integration.hookState {
+            case .builtIn:
+                EmptyView()
             case .installed:
                 Button("卸载") {
                     pendingHookAction = PendingAgentHookAction(
@@ -626,10 +633,7 @@ struct SettingsView: View {
     private func hookConfirmationMessage(for pending: PendingAgentHookAction) -> String {
         if pending.installs {
             let eventCount = pending.agentID == .hermes ? 7 : 8
-            let trustNote = pending.agentID == .codex
-                ? "\n\nCodex 会要求你在 /hooks 中审阅并信任新增命令。"
-                : ""
-            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook，命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。\(trustNote)"
+            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook，命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。"
         }
         return "只移除命令中包含 codexling-agent-bridge 的配置项；其他 Hook 与 Agent 配置保持不变。"
     }
@@ -656,6 +660,7 @@ struct SettingsView: View {
     }
 
     private func agentAvailabilityTitle(_ integration: AgentIntegrationStatus) -> String {
+        if integration.id == .codex { return "内置适配" }
         if integration.cliInstalled && integration.desktopInstalled { return "CLI + Desktop" }
         if integration.cliInstalled { return "CLI 已安装" }
         if integration.desktopInstalled { return "Desktop 已安装" }
@@ -663,11 +668,18 @@ struct SettingsView: View {
     }
 
     private func agentAvailabilityColor(_ integration: AgentIntegrationStatus) -> Color {
-        integration.cliInstalled || integration.desktopInstalled ? Color.codexGreen : Color.codexMuted
+        if integration.id == .codex { return Color.codexGreen }
+        return integration.cliInstalled || integration.desktopInstalled ? Color.codexGreen : Color.codexMuted
     }
 
-    private func hookStatusLine(_ state: AgentHookInstallationState) -> String {
-        switch state {
+    private func hookStatusLine(_ integration: AgentIntegrationStatus) -> String {
+        if integration.id == .codex {
+            return integration.cliInstalled || integration.desktopInstalled
+                ? "已自动接入 · 无需安装 Hook"
+                : "内置适配已就绪 · Codex 启动后自动接入"
+        }
+        return switch integration.hookState {
+        case .builtIn: "内置适配 · 无需安装 Hook"
         case .notInstalled: "Hook 未安装"
         case .installed: "Hook 已安装 · 本地脱敏事件"
         case .unavailable(let message): message
@@ -677,7 +689,7 @@ struct SettingsView: View {
 
     private func hookStatusColor(_ state: AgentHookInstallationState) -> Color {
         switch state {
-        case .installed: Color.codexGreen
+        case .builtIn, .installed: Color.codexGreen
         case .conflict, .failed: Color.codexRed
         case .notInstalled, .unavailable: Color.codexMuted
         }

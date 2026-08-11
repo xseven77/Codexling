@@ -58,14 +58,16 @@ final class MultiAgentSettingsStore {
     }
 
     func installHook(for agentID: AgentID) {
+        guard agentID != .codex else {
+            lastMessage = "Codex 由 Codexling 内置适配，无需安装 Hook"
+            return
+        }
         guard !mutatingAgentIDs.contains(agentID) else { return }
         mutatingAgentIDs.insert(agentID)
         defer { mutatingAgentIDs.remove(agentID) }
         do {
             try hookManager.installHook(for: agentID)
-            lastMessage = agentID == .codex
-                ? "Codex Hook 已安装；请在 Codex /hooks 中审阅并信任"
-                : "\(displayName(for: agentID)) Hook 已安装"
+            lastMessage = "\(displayName(for: agentID)) Hook 已安装"
         } catch {
             lastMessage = "安装失败：\(error.localizedDescription)"
         }
@@ -73,6 +75,10 @@ final class MultiAgentSettingsStore {
     }
 
     func uninstallHook(for agentID: AgentID) {
+        guard agentID != .codex else {
+            lastMessage = "Codex 内置适配无需卸载"
+            return
+        }
         guard !mutatingAgentIDs.contains(agentID) else { return }
         mutatingAgentIDs.insert(agentID)
         defer { mutatingAgentIDs.remove(agentID) }

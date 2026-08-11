@@ -153,7 +153,7 @@ Codex 和 Hermes 已有一方 Pet；Claude Code 与 Reasonix 没有公开的一�
 
 | 对象 | 一方 Pet | 首选 Pet 状态源 | Hook/回退 | Pet 可行性 |
 |---|---:|---|---|---|
-| Codex | 有；Desktop/CLI 均有官方状态 | App Server thread/turn events | 官方 Codex Hooks | 很高 |
+| Codex | 有；Desktop/CLI 均有官方状态 | App Server thread/turn events + 本地活动适配 | Codexling 内置，无需安装 Hook | 很高 |
 | Hermes | 有；Petdex 可跟随 CLI/TUI/Desktop | Gateway JSON-RPC / ACP | plugin 或 shell hooks | 很高 |
 | Claude Code CLI | 未发现 | `claude agents --json` + hooks | stream-json / Agent SDK | 很高 |
 | Claude Code Desktop | 未发现 | 经版本验证后复用 Claude Code hooks | launcher + 弱状态 | 中等，实验性 |
@@ -226,7 +226,7 @@ helper 的产品约束：
 | `SessionEnd` | `idle` / `offline` |
 | App Server turn error | `failed` |
 
-Codex 的 App Server 是状态主源，Hook 用于用户自行启动的 CLI attached session 和版本回退。Custom Pet 只提供视觉素材，动画状态仍由运行时决定，Codexling 不尝试给 `pet.json` 注入执行逻辑。
+Codex 的 App Server 是状态主源，Codexling 默认通过内置 App Server/本地活动 adapter 接入，不向用户安装、修改或卸载 Codex Hook。Custom Pet 只提供视觉素材，动画状态仍由运行时决定，Codexling 不尝试给 `pet.json` 注入执行逻辑。
 
 **Hermes**
 
@@ -310,7 +310,7 @@ Pet 只需要知道“谁、哪次 session、处于什么状态、何时更新�
 - 独立 `CODEX_HOME` 生命周期与每账号进程 supervisor。
 - Add/Login/Logout/Rename/Disable Codex connection。
 - account/thread/turn/rate-limit 聚合。
-- App Server Pet mapping；Codex Hook 作为 attached/fallback adapter。
+- App Server Pet mapping 与本地活动内置 adapter；无需安装 Codex Hook。
 
 验收：至少两个测试 home 可独立登录状态检查；一个进程崩溃不影响另一账号；`PermissionRequest` 能驱动等待动画；现有单账号 UI 和 Pet 无回归。
 
