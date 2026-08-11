@@ -401,7 +401,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         let usesPetColumn = if case .dashboard(_, .horizontal) = contentMode { true } else { false }
         let showsOrientationToggle = if case .dashboard = contentMode { true } else { false }
         let controlWidth: CGFloat = showsOrientationToggle ? 66 : 28
-        let trailingInset: CGFloat = 12
+        let trailingInset: CGFloat = 8
         let x: CGFloat
         if usesPetColumn {
             // Horizontal dashboard: align with the right edge of the generic
