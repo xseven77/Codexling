@@ -168,6 +168,9 @@ final class UsageSnapshotStore {
     private let persistsCache: Bool
     var snapshot: CodexUsageSnapshot
     var isLoggedIn: Bool
+    private(set) var isUnifiedRefreshing = false
+    private(set) var refreshToast: RefreshToast?
+    private var refreshToastGeneration = 0
 
     init(
         snapshot: CodexUsageSnapshot? = nil,
@@ -208,6 +211,50 @@ final class UsageSnapshotStore {
 
     func markFailed(_ message: String) {
         snapshot.refreshState = message
+    }
+
+    func showManualRefreshToast(for outcome: RefreshOutcome) {
+        refreshToastGeneration += 1
+        let generation = refreshToastGeneration
+        refreshToast = RefreshToast(outcome: outcome)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
+            guard let self, generation == self.refreshToastGeneration else { return }
+            self.refreshToast = nil
+        }
+    }
+
+    func setUnifiedRefreshing(_ refreshing: Bool) {
+        isUnifiedRefreshing = refreshing
+    }
+}
+
+struct RefreshOutcome: Equatable, Sendable {
+    var successCount = 0
+    var failures: [String] = []
+
+    mutating func merge(_ other: Self) {
+        successCount += other.successCount
+        failures.append(contentsOf: other.failures)
+    }
+}
+
+struct RefreshToast: Equatable {
+    let id = UUID()
+    let message: String
+    let isSuccess: Bool
+
+    init(outcome: RefreshOutcome) {
+        isSuccess = outcome.successCount > 0 && outcome.failures.isEmpty
+        if isSuccess {
+            message = outcome.successCount == 1
+                ? "刷新成功"
+                : "刷新成功 · 已更新 \(outcome.successCount) 个连接"
+        } else if outcome.successCount > 0 {
+            message = "部分刷新失败 · \(outcome.failures.count) 个连接"
+        } else {
+            message = outcome.failures.first.map { "刷新失败 · \($0)" }
+                ?? "刷新失败 · 没有可刷新的连接"
+        }
     }
 }
 

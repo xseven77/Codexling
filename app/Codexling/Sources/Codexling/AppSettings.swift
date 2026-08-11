@@ -378,6 +378,7 @@ final class AppSettingsStore {
         didSet {
             guard windowAlwaysOnTop != oldValue else { return }
             defaults.set(windowAlwaysOnTop, forKey: Keys.windowAlwaysOnTop)
+            onWindowAlwaysOnTopChanged?(windowAlwaysOnTop)
         }
     }
 
@@ -407,6 +408,7 @@ final class AppSettingsStore {
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
     var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
+    var onWindowAlwaysOnTopChanged: ((Bool) -> Void)?
 
     init(
         defaults: UserDefaults = .standard,

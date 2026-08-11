@@ -176,6 +176,26 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(safeArea.contains(CGPoint(x: 145, y: 115)))
     }
 
+    func testCompanionPanelRoutesOverlappingAnchorClickToDismiss() throws {
+        let anchor = NSRect(x: 100, y: 300, width: 120, height: 30)
+        let overlappingPanel = NSRect(x: 80, y: 160, width: 286, height: 150)
+        let capture = try XCTUnwrap(
+            CompanionPanelAnchorClickRouting.captureRect(
+                anchorFrame: anchor,
+                panelFrame: overlappingPanel
+            )
+        )
+        XCTAssertEqual(capture, NSRect(x: 20, y: 140, width: 120, height: 10))
+
+        let detachedPanel = NSRect(x: 80, y: 140, width: 286, height: 150)
+        XCTAssertNil(
+            CompanionPanelAnchorClickRouting.captureRect(
+                anchorFrame: anchor,
+                panelFrame: detachedPanel
+            )
+        )
+    }
+
     @MainActor
     func testStatusCapsulePressInvokesClickAction() async {
         let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
@@ -518,6 +538,29 @@ final class CodexlingTests: XCTestCase {
         let settingsMaximum = DetachedWindowMetrics.maximumSettingsWindowHeight(for: NSScreen.main)
         XCTAssertGreaterThanOrEqual(clamped.width, DetachedWindowMetrics.dashboardWidth)
         XCTAssertLessThanOrEqual(clamped.height, settingsMaximum)
+    }
+
+    @MainActor
+    func testSettingsWindowStartsCompactAndUsesNaturalContentHeight() {
+        let settingsMaximum = DetachedWindowMetrics.maximumSettingsWindowHeight(for: NSScreen.main)
+        let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: NSScreen.main)
+        XCTAssertEqual(provisional, min(560, settingsMaximum))
+
+        let shortContent = DetachedWindowMetrics.preferredSettingsWindowSize(
+            contentHeight: 240,
+            screen: NSScreen.main
+        )
+        XCTAssertEqual(shortContent.height, min(DetachedWindowMetrics.settingsMinWindowHeight, settingsMaximum))
+
+        let naturalContentHeight = min(480, settingsMaximum)
+        let naturalContent = DetachedWindowMetrics.preferredSettingsWindowSize(
+            contentHeight: naturalContentHeight,
+            screen: NSScreen.main
+        )
+        XCTAssertEqual(naturalContent.height, max(
+            min(naturalContentHeight, settingsMaximum),
+            min(DetachedWindowMetrics.settingsMinWindowHeight, settingsMaximum)
+        ))
     }
 
     func testQuotaHealthColorThresholdsDriveRootGradient() {

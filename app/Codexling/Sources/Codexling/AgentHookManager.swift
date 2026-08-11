@@ -3,6 +3,7 @@ import Foundation
 enum AgentHookInstallationState: Equatable, Sendable {
     case builtIn
     case notInstalled
+    case authorizationRequired
     case installed
     case unavailable(String)
     case conflict(String)
@@ -39,6 +40,15 @@ enum AgentHookManagerError: LocalizedError, Equatable {
 struct AgentHookManager {
     static let commandMarker = "codexling-agent-bridge"
     private static let hermesMarker = "# codexling-agent-hook"
+    private static let hermesEvents = [
+        "on_session_start",
+        "pre_llm_call",
+        "pre_tool_call",
+        "pre_approval_request",
+        "post_approval_response",
+        "post_tool_call",
+        "on_session_end",
+    ]
 
     let fileManager: FileManager
     let homeDirectory: URL
@@ -76,6 +86,8 @@ struct AgentHookManager {
                 hookState = .builtIn
             } else if !cliInstalled && !desktopInstalled {
                 hookState = .unavailable("未发现官方 CLI 或 Desktop")
+            } else if descriptor.id == .hermes, isHookInstalled(for: .hermes) {
+                hookState = areHermesHooksAuthorized() ? .installed : .authorizationRequired
             } else {
                 hookState = isHookInstalled(for: descriptor.id) ? .installed : .notInstalled
             }
@@ -120,7 +132,11 @@ struct AgentHookManager {
                 helper: helper
             )
         case .hermes:
+            // Rebuild our managed entries so an existing install cannot retain
+            // stale Bridge paths or commands that no longer match the allowlist.
+            try removeHermesHooks(at: configURL(for: agentID))
             try mergeHermesHooks(at: configURL(for: agentID), helper: helper)
+            try authorizeHermesHooks(helper: helper)
         default:
             throw AgentHookManagerError.unsupportedAgent
         }
@@ -136,6 +152,7 @@ struct AgentHookManager {
             try removeDirectJSONHooks(at: configURL(for: agentID))
         case .hermes:
             try removeHermesHooks(at: configURL(for: agentID))
+            try revokeHermesHookAuthorization()
         default:
             throw AgentHookManagerError.unsupportedAgent
         }
@@ -148,6 +165,21 @@ struct AgentHookManager {
             return false
         }
         return text.contains(Self.commandMarker)
+    }
+
+    func areHermesHooksAuthorized() -> Bool {
+        guard isHookInstalled(for: .hermes),
+              let approvals = try? readHermesApprovals() else {
+            return false
+        }
+        let approvedPairs = Set(approvals.compactMap { entry -> String? in
+            guard let event = entry["event"] as? String,
+                  let command = entry["command"] as? String else { return nil }
+            return "\(event)\u{0}\(command)"
+        })
+        return hermesCommands(helper: installedHelperURL).allSatisfy { pair in
+            approvedPairs.contains("\(pair.event)\u{0}\(pair.command)")
+        }
     }
 
     func configURL(for agentID: AgentID) -> URL {
@@ -251,24 +283,16 @@ struct AgentHookManager {
 
     private func integrationDetail(for agentID: AgentID, cliInstalled: Bool, desktopInstalled: Bool) -> String {
         if agentID == .codex {
-            return "内置 · App Server / 本地活动"
+            return "App Server · 本地活动"
         }
 
-        let source: String
-        switch (cliInstalled, desktopInstalled) {
-        case (true, true): source = "CLI + Desktop"
-        case (true, false): source = "CLI"
-        case (false, true): source = "Desktop"
-        case (false, false): source = "未安装"
-        }
-        let observation = switch agentID {
+        return switch agentID {
         case .codex: "App Server / 本地活动"
-        case .hermes: "Gateway / ACP / Hooks"
-        case .claudeCode: "agents --json / Hooks"
-        case .reasonix: "ACP / Hooks"
+        case .hermes: "Gateway · ACP"
+        case .claudeCode: "agents --json"
+        case .reasonix: "ACP"
         default: ""
         }
-        return "\(source) · \(observation)"
     }
 
     private func bridgeCommand(
@@ -397,9 +421,7 @@ struct AgentHookManager {
 
     private func mergeHermesHooks(at url: URL, helper: URL) throws {
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        if existing.contains(Self.commandMarker) { return }
 
-        let events = ["on_session_start", "pre_llm_call", "pre_tool_call", "pre_approval_request", "post_approval_response", "post_tool_call", "on_session_end"]
         var lines = existing.components(separatedBy: .newlines)
         if lines.last == "" { lines.removeLast() }
         let hooksIndex = lines.firstIndex { $0.range(of: #"^hooks:\s*$"#, options: .regularExpression) != nil }
@@ -410,7 +432,7 @@ struct AgentHookManager {
         }
         let rootIndex = hooksIndex ?? (lines.count - 1)
 
-        for event in events {
+        for event in Self.hermesEvents {
             let command = bridgeCommand(helper: helper, agentID: .hermes, surface: .hermesCLI, event: event)
             var blockEnd = lines.count
             if rootIndex + 1 < lines.count {
@@ -450,7 +472,7 @@ struct AgentHookManager {
             index += 1
         }
 
-        let managedEvents = Set(["on_session_start", "pre_llm_call", "pre_tool_call", "pre_approval_request", "post_approval_response", "post_tool_call", "on_session_end"])
+        let managedEvents = Set(Self.hermesEvents)
         index = 0
         while index < lines.count {
             let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
@@ -473,6 +495,75 @@ struct AgentHookManager {
             "    - command: \"\(yamlEscaped(command))\"",
             "      timeout: 1",
         ]
+    }
+
+    private var hermesAllowlistURL: URL {
+        homeDirectory.appendingPathComponent(".hermes/shell-hooks-allowlist.json")
+    }
+
+    private func hermesCommands(helper: URL) -> [(event: String, command: String)] {
+        Self.hermesEvents.map { event in
+            (
+                event,
+                bridgeCommand(helper: helper, agentID: .hermes, surface: .hermesCLI, event: event)
+            )
+        }
+    }
+
+    private func readHermesAllowlist() throws -> [String: Any] {
+        let url = hermesAllowlistURL
+        guard fileManager.fileExists(atPath: url.path) else { return ["approvals": []] }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else { return ["approvals": []] }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["approvals"] == nil || root["approvals"] is [[String: Any]] else {
+            throw AgentHookManagerError.malformedConfiguration("Hermes Hook 授权文件格式异常，未做修改")
+        }
+        return root
+    }
+
+    private func readHermesApprovals() throws -> [[String: Any]] {
+        try readHermesAllowlist()["approvals"] as? [[String: Any]] ?? []
+    }
+
+    private func authorizeHermesHooks(helper: URL) throws {
+        var root = try readHermesAllowlist()
+        var approvals = root["approvals"] as? [[String: Any]] ?? []
+        let commands = hermesCommands(helper: helper)
+        let managedPairs = Set(commands.map { "\($0.event)\u{0}\($0.command)" })
+        approvals.removeAll { entry in
+            guard let event = entry["event"] as? String,
+                  let command = entry["command"] as? String else { return false }
+            return managedPairs.contains("\(event)\u{0}\(command)")
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let approvedAt = formatter.string(from: Date())
+        let attributes = try? fileManager.attributesOfItem(atPath: helper.path)
+        let modifiedAt = (attributes?[.modificationDate] as? Date).map(formatter.string(from:))
+        approvals.append(contentsOf: commands.map { pair in
+            var entry: [String: Any] = [
+                "event": pair.event,
+                "command": pair.command,
+                "approved_at": approvedAt,
+            ]
+            entry["script_mtime_at_approval"] = modifiedAt ?? NSNull()
+            return entry
+        })
+        root["approvals"] = approvals
+        try writeJSONObject(root, to: hermesAllowlistURL)
+    }
+
+    private func revokeHermesHookAuthorization() throws {
+        guard fileManager.fileExists(atPath: hermesAllowlistURL.path) else { return }
+        var root = try readHermesAllowlist()
+        var approvals = root["approvals"] as? [[String: Any]] ?? []
+        approvals.removeAll { entry in
+            (entry["command"] as? String)?.contains(Self.commandMarker) == true
+        }
+        root["approvals"] = approvals
+        try writeJSONObject(root, to: hermesAllowlistURL)
     }
 
     private func yamlEscaped(_ value: String) -> String {

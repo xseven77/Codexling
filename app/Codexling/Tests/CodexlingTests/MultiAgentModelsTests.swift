@@ -1,3 +1,5 @@
+import LocalAuthentication
+import Security
 import XCTest
 @testable import Codexling
 
@@ -96,5 +98,130 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(ProviderBalanceIndicator.resolve(total: 0, authenticationState: .connected), .depleted)
         XCTAssertEqual(ProviderBalanceIndicator.resolve(total: -1, authenticationState: .connected), .depleted)
         XCTAssertEqual(ProviderBalanceIndicator.resolve(total: nil, authenticationState: .invalid), .depleted)
+    }
+
+    func testDeepSeekCredentialQueriesNeverAllowAuthenticationUI() throws {
+        let query = DeepSeekCredentialStore.nonInteractiveQuery(handle: "test-handle")
+        let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
+
+        XCTAssertTrue(context.interactionNotAllowed)
+    }
+
+    @MainActor
+    func testUnifiedRefreshUpdatesEveryDeepSeekConnection() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-unified-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let firstID = ConnectionID(rawValue: UUID())
+        let secondID = ConnectionID(rawValue: UUID())
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(
+            codexAccounts: [],
+            deepSeekConnections: [
+                DeepSeekAPIConnection(
+                    id: firstID,
+                    label: "First",
+                    credentialHandle: "first",
+                    keySuffix: "1111",
+                    authenticationState: .checking,
+                    createdAt: Date()
+                ),
+                DeepSeekAPIConnection(
+                    id: secondID,
+                    label: "Second",
+                    credentialHandle: "second",
+                    keySuffix: "2222",
+                    authenticationState: .checking,
+                    createdAt: Date()
+                ),
+            ]
+        ))
+        let credentialStore = TestDeepSeekCredentialStore(values: [
+            "first": "first-key",
+            "second": "second-key",
+        ])
+        let balanceService = TestDeepSeekBalanceService()
+        let store = MultiAgentSettingsStore(
+            hookManager: AgentHookManager(
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+                applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+            ),
+            registryStorage: registry,
+            codexRuntimeManager: CodexAccountRuntimeManager(
+                runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+            ),
+            credentialStore: credentialStore,
+            deepSeekBalanceService: balanceService,
+            startsAutomaticRefresh: false
+        )
+
+        let outcome = await store.refreshAllConnections()
+        let refreshedConnectionIDs = await balanceService.recordedConnectionIDs()
+
+        XCTAssertFalse(store.isRefreshingConnections)
+        XCTAssertEqual(outcome.successCount, 2)
+        XCTAssertTrue(outcome.failures.isEmpty)
+        XCTAssertEqual(store.deepSeekConnections.map(\.authenticationState), [.connected, .connected])
+        XCTAssertEqual(store.deepSeekConnections.map { $0.balance?.total }, [11, 22])
+        XCTAssertEqual(Set(refreshedConnectionIDs), Set([firstID, secondID]))
+    }
+
+    func testManualRefreshToastSummarizesSuccessPartialFailureAndFailure() {
+        let success = RefreshToast(outcome: RefreshOutcome(successCount: 3))
+        XCTAssertTrue(success.isSuccess)
+        XCTAssertEqual(success.message, "刷新成功 · 已更新 3 个连接")
+
+        let partial = RefreshToast(outcome: RefreshOutcome(
+            successCount: 2,
+            failures: ["Hermes 未能刷新"]
+        ))
+        XCTAssertFalse(partial.isSuccess)
+        XCTAssertEqual(partial.message, "部分刷新失败 · 1 个连接")
+
+        let failure = RefreshToast(outcome: RefreshOutcome(failures: ["DeepSeek：网络不可用"]))
+        XCTAssertFalse(failure.isSuccess)
+        XCTAssertEqual(failure.message, "刷新失败 · DeepSeek：网络不可用")
+    }
+}
+
+private final class TestDeepSeekCredentialStore: DeepSeekCredentialStoring, @unchecked Sendable {
+    private let values: [String: String]
+
+    init(values: [String: String]) {
+        self.values = values
+    }
+
+    func save(apiKey: String, handle: String) throws {}
+
+    func read(handle: String) throws -> String {
+        guard let value = values[handle] else { throw DeepSeekCredentialError.missing }
+        return value
+    }
+
+    func delete(handle: String) throws {}
+}
+
+private actor TestDeepSeekBalanceService: DeepSeekBalanceFetching {
+    private var connectionIDs: [ConnectionID] = []
+
+    func recordedConnectionIDs() -> [ConnectionID] {
+        connectionIDs
+    }
+
+    func fetch(apiKey: String, connectionID: ConnectionID) async throws -> ProviderBalanceSnapshot {
+        connectionIDs.append(connectionID)
+        let total: Decimal = apiKey == "first-key" ? 11 : 22
+        return ProviderBalanceSnapshot(
+            connectionID: connectionID,
+            providerID: .deepSeek,
+            scope: .account,
+            currency: "CNY",
+            total: total,
+            granted: 0,
+            toppedUp: total,
+            fetchedAt: Date()
+        )
     }
 }

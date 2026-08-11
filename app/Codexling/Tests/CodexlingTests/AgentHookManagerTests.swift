@@ -9,7 +9,7 @@ final class AgentHookManagerTests: XCTestCase {
 
         let codex = try XCTUnwrap(fixture.manager.integrationStatuses().first { $0.id == .codex })
         XCTAssertEqual(codex.hookState, .builtIn)
-        XCTAssertEqual(codex.detail, "内置 · App Server / 本地活动")
+        XCTAssertEqual(codex.detail, "App Server · 本地活动")
         XCTAssertThrowsError(try fixture.manager.installHook(for: .codex)) {
             XCTAssertEqual($0 as? AgentHookManagerError, .unsupportedAgent)
         }
@@ -46,12 +46,48 @@ final class AgentHookManagerTests: XCTestCase {
         XCTAssertTrue(installed.contains("existing-hook"))
         XCTAssertTrue(installed.contains(AgentHookManager.commandMarker))
         XCTAssertEqual(installed.components(separatedBy: "hooks:").count - 1, 1)
+        XCTAssertTrue(fixture.manager.areHermesHooksAuthorized())
+
+        let allowlist = fixture.home.appendingPathComponent(".hermes/shell-hooks-allowlist.json")
+        let allowlistRoot = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: allowlist)) as? [String: Any]
+        )
+        let approvals = try XCTUnwrap(allowlistRoot["approvals"] as? [[String: Any]])
+        XCTAssertEqual(approvals.filter {
+            ($0["command"] as? String)?.contains(AgentHookManager.commandMarker) == true
+        }.count, 7)
 
         try fixture.manager.uninstallHook(for: .hermes)
         let uninstalled = try String(contentsOf: config, encoding: .utf8)
         XCTAssertTrue(uninstalled.contains("existing-hook"))
         XCTAssertTrue(uninstalled.contains("ui:"))
         XCTAssertFalse(uninstalled.contains(AgentHookManager.commandMarker))
+        let updatedRoot = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: allowlist)) as? [String: Any]
+        )
+        let updatedApprovals = try XCTUnwrap(updatedRoot["approvals"] as? [[String: Any]])
+        XCTAssertFalse(updatedApprovals.contains {
+            ($0["command"] as? String)?.contains(AgentHookManager.commandMarker) == true
+        })
+    }
+
+    func testHermesConfiguredWithoutApprovalReportsAuthorizationRequired() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let hermes = fixture.home.appendingPathComponent(".local/bin/hermes")
+        try FileManager.default.createDirectory(at: hermes.deletingLastPathComponent(), withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: hermes.path, contents: Data("hermes".utf8)))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hermes.path)
+
+        try fixture.manager.installHook(for: .hermes)
+        try FileManager.default.removeItem(
+            at: fixture.home.appendingPathComponent(".hermes/shell-hooks-allowlist.json")
+        )
+
+        let status = try XCTUnwrap(
+            fixture.manager.integrationStatuses().first { $0.id == .hermes }
+        )
+        XCTAssertEqual(status.hookState, .authorizationRequired)
     }
 
     func testActivityArbitrationPrefersWaitingThenFailureThenActivity() {

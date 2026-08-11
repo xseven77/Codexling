@@ -47,13 +47,12 @@ enum DetachedWindowMetrics {
         size.height > 1
             && abs(size.width - verticalDashboardWidth) < 1
     }
-    /// 设置页首次打开时先用屏幕允许的最大高度布局，避免在滚动模式下测不准内容高度。
+    /// 设置页先以紧凑高度出现；右侧内容的自然高度测出后再一次性收敛。
     static func settingsWindowProvisionalHeight(screen: NSScreen? = nil) -> CGFloat {
-        maximumSettingsWindowHeight(for: screen)
+        min(560, maximumSettingsWindowHeight(for: screen))
     }
     /// 用户手动缩小时的下限；低于内容高度时 SwiftUI 才启用滚动。
-    static let settingsMinWindowHeight: CGFloat = 400
-    static let chromeHeaderHeight: CGFloat = 38
+    static let settingsMinWindowHeight: CGFloat = 560
 
     static var defaultWidth: CGFloat { dashboardWidth }
     static var defaultHeight: CGFloat { loggedInDashboardHeight }
@@ -74,14 +73,17 @@ enum DetachedWindowMetrics {
         let visibleHeight = screen?.visibleFrame.height
             ?? NSScreen.main?.visibleFrame.height
             ?? maxHeight
-        return max(1, visibleHeight - 32)
+        return max(1, visibleHeight)
     }
 
     static func clampSettingsContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
         return NSSize(
             width: min(max(size.width, dashboardWidth), maxWidth),
-            height: min(max(size.height, min(minHeight, dynamicMaxHeight)), dynamicMaxHeight)
+            height: min(
+                max(size.height, min(settingsMinWindowHeight, dynamicMaxHeight)),
+                dynamicMaxHeight
+            )
         )
     }
 
@@ -162,7 +164,7 @@ enum DetachedWindowMetrics {
         let minHeight = min(settingsMinWindowHeight, dynamicMaxHeight)
         let maxHeight: CGFloat
         if let measuredContentHeight, measuredContentHeight > 0 {
-            maxHeight = min(measuredContentHeight, dynamicMaxHeight)
+            maxHeight = max(minHeight, min(measuredContentHeight, dynamicMaxHeight))
         } else {
             maxHeight = dynamicMaxHeight
         }
@@ -191,6 +193,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var suppressDashboardHeightCommitUntil: Date?
     /// 竖向实测内容高度。
     private var dashboardMeasuredHeight: CGFloat?
+    /// 测高所对应的账号/内容身份，防止不同连接共用同一缓存。
+    private var dashboardMeasurementIdentity: String?
     private var settingsMeasuredContentHeight: CGFloat?
     private var titleControlsView: TitleControlsView!
 
@@ -203,6 +207,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         companionStatsStore: CompanionStatsStore,
         updater: AppUpdateController,
         actions: UsageActions,
+        onOpenSettings: @escaping () -> Void,
         onClose: (() -> Void)? = nil
     ) {
         self.settings = settings
@@ -233,20 +238,11 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 onContentLayoutChanged: { [weak self] mode in
                     self?.applyContentLayout(mode)
                 },
-                onSettingsMeasuredHeight: { [weak self] height in
-                    guard let self else { return }
-                    if height < 0 {
-                        invalidateSettingsMeasuredHeight()
-                    } else if height > 1 {
-                        commitSettingsMeasuredContentHeight(height)
-                    } else {
-                        scheduleSettingsHeightMeasurement()
-                    }
-                },
-                onDashboardMeasuredHeight: { [weak self] height in
+                onOpenSettings: onOpenSettings,
+                onDashboardMeasuredHeight: { [weak self] height, identity in
                     guard let self else { return }
                     if height > 1 {
-                        self.commitDashboardMeasuredHeight(height)
+                        self.commitDashboardMeasuredHeight(height, identity: identity)
                     }
                 }
             )
@@ -327,6 +323,12 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         applyWindowChrome()
         updateTitleControlsAppearance()
     }
+
+    func refreshAlwaysOnTop() {
+        applyAlwaysOnTop()
+    }
+
+    var currentScreen: NSScreen? { window.screen }
 
     @objc private func toggleDashboardOrientation() {
         guard case let .dashboard(_, orientation) = contentMode else { return }
@@ -438,6 +440,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         }
         if case let .dashboard(isLoggedIn, _) = mode, !isLoggedIn {
             dashboardMeasuredHeight = nil
+            dashboardMeasurementIdentity = nil
         }
         contentMode = mode
         updateTitleControlsAppearance()
@@ -499,22 +502,17 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func scheduleSettingsHeightMeasurement() {
+        // The settings ScrollView measures its child rather than its viewport,
+        // so it no longer needs to expand to full-screen before measurement.
         DispatchQueue.main.async { [weak self] in
             guard let self, case .settings = contentMode else { return }
-            // 仅在尚未完成首次测量时临时拉高窗口；切勿在 commit 后再扩高，否则会与 Preference 形成 resize 死循环。
-            guard settingsMeasuredContentHeight == nil else { return }
-            let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: window.screen)
-            if window.frame.size.height + 1 < provisional {
-                resizeWindow(
-                    to: NSSize(width: DetachedWindowMetrics.dashboardWidth, height: provisional),
-                    animate: false
-                )
-            }
+            hostingController.view.needsLayout = true
+            hostingController.view.layoutSubtreeIfNeeded()
         }
     }
 
     /// 竖向 / 横版 Preference 收敛窗口高度（拖动期间不 commit）。
-    private func commitDashboardMeasuredHeight(_ height: CGFloat) {
+    private func commitDashboardMeasuredHeight(_ height: CGFloat, identity: String) {
         guard case let .dashboard(isLoggedIn, orientation) = contentMode, isLoggedIn else {
             return
         }
@@ -522,6 +520,12 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         let floor = DetachedWindowMetrics.verticalMinHeight
         let measured = max(floor, ceil(height))
         guard measured > 1 else { return }
+
+        if dashboardMeasurementIdentity != identity {
+            cancelPendingDashboardHeightCommit()
+            dashboardMeasurementIdentity = identity
+            dashboardMeasuredHeight = nil
+        }
 
         // 横版时只缓存 330pt 竖版的预排版高度，不改变当前窗口。
         if orientation == .horizontal {
@@ -562,13 +566,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             )
         }
         pendingDashboardHeightWorkItem = work
-        let delay: TimeInterval
-        if dashboardMeasuredHeight == nil {
-            // 首次切换需等待 330pt 宽度完成布局，不能提交旧横版宽度下的瞬态高度。
-            delay = 0.35
-        } else {
-            delay = measured < dashboardMeasuredHeight! ? 1.4 : 0.15
-        }
+        // SwiftUI may publish more than once while the selected connection is
+        // swapping its card. A short symmetric debounce keeps only the latest
+        // geometry without leaving the previous account's height visible.
+        let delay: TimeInterval = dashboardMeasuredHeight == nil ? 0.22 : 0.15
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -582,11 +583,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         guard case .settings = contentMode else { return }
         settingsMeasuredContentHeight = nil
         applyContentSizeLimits(for: .settings)
-        let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: window.screen)
-        resizeWindow(
-            to: NSSize(width: DetachedWindowMetrics.dashboardWidth, height: provisional),
-            animate: false
-        )
+        scheduleSettingsHeightMeasurement()
     }
 
     private func commitSettingsMeasuredContentHeight(_ height: CGFloat) {
@@ -619,7 +616,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         isProgrammaticResize = false
     }
 
-    /// 横/竖主界面：`setContentSize` 锁定内容区尺寸。
+    /// 横/竖主界面：解除上一布局的尺寸锁后，一次性更新 frame，再锁定新尺寸。
     private func resizeWindowToDashboardContent(
         isLoggedIn: Bool,
         orientation: DashboardOrientation,
@@ -635,12 +632,20 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             screen: window.screen
         )
 
-        let topY = window.frame.maxY
+        let targetFrameSize = DetachedWindowMetrics.dashboardFrameSize(
+            for: contentSize,
+            on: window
+        )
+        var targetFrame = window.frame
+        targetFrame.origin.y = targetFrame.maxY - targetFrameSize.height
+        targetFrame.size = targetFrameSize
+
         isProgrammaticResize = true
-        window.setContentSize(contentSize)
-        var frame = window.frame
-        frame.origin.y = topY - frame.size.height
-        window.setFrameOrigin(frame.origin)
+        // The previous orientation/settings mode may have a fixed size that
+        // rejects the new frame before AppKit gets a chance to apply it.
+        window.minSize = .zero
+        window.maxSize = NSSize(width: 10_000, height: 10_000)
+        window.setFrame(targetFrame, display: true, animate: animate)
         isProgrammaticResize = false
         applyContentSizeLimits(for: .dashboard(isLoggedIn: isLoggedIn, orientation: orientation))
     }
@@ -776,7 +781,167 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-private final class TitleControlsView: NSView {
+@MainActor
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    private let window: NSWindow
+    private var hostingController: NSHostingController<SettingsView>!
+    private let settings: AppSettingsStore
+    private let onClose: () -> Void
+    private var measuredContentHeight: CGFloat?
+    private var isProgrammaticResize = false
+
+    init(
+        store: UsageSnapshotStore,
+        settings: AppSettingsStore,
+        multiAgentSettings: MultiAgentSettingsStore,
+        updater: AppUpdateController,
+        actions: UsageActions,
+        onClose: @escaping () -> Void
+    ) {
+        self.settings = settings
+        self.onClose = onClose
+        window = NSWindow(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: DetachedWindowMetrics.dashboardWidth,
+                height: DetachedWindowMetrics.settingsWindowProvisionalHeight()
+            ),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+
+        hostingController = NSHostingController(
+            rootView: SettingsView(
+                store: store,
+                settings: settings,
+                multiAgentSettings: multiAgentSettings,
+                updater: updater,
+                layout: .window,
+                onLogout: actions.disconnect,
+                onMeasuredContentHeightChange: { [weak self] height in
+                    self?.handleMeasuredContentHeight(height)
+                }
+            )
+        )
+
+        window.title = "Codexling 设置"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = false
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.delegate = self
+        window.contentViewController = hostingController
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.isOpaque = false
+        applyWindowAppearance()
+        applySizeLimits()
+        window.center()
+    }
+
+    func show(on screen: NSScreen? = nil) {
+        if let screen, window.screen !== screen, !window.isVisible {
+            let size = window.frame.size
+            let visible = screen.visibleFrame
+            window.setFrameOrigin(NSPoint(
+                x: visible.midX - size.width / 2,
+                y: visible.midY - size.height / 2
+            ))
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
+    func refreshThemeAppearance() {
+        applyWindowAppearance()
+    }
+
+    private func handleMeasuredContentHeight(_ height: CGFloat) {
+        if height < 0 {
+            measuredContentHeight = nil
+            applySizeLimits()
+            scheduleContentMeasurement()
+        } else if height > 1 {
+            commitMeasuredContentHeight(height)
+        } else {
+            scheduleContentMeasurement()
+        }
+    }
+
+    private func scheduleContentMeasurement() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            hostingController.view.needsLayout = true
+            hostingController.view.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func commitMeasuredContentHeight(_ height: CGFloat) {
+        let measured = ceil(height)
+        guard measured > 1, measuredContentHeight != measured else { return }
+        measuredContentHeight = measured
+        applySizeLimits()
+        resizeWindow(
+            to: DetachedWindowMetrics.preferredSettingsWindowSize(
+                contentHeight: measured,
+                screen: window.screen
+            )
+        )
+    }
+
+    private func resizeWindow(to targetSize: NSSize) {
+        guard window.frame.size != targetSize else { return }
+        var frame = window.frame
+        frame.origin.y += frame.height - targetSize.height
+        frame.size = targetSize
+        isProgrammaticResize = true
+        window.setFrame(frame, display: true, animate: false)
+        isProgrammaticResize = false
+    }
+
+    private func applySizeLimits() {
+        let limits = DetachedWindowMetrics.settingsWindowSizeLimits(
+            measuredContentHeight: measuredContentHeight,
+            screen: window.screen
+        )
+        window.minSize = limits.min
+        window.maxSize = limits.max
+    }
+
+    private func applyWindowAppearance() {
+        window.backgroundColor = .codexWindowBackground
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+        window.appearance = settings.theme.nsAppearance
+        window.hasShadow = true
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(type)?.isHidden = false
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard !isProgrammaticResize else { return }
+        let clamped = DetachedWindowMetrics.clampSettingsContentSize(
+            window.frame.size,
+            screen: window.screen
+        )
+        guard clamped != window.frame.size else { return }
+        resizeWindow(to: clamped)
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        applySizeLimits()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
+    }
+}
+
+final class TitleControlsView: NSView {
     private let orientationButton = TitleMaterialWaveButton(frame: .zero)
     private let pinButton = TitleMaterialWaveButton(frame: .zero)
     private let onToggleOrientation: () -> Void

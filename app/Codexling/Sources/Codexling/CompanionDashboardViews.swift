@@ -14,10 +14,83 @@ struct CompanionDashboardView: View {
     let showsDetachedButton: Bool
     let onOpenSettings: () -> Void
     /// 竖向独立窗口上报内容自然高度。
-    var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
+    var onMeasuredContentHeightChange: (CGFloat, String) -> Void = { _, _ in }
 
     @State private var selectedTaskID: String?
     @State private var showsConnectionSheet = false
+
+    private var selectedProviderContext: DashboardProviderContext {
+        if let connection = multiAgentSettings.selectedDeepSeekConnection {
+            let balanceText = connection.balance.map { balance in
+                let value = NSDecimalNumber(decimal: balance.total).stringValue
+                return balance.currency == "CNY" ? "¥\(value)" : "\(balance.currency) \(value)"
+            } ?? "待查询"
+            let isConnected = connection.authenticationState == .connected
+            return DashboardProviderContext(
+                asset: .deepSeek,
+                title: connection.label,
+                subtitle: "sk-•••• \(connection.keySuffix)",
+                badge: "DeepSeek",
+                badgeColor: .codexGreen,
+                statusText: isConnected ? balanceText : "需要检查",
+                statusColor: isConnected ? .codexGreen : .codexAmber,
+                summaryText: "DeepSeek API · Key 保存在 macOS Keychain",
+                accountLinkTitle: "DeepSeek 控制台",
+                accountLinkURL: DashboardProviderLinks.deepSeekUsage,
+                officialLinkHelp: "打开 DeepSeek 官方 Usage",
+                officialLinkURL: DashboardProviderLinks.deepSeekUsage,
+                syncState: isConnected ? "成功" : "Key 异常",
+                syncedAt: connection.balance?.fetchedAt ?? connection.createdAt,
+                isRefreshing: store.isUnifiedRefreshing,
+                emphasizesAccountLink: false
+            )
+        }
+
+        if let connection = multiAgentSettings.selectedCodexAccount {
+            let isConnected = connection.authenticationState == .connected
+            return DashboardProviderContext(
+                asset: .codex,
+                title: connection.label,
+                subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
+                badge: connection.usage?.planType ?? "Codex",
+                badgeColor: isConnected ? .codexGreen : .codexAmber,
+                statusText: isConnected ? activityStore.snapshot.state.taskLabel : "待登录",
+                statusColor: isConnected ? activityStore.snapshot.state.statusColor : .codexAmber,
+                summaryText: "独立 Codex 账号",
+                accountLinkTitle: "Codex Usage",
+                accountLinkURL: DashboardProviderLinks.codexUsage,
+                officialLinkHelp: "打开 Codex 官方 Usage",
+                officialLinkURL: DashboardProviderLinks.codexUsage,
+                syncState: isConnected ? "成功" : "待登录",
+                syncedAt: connection.usage?.fetchedAt ?? connection.createdAt,
+                isRefreshing: store.isUnifiedRefreshing,
+                emphasizesAccountLink: false
+            )
+        }
+
+        return DashboardProviderContext(
+            asset: .codex,
+            title: store.snapshot.companionAccountName,
+            subtitle: store.snapshot.accountEmail,
+            badge: store.snapshot.companionPlanBadgeText,
+            badgeColor: .codexGreen,
+            statusText: activityStore.snapshot.state.taskLabel,
+            statusColor: activityStore.snapshot.state.statusColor,
+            summaryText: store.snapshot.subscriptionCompactSummaryLine ?? "订阅与账单",
+            accountLinkTitle: "官方 Billing",
+            accountLinkURL: ChatGPTWebLinks.billingPage,
+            officialLinkHelp: "打开 Codex 官方 Usage",
+            officialLinkURL: DashboardProviderLinks.codexUsage,
+            syncState: store.snapshot.refreshState,
+            syncedAt: store.snapshot.fetchedAt,
+            isRefreshing: store.snapshot.refreshState == "刷新中",
+            emphasizesAccountLink: store.snapshot.showsSubscriptionExpiryReminder
+        )
+    }
+
+    private func refreshSelectedProvider() {
+        actions.refresh()
+    }
 
     var body: some View {
         Group {
@@ -40,13 +113,34 @@ struct CompanionDashboardView: View {
                   DetachedWindowMetrics.isValidVerticalMeasurement(size) else {
                 return
             }
-            onMeasuredContentHeightChange(size.height)
+            onMeasuredContentHeightChange(size.height, verticalDashboardMeasureIdentity)
         }
         .onChange(of: activityStore.snapshot.activeTasks.map(\.id)) { _, ids in
             if let selectedTaskID, !ids.contains(selectedTaskID) {
                 self.selectedTaskID = ids.first
             }
         }
+        .overlay(alignment: .bottom) {
+            if let toast = store.refreshToast {
+                Label(
+                    toast.message,
+                    systemImage: toast.isSuccess
+                        ? "checkmark.circle.fill"
+                        : "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+                .background(.black.opacity(0.86), in: Capsule(style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.bottom, layout == .window ? 60 : 18)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityLabel(toast.message)
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.84), value: store.refreshToast)
         .overlay {
             if showsConnectionSheet {
                 ZStack {
@@ -96,10 +190,11 @@ struct CompanionDashboardView: View {
 
                 VStack(spacing: 0) {
                     dashboardConnectionBar
-                    CompanionHorizontalAccountHeader(
-                        snapshot: store.snapshot,
-                        activity: activityStore.snapshot
-                    )
+                    if multiAgentSettings.selectedDeepSeekConnection == nil {
+                        CompanionHorizontalAccountHeader(
+                            context: selectedProviderContext
+                        )
+                    }
                     horizontalDashboardMainContent
                         .layoutPriority(1)
                     Spacer(minLength: 0)
@@ -132,10 +227,11 @@ struct CompanionDashboardView: View {
 
             VStack(spacing: 0) {
                 dashboardConnectionBar
-                CompanionHorizontalAccountHeader(
-                    snapshot: store.snapshot,
-                    activity: activityStore.snapshot
-                )
+                if multiAgentSettings.selectedDeepSeekConnection == nil {
+                    CompanionHorizontalAccountHeader(
+                        context: selectedProviderContext
+                    )
+                }
                 horizontalDashboardRightColumn
             }
         }
@@ -187,7 +283,6 @@ struct CompanionDashboardView: View {
     private var dashboardConnectionBar: some View {
         DashboardConnectionSwitcher(
             snapshot: store.snapshot,
-            activity: activityStore.snapshot,
             showsCurrentCodex: store.isLoggedIn,
             store: multiAgentSettings,
             onAdd: { showsConnectionSheet = true }
@@ -201,10 +296,10 @@ struct CompanionDashboardView: View {
 
     private var horizontalDashboardSyncFooter: some View {
         SyncFooterView(
-            snapshot: store.snapshot,
-            isRefreshing: store.snapshot.refreshState == "刷新中",
+            context: selectedProviderContext,
             actions: actions,
             showsDetachedButton: showsDetachedButton,
+            onRefresh: refreshSelectedProvider,
             onOpenSettings: onOpenSettings
         )
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
@@ -272,13 +367,13 @@ struct CompanionDashboardView: View {
                 integrations: multiAgentSettings.integrations,
                 settings: settings,
                 frameStore: frameStore,
-                todayMinutes: companionStatsStore.todayMinutes
+                todayMinutes: companionStatsStore.todayMinutes,
+                selectedTaskID: $selectedTaskID
             )
             .zIndex(5)
 
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
-                activity: activityStore.snapshot,
                 showsCurrentCodex: store.isLoggedIn,
                 store: multiAgentSettings,
                 onAdd: { showsConnectionSheet = true },
@@ -290,44 +385,35 @@ struct CompanionDashboardView: View {
             .background(Color.codexCard.opacity(0.96))
             .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
 
-            CompanionAccountRow(snapshot: store.snapshot)
+            if multiAgentSettings.selectedDeepSeekConnection == nil {
+                CompanionAccountRow(context: selectedProviderContext)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
-                ActivityHeading(
-                    activity: activityStore.snapshot,
-                    usage: store.snapshot,
-                    isLoggedIn: store.isLoggedIn,
-                    isCompact: true
-                )
-
                 if store.snapshot.showsSubscriptionExpiryReminder,
                    let message = store.snapshot.subscriptionExpiryReminderMessage {
                     SubscriptionExpiryReminderBanner(message: message)
-                        .padding(.top, 11)
+                        .padding(.bottom, 3)
                 }
-
-                TaskStackView(
-                    snapshot: activityStore.snapshot,
-                    selectedTaskID: $selectedTaskID
-                )
-                .padding(.top, 15)
 
                 selectedVerticalConnectionSection
             }
-            .padding(.top, 13)
+            // A single shared lead-in keeps every provider aligned without
+            // stacking branch-specific top padding.
+            .padding(.top, 18)
             .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-            .padding(.bottom, 10)
+            .padding(.bottom, 36)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var verticalDashboardSyncFooter: some View {
         SyncFooterView(
-            snapshot: store.snapshot,
-            isRefreshing: store.snapshot.refreshState == "刷新中",
+            context: selectedProviderContext,
             actions: actions,
             showsDetachedButton: showsDetachedButton,
             isCompact: true,
+            onRefresh: refreshSelectedProvider,
             onOpenSettings: onOpenSettings
         )
         .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
@@ -365,11 +451,15 @@ struct CompanionDashboardView: View {
             "\($0.id):\($0.count):\($0.description ?? "")"
         }.joined(separator: "|")
         return [
+            multiAgentSettings.selectedConnectionKey,
             coupons,
             store.snapshot.subscriptionExpiryReminderMessage ?? "",
             store.snapshot.hasShortWindow ? "1" : "0",
             store.snapshot.hasWeeklyWindow ? "1" : "0",
             String(activityStore.snapshot.activeTasks.count),
+            multiAgentSettings.selectedDeepSeekConnection?.authenticationState.rawValue ?? "",
+            multiAgentSettings.selectedDeepSeekConnection?.balance.map { String(describing: $0.total) } ?? "",
+            multiAgentSettings.selectedCodexAccount?.authenticationState.rawValue ?? "",
         ].joined(separator: "-")
     }
 
@@ -393,18 +483,25 @@ struct CompanionDashboardView: View {
                 .padding(.top, 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.top, 14)
     }
 
     @ViewBuilder
     private var selectedConnectionSection: some View {
         if let connection = multiAgentSettings.selectedDeepSeekConnection {
-            DeepSeekDashboardCard(connection: connection) {
-                Task { await multiAgentSettings.refreshDeepSeekConnection(connection) }
+            DeepSeekDashboardCard(
+                connection: connection,
+                isRefreshing: store.isUnifiedRefreshing
+            ) {
+                actions.refresh()
             }
             .padding(.top, 18)
         } else if let connection = multiAgentSettings.selectedCodexAccount {
-            ManagedCodexDashboardCard(connection: connection, store: multiAgentSettings)
+            ManagedCodexDashboardCard(
+                connection: connection,
+                store: multiAgentSettings,
+                isRefreshing: store.isUnifiedRefreshing,
+                onRefresh: actions.refresh
+            )
                 .padding(.top, 18)
         } else {
             quotaSection
@@ -414,13 +511,19 @@ struct CompanionDashboardView: View {
     @ViewBuilder
     private var selectedVerticalConnectionSection: some View {
         if let connection = multiAgentSettings.selectedDeepSeekConnection {
-            DeepSeekDashboardCard(connection: connection) {
-                Task { await multiAgentSettings.refreshDeepSeekConnection(connection) }
+            DeepSeekDashboardCard(
+                connection: connection,
+                isRefreshing: store.isUnifiedRefreshing
+            ) {
+                actions.refresh()
             }
-            .padding(.top, 14)
         } else if let connection = multiAgentSettings.selectedCodexAccount {
-            ManagedCodexDashboardCard(connection: connection, store: multiAgentSettings)
-                .padding(.top, 14)
+            ManagedCodexDashboardCard(
+                connection: connection,
+                store: multiAgentSettings,
+                isRefreshing: store.isUnifiedRefreshing,
+                onRefresh: actions.refresh
+            )
         } else {
             verticalQuotaSection
         }
@@ -429,15 +532,28 @@ struct CompanionDashboardView: View {
 
 private struct DashboardConnectionSwitcher: View {
     let snapshot: CodexUsageSnapshot
-    let activity: CodexActivitySnapshot
     let showsCurrentCodex: Bool
     @Bindable var store: MultiAgentSettingsStore
     let onAdd: () -> Void
     var compact = false
 
-    private enum ConnectionIndicator {
-        case activity(Color)
-        case balance(Color)
+    private enum CredentialBadge {
+        case account(Color)
+        case apiKey(Color)
+
+        var systemName: String {
+            switch self {
+            case .account: "checkmark.seal.fill"
+            case .apiKey: "key.fill"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .account(let color): color
+            case .apiKey(let color): color
+            }
+        }
     }
 
     var body: some View {
@@ -451,7 +567,7 @@ private struct DashboardConnectionSwitcher: View {
                             subtitle: snapshot.companionAccountName,
                             color: Color.codexGreen,
                             selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey,
-                            indicator: currentCodexIndicator
+                            credential: .account(currentCodexQuotaColor)
                         ) { store.selectCurrentCodexConnection() }
                     }
                     ForEach(store.codexAccounts) { connection in
@@ -461,7 +577,7 @@ private struct DashboardConnectionSwitcher: View {
                             subtitle: connection.label,
                             color: Color.codexGreen,
                             selected: store.isSelected(connection),
-                            indicator: managedCodexIndicator(for: connection)
+                            credential: .account(codexQuotaColor(for: connection))
                         ) { store.selectCodexConnection(connection) }
                     }
                     ForEach(store.deepSeekConnections) { connection in
@@ -469,9 +585,9 @@ private struct DashboardConnectionSwitcher: View {
                             asset: .deepSeek,
                             title: "DeepSeek",
                             subtitle: connection.label,
-                            color: .blue,
+                            color: .deepSeekBrand,
                             selected: store.isSelected(connection),
-                            indicator: .balance(balanceColor(for: connection))
+                            credential: .apiKey(balanceColor(for: connection))
                         ) { store.selectDeepSeekConnection(connection) }
                     }
                 }
@@ -501,17 +617,17 @@ private struct DashboardConnectionSwitcher: View {
         subtitle: String,
         color: Color,
         selected: Bool,
-        indicator: ConnectionIndicator?,
+        credential: CredentialBadge,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Group {
                 if compact {
-                    connectionIcon(asset: asset, indicator: indicator)
+                    connectionIcon(asset: asset, credential: credential)
                         .frame(width: 42, height: 42)
                 } else {
                     HStack(spacing: 6) {
-                        connectionIcon(asset: asset, indicator: indicator)
+                        connectionIcon(asset: asset, credential: credential)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(title).font(.system(size: 10, weight: .bold))
                             Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
@@ -532,61 +648,55 @@ private struct DashboardConnectionSwitcher: View {
         .accessibilityValue(selected ? "已选择" : "未选择")
     }
 
-    private func connectionIcon(asset: BrandAssetID, indicator: ConnectionIndicator?) -> some View {
+    private func connectionIcon(asset: BrandAssetID, credential: CredentialBadge) -> some View {
         ZStack(alignment: .bottomTrailing) {
             BrandIconView(asset: asset, size: 32, cornerRadius: 11)
-            if let indicator {
-                switch indicator {
-                case .activity(let color):
-                    Circle()
-                        .fill(color)
-                        .frame(width: 9, height: 9)
-                        .overlay(Circle().stroke(Color.codexCard, lineWidth: 1.5))
-                        .offset(x: 2, y: 2)
-                case .balance(let color):
-                    Text("$")
-                        .font(.system(size: 13, weight: .black, design: .rounded))
-                        .foregroundStyle(color)
-                        .shadow(color: Color.codexCard, radius: 0, x: 0, y: 1)
-                        .offset(x: 3, y: 3)
-                }
-            }
+            Image(systemName: credential.systemName)
+                .font(.system(size: 11, weight: .bold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(credential.tint)
+                .frame(width: 14, height: 14)
+                .offset(x: 2, y: 2)
+                .accessibilityHidden(true)
         }
     }
 
-    private var currentCodexIndicator: ConnectionIndicator? {
-        let task = activity.activeTasks.first {
-            !$0.id.hasPrefix("agent.") || $0.id.hasPrefix("agent.codex:vendor:")
+    private var currentCodexQuotaColor: Color {
+        QuotaHealthLevel.from(
+            window: snapshot.primaryWindow,
+            isLoggedIn: showsCurrentCodex
+        ).color
+    }
+
+    private func codexQuotaColor(for connection: CodexAccountConnection) -> Color {
+        guard connection.authenticationState == .connected else { return .codexRed }
+        guard let remainingPercent = (connection.usage?.primary ?? connection.usage?.secondary)?.remainingPercent else {
+            return .codexMuted
         }
-        return activityIndicator(for: task?.state)
-    }
 
-    private func managedCodexIndicator(for connection: CodexAccountConnection) -> ConnectionIndicator? {
-        let connectionID = connection.id.rawValue.uuidString.lowercased()
-        let task = activity.activeTasks.first { $0.id.lowercased().contains(connectionID) }
-        return activityIndicator(for: task?.state)
-    }
-
-    private func activityIndicator(for state: CodexActivityState?) -> ConnectionIndicator? {
-        guard let state, state != .idle, state != .unavailable else { return nil }
-        return .activity(Color(nsColor: state.statusNSColor))
+        switch remainingPercent {
+        case 50...:
+            return .codexGreen
+        case 20..<50:
+            return .codexAmber
+        default:
+            return .codexRed
+        }
     }
 
     private func balanceColor(for connection: DeepSeekAPIConnection) -> Color {
-        switch ProviderBalanceIndicator.resolve(
+        ProviderBalanceIndicator.resolve(
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
-        ) {
-        case .healthy: Color.codexGreen
-        case .low: Color.codexAmber
-        case .depleted: Color.codexRed
-        }
+        ).color
     }
 }
 
 private struct ManagedCodexDashboardCard: View {
     let connection: CodexAccountConnection
     @Bindable var store: MultiAgentSettingsStore
+    let isRefreshing: Bool
+    let onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -640,14 +750,21 @@ private struct ManagedCodexDashboardCard: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 94)
                 HStack {
-                    Button { Task { await store.refreshCodexAccounts() } } label: {
-                        Text("检查登录")
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 13)
-                            .frame(height: 32)
-                            .background(Color.codexLine.opacity(0.45), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    Button(action: onRefresh) {
+                        Group {
+                            if isRefreshing {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Text("检查登录")
+                            }
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 13)
+                        .frame(height: 32)
+                        .background(Color.codexLine.opacity(0.45), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     }
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                    .disabled(isRefreshing)
                     Spacer()
                     if connection.authenticationState != .connected {
                         if store.isCodexOAuthInProgress {
@@ -748,12 +865,12 @@ private struct ManagedCodexQuotaRing: View {
 
 private struct DeepSeekDashboardCard: View {
     let connection: DeepSeekAPIConnection
+    let isRefreshing: Bool
     let onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                BrandIconView(asset: .deepSeek, size: 40, cornerRadius: 11)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("DeepSeek").font(.system(size: 20, weight: .bold))
                     Text("\(connection.label) · sk-•••• \(connection.keySuffix)")
@@ -783,6 +900,7 @@ private struct DeepSeekDashboardCard: View {
                          ? "¥\(NSDecimalNumber(decimal: balance.total).stringValue)"
                          : "\(balance.currency) \(NSDecimalNumber(decimal: balance.total).stringValue)")
                         .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundStyle(balanceIndicator.color)
                         .padding(.top, 4)
                     Text("充值 \(NSDecimalNumber(decimal: balance.toppedUp).stringValue) · 赠送 \(NSDecimalNumber(decimal: balance.granted).stringValue)")
                         .font(.system(size: 9))
@@ -791,34 +909,41 @@ private struct DeepSeekDashboardCard: View {
                 } else {
                     Text("—").font(.system(size: 36, weight: .bold)).foregroundStyle(Color.codexMuted).padding(.top, 4)
                 }
-                HStack(spacing: 8) {
-                    Button(action: onRefresh) {
-                        Label("查询余额", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 34)
-                            .foregroundStyle(Color.white)
-                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Button(action: onRefresh) {
+                    Group {
+                        if isRefreshing {
+                            ProgressView().controlSize(.small).tint(Color.codexOnPrimary)
+                        } else {
+                            Text("查询余额")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
                     }
-                    .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
-                    Button(action: {}) { Image(systemName: "gearshape") }
-                        .buttonStyle(.bordered)
-                        .disabled(true)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44, alignment: .center)
+                    .foregroundStyle(Color.codexOnPrimary)
+                    .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
+                .disabled(isRefreshing)
                 .padding(.top, 16)
             }
             .padding(20)
-            .background(
-                LinearGradient(colors: [Color.purple.opacity(0.07), Color.codexCard], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-            )
-            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.purple.opacity(0.15)) }
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.codexLine) }
             .padding(.top, 20)
 
             Label("Key 保存在 macOS Keychain，只用于查询 DeepSeek 官方余额接口；余额属于账户，并非此 Key 独享。", systemImage: "checkmark.shield")
                 .font(.system(size: 9))
                 .foregroundStyle(Color.codexMuted)
-                .padding(.top, 12)
+            .padding(.top, 12)
         }
+    }
+
+    private var balanceIndicator: ProviderBalanceIndicator {
+        ProviderBalanceIndicator.resolve(
+            total: connection.balance?.total,
+            authenticationState: connection.authenticationState
+        )
     }
 }
 
@@ -1018,6 +1143,7 @@ private struct CompanionLocalAgentsControl: View {
     var panelHorizontalOffset: CGFloat = 0
     var opensUpward = false
     @State private var isExpanded = false
+    @State private var interceptedCloseRippleTrigger = 0
 
     private var rows: [CompanionLocalAgentRow] {
         integrations
@@ -1041,9 +1167,14 @@ private struct CompanionLocalAgentsControl: View {
     }
 
     var body: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
-        } label: {
+        CodexMaterialWaveButtonBody(
+            action: {
+                withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+            },
+            cornerRadius: 15,
+            usesCapsule: true,
+            externalRippleTrigger: interceptedCloseRippleTrigger
+        ) {
             HStack(spacing: 8) {
                 HStack(spacing: -5) {
                     ForEach(rows.prefix(3)) { row in
@@ -1055,7 +1186,7 @@ private struct CompanionLocalAgentsControl: View {
                         .fill(Color.codexMuted.opacity(0.7))
                         .frame(width: 7, height: 7)
                 }
-                Text(rows.isEmpty ? "空闲" : "\(rows.count) 个进行中 Agent")
+                Text(rows.isEmpty ? "空闲" : "\(rows.count) 进行中")
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -1070,12 +1201,15 @@ private struct CompanionLocalAgentsControl: View {
                 Capsule().strokeBorder(Color.codexGreen.opacity(0.42), lineWidth: 1)
             }
         }
-        .buttonStyle(CodexPressableStyle(cornerRadius: 15))
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(rows.isEmpty ? "本地 Agent 空闲" : "\(rows.count) 个进行中 Agent")
         .accessibilityValue(isExpanded ? "已展开" : "已收起")
         .background {
             CompanionLocalAgentsPanelPresenter(
                 isPresented: $isExpanded,
+                interceptedCloseRippleTrigger: $interceptedCloseRippleTrigger,
                 rows: rows,
                 horizontalOffset: panelHorizontalOffset,
                 opensUpward: opensUpward,
@@ -1117,7 +1251,6 @@ private struct CompanionLocalAgentsControl: View {
 
 private struct CompanionLocalTasksPanelContent: View {
     let rows: [CompanionLocalAgentRow]
-    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1134,15 +1267,6 @@ private struct CompanionLocalTasksPanelContent: View {
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(rows.isEmpty ? Color.codexMuted : Color.codexGreen)
                     .padding(.top, 5)
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.codexMuted)
-                        .frame(width: 34, height: 34)
-                        .background(Color.codexMist, in: Circle())
-                }
-                .buttonStyle(CodexPressableCircleStyle())
-                .accessibilityLabel("收起本地任务")
             }
 
             VStack(spacing: 12) {
@@ -1176,8 +1300,9 @@ private struct CompanionLocalTasksPanelContent: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.codexLine, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.22), radius: 18, x: 0, y: 10)
-        .padding(20)
+        .shadow(color: Color.black.opacity(0.10), radius: 10, x: 0, y: 5)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 6)
     }
 
     private func localAgentRow(_ row: CompanionLocalAgentRow) -> some View {
@@ -1210,23 +1335,30 @@ private struct CompanionLocalTasksPanelContent: View {
 
 private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
     @Binding var isPresented: Bool
+    @Binding var interceptedCloseRippleTrigger: Int
     let rows: [CompanionLocalAgentRow]
     let horizontalOffset: CGFloat
     let opensUpward: Bool
     let colorScheme: ColorScheme
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(isPresented: $isPresented)
+        Coordinator(
+            isPresented: $isPresented,
+            interceptedCloseRippleTrigger: $interceptedCloseRippleTrigger
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+        let view = CompanionHoverTrackingView(frame: .zero)
+        view.onMouseEntered = { context.coordinator.anchorMouseEntered() }
+        view.onMouseExited = { context.coordinator.anchorMouseExited() }
         context.coordinator.anchorView = view
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.isPresented = $isPresented
+        context.coordinator.interceptedCloseRippleTrigger = $interceptedCloseRippleTrigger
         context.coordinator.update(
             rows: rows,
             horizontalOffset: horizontalOffset,
@@ -1243,10 +1375,18 @@ private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
     final class Coordinator {
         weak var anchorView: NSView?
         var isPresented: Binding<Bool>
+        var interceptedCloseRippleTrigger: Binding<Int>
         private let controller = CompanionLocalAgentsPanelController()
 
-        init(isPresented: Binding<Bool>) {
+        init(
+            isPresented: Binding<Bool>,
+            interceptedCloseRippleTrigger: Binding<Int>
+        ) {
             self.isPresented = isPresented
+            self.interceptedCloseRippleTrigger = interceptedCloseRippleTrigger
+            controller.onInterceptedAnchorClick = { [weak self] in
+                self?.interceptedCloseRippleTrigger.wrappedValue += 1
+            }
             controller.onDismiss = { [weak self] in
                 self?.isPresented.wrappedValue = false
             }
@@ -1276,17 +1416,101 @@ private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
         func dismiss() {
             controller.dismiss()
         }
+
+        func anchorMouseEntered() {
+            controller.anchorMouseEntered()
+        }
+
+        func anchorMouseExited() {
+            controller.anchorMouseExited()
+        }
+    }
+}
+
+private final class CompanionHoverTrackingView: NSView {
+    var onMouseEntered: (() -> Void)?
+    var onMouseExited: (() -> Void)?
+    var capturedMouseDownRect: NSRect?
+    var onCapturedMouseDown: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if capturedMouseDownRect?.contains(point) == true {
+            return self
+        }
+        return super.hitTest(point)
+    }
+
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onMouseEntered?()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onMouseExited?()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if capturedMouseDownRect?.contains(point) == true {
+            onCapturedMouseDown?()
+            return
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+enum CompanionPanelAnchorClickRouting {
+    static func captureRect(anchorFrame: NSRect, panelFrame: NSRect) -> NSRect? {
+        let overlap = anchorFrame.intersection(panelFrame)
+        guard !overlap.isNull, !overlap.isEmpty else { return nil }
+        return NSRect(
+            x: overlap.minX - panelFrame.minX,
+            y: overlap.minY - panelFrame.minY,
+            width: overlap.width,
+            height: overlap.height
+        )
     }
 }
 
 @MainActor
 private final class CompanionLocalAgentsPanelController {
+    private static let contentHorizontalInset: CGFloat = 20
+    private static let contentVerticalInset: CGFloat = 6
+    private static let attachmentGap: CGFloat = 4
+    /// NSHostingView keeps additional fitting-space above the visible card.
+    /// Pull the panel toward its trigger so the card, rather than the clear
+    /// panel bounds, reads as visually attached to the capsule.
+    private static let visibleCardAttachmentCorrection: CGFloat = 20
     private let panel: NSPanel
     private let hostingView: NSHostingView<AnyView>
+    private let trackingView = CompanionHoverTrackingView(frame: .zero)
+    private var anchorFrame: NSRect?
+    private var safeTriangle: HoverSafeTriangle?
+    private var safeTriangleTimer: Timer?
+    private var safeTriangleDeadline: Date?
+    private var lastOpensUpward = false
+    private var presentationGeneration = 0
+    private var isDismissing = false
+    var onInterceptedAnchorClick: (() -> Void)?
     var onDismiss: (() -> Void)?
 
     init() {
-        let rootView = CompanionLocalTasksPanelContent(rows: [], onClose: {})
+        let rootView = CompanionLocalTasksPanelContent(rows: [])
         hostingView = NSHostingView(rootView: AnyView(rootView))
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 326, height: 180),
@@ -1301,34 +1525,59 @@ private final class CompanionLocalAgentsPanelController {
         panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.transient, .canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = hostingView
+        trackingView.addSubview(hostingView)
+        trackingView.onMouseEntered = { [weak self] in
+            self?.cancelSafeTriangleTracking()
+        }
+        trackingView.onMouseExited = { [weak self] in
+            self?.panelMouseExited()
+        }
+        trackingView.onCapturedMouseDown = { [weak self] in
+            guard let self else { return }
+            onInterceptedAnchorClick?()
+            dismiss()
+            onDismiss?()
+        }
+        panel.contentView = trackingView
     }
 
     func update(rows: [CompanionLocalAgentRow], colorScheme: ColorScheme) {
         hostingView.rootView = AnyView(
-            CompanionLocalTasksPanelContent(
-                rows: rows,
-                onClose: { [weak self] in
-                    self?.dismiss()
-                    self?.onDismiss?()
-                }
-            )
-            .preferredColorScheme(colorScheme)
+            CompanionLocalTasksPanelContent(rows: rows)
+                .preferredColorScheme(colorScheme)
         )
         hostingView.layoutSubtreeIfNeeded()
         let fittingHeight = max(164, hostingView.fittingSize.height)
         panel.setContentSize(NSSize(width: 326, height: fittingHeight))
+        trackingView.frame = NSRect(x: 0, y: 0, width: 326, height: fittingHeight)
         hostingView.frame = NSRect(x: 0, y: 0, width: 326, height: fittingHeight)
     }
 
     func show(relativeTo anchorView: NSView, horizontalOffset: CGFloat, opensUpward: Bool) {
         guard let parentWindow = anchorView.window else { return }
+        presentationGeneration += 1
+        isDismissing = false
+        lastOpensUpward = opensUpward
+        panel.alphaValue = 1
         let anchorInWindow = anchorView.convert(anchorView.bounds, to: nil)
         let anchor = parentWindow.convertToScreen(anchorInWindow)
+        anchorFrame = anchor
         let size = panel.frame.size
+        let attachedY = if opensUpward {
+            anchor.maxY
+                - Self.contentVerticalInset
+                + Self.attachmentGap
+                - Self.visibleCardAttachmentCorrection
+        } else {
+            anchor.minY
+                - size.height
+                + Self.contentVerticalInset
+                - Self.attachmentGap
+                + Self.visibleCardAttachmentCorrection
+        }
         var origin = NSPoint(
             x: anchor.midX - size.width / 2 + horizontalOffset,
-            y: opensUpward ? anchor.maxY + 2 : anchor.minY - size.height - 2
+            y: attachedY
         )
 
         if let visibleFrame = parentWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
@@ -1337,6 +1586,10 @@ private final class CompanionLocalAgentsPanelController {
         }
 
         panel.setFrameOrigin(origin)
+        trackingView.capturedMouseDownRect = CompanionPanelAnchorClickRouting.captureRect(
+            anchorFrame: anchor,
+            panelFrame: panel.frame
+        )
         if panel.parent !== parentWindow {
             panel.parent?.removeChildWindow(panel)
             parentWindow.addChildWindow(panel, ordered: .above)
@@ -1344,9 +1597,112 @@ private final class CompanionLocalAgentsPanelController {
         panel.orderFront(nil)
     }
 
-    func dismiss() {
+    func dismiss(animated: Bool = true) {
+        cancelSafeTriangleTracking()
+        anchorFrame = nil
+        trackingView.capturedMouseDownRect = nil
+        guard panel.isVisible, !isDismissing else { return }
+
+        let generation = presentationGeneration + 1
+        presentationGeneration = generation
+        let originalOrigin = panel.frame.origin
+
+        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            finishDismiss(generation: generation, originalOrigin: originalOrigin)
+            return
+        }
+
+        isDismissing = true
+        let targetOrigin = NSPoint(
+            x: originalOrigin.x,
+            y: originalOrigin.y + (lastOpensUpward ? -4 : 4)
+        )
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrameOrigin(targetOrigin)
+        } completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finishDismiss(generation: generation, originalOrigin: originalOrigin)
+            }
+        }
+    }
+
+    private func finishDismiss(generation: Int, originalOrigin: NSPoint) {
+        guard presentationGeneration == generation else { return }
         panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
+        panel.alphaValue = 1
+        panel.setFrameOrigin(originalOrigin)
+        isDismissing = false
+    }
+
+    func anchorMouseEntered() {
+        cancelSafeTriangleTracking()
+    }
+
+    func anchorMouseExited() {
+        guard panel.isVisible else { return }
+        beginSafeTriangleTracking(
+            from: NSEvent.mouseLocation,
+            toward: panelInteractionFrame
+        )
+    }
+
+    private func panelMouseExited() {
+        guard panel.isVisible, let anchorFrame else { return }
+        beginSafeTriangleTracking(
+            from: NSEvent.mouseLocation,
+            toward: anchorFrame
+        )
+    }
+
+    private var panelInteractionFrame: NSRect {
+        panel.frame.insetBy(
+            dx: Self.contentHorizontalInset,
+            dy: Self.contentVerticalInset
+        )
+    }
+
+    private func beginSafeTriangleTracking(from departurePoint: NSPoint, toward targetFrame: NSRect) {
+        cancelSafeTriangleTracking()
+        safeTriangle = HoverSafeTriangle(
+            origin: departurePoint,
+            targetFrame: targetFrame,
+            buffer: 8
+        )
+        safeTriangleDeadline = Date().addingTimeInterval(2)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evaluatePointerForDismissal()
+            }
+        }
+        safeTriangleTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func evaluatePointerForDismissal() {
+        let pointer = NSEvent.mouseLocation
+        if panelInteractionFrame.contains(pointer) || anchorFrame?.contains(pointer) == true {
+            cancelSafeTriangleTracking()
+            return
+        }
+        if let safeTriangle,
+           let safeTriangleDeadline,
+           Date() < safeTriangleDeadline,
+           safeTriangle.contains(pointer) {
+            return
+        }
+        dismiss()
+        onDismiss?()
+    }
+
+    private func cancelSafeTriangleTracking() {
+        safeTriangleTimer?.invalidate()
+        safeTriangleTimer = nil
+        safeTriangle = nil
+        safeTriangleDeadline = nil
     }
 }
 
@@ -1414,6 +1770,7 @@ private struct CompanionPetHeader: View {
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
+    @Binding var selectedTaskID: String?
     @State private var ripples: [CodexMaterialWaveToken] = []
 
     var body: some View {
@@ -1447,16 +1804,17 @@ private struct CompanionPetHeader: View {
                     waveColorMode: settings.statusBarWaveColorMode
                 )
 
-                CompanionLocalAgentsControl(
-                    activity: activity,
-                    integrations: integrations
-                )
-                .padding(.top, 7)
-
                 Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
                     .padding(.top, 8)
+
+                GlobalAgentTaskSection(
+                    activity: activity,
+                    integrations: integrations,
+                    selectedTaskID: $selectedTaskID
+                )
+                .padding(.top, 16)
             }
             .padding(.top, Self.chromeTopPadding)
             .padding(.bottom, 14)
@@ -1478,35 +1836,30 @@ private struct CompanionPetHeader: View {
 
 /// 横版右侧的账号上下文。左栏代表通用 Pet，不承载任何单账号信息。
 private struct CompanionHorizontalAccountHeader: View {
-    let snapshot: CodexUsageSnapshot
-    let activity: CodexActivitySnapshot
+    let context: DashboardProviderContext
     @Environment(\.openURL) private var openURL
-
-    private var planBadge: String {
-        snapshot.planName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                BrandIconView(asset: .codex, size: 38, cornerRadius: 10)
+                BrandIconView(asset: context.asset, size: 38, cornerRadius: 10)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(snapshot.companionAccountName)
+                        Text(context.title)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.codexInk)
                             .lineLimit(1)
-                        if !planBadge.isEmpty {
-                            Text(planBadge)
+                        if !context.badge.isEmpty {
+                            Text(context.badge)
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(Color.codexGreen)
+                                .foregroundStyle(context.badgeColor)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
-                                .background(Color.codexGreen.opacity(0.10), in: Capsule())
+                                .background(context.badgeColor.opacity(0.10), in: Capsule())
                         }
                     }
-                    Text(snapshot.accountEmail)
+                    Text(context.subtitle)
                         .font(.system(size: 10))
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
@@ -1517,15 +1870,15 @@ private struct CompanionHorizontalAccountHeader: View {
 
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(activity.state.statusColor)
+                        .fill(context.statusColor)
                         .frame(width: 6, height: 6)
-                    Text(activity.state.taskLabel)
+                    Text(context.statusText)
                         .font(.system(size: 10, weight: .semibold))
                 }
-                .foregroundStyle(activity.state.statusColor)
+                .foregroundStyle(context.statusColor)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(activity.state.statusColor.opacity(0.10), in: Capsule())
+                .background(context.statusColor.opacity(0.10), in: Capsule())
             }
             .padding(.top, 12)
             .padding(.bottom, 9)
@@ -1533,18 +1886,17 @@ private struct CompanionHorizontalAccountHeader: View {
             CodexDivider()
 
             HStack(spacing: 8) {
-                Text(snapshot.subscriptionCompactSummaryLine ?? "订阅状态暂不可用")
+                Text(context.summaryText)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(
-                        snapshot.showsSubscriptionExpiryReminder ? Color.codexAmber : Color.codexMuted
-                    )
+                    .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 ChatGPTBillingCompactLink(
-                    title: "官方 Billing",
+                    title: context.accountLinkTitle,
+                    helpTitle: context.accountLinkTitle,
                     fontSize: 10
                 ) {
-                    openURL(ChatGPTWebLinks.billingPage)
+                    openURL(context.accountLinkURL)
                 }
             }
             .frame(height: 32)
@@ -1552,33 +1904,33 @@ private struct CompanionHorizontalAccountHeader: View {
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
         .background(Color.codexCard.opacity(0.96))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
+        .accessibilityLabel("当前连接 \(context.title)")
     }
 }
 
 /// 竖向布局的账号行：把侧栏那块两行账号信息压成一条。
 private struct CompanionAccountRow: View {
-    let snapshot: CodexUsageSnapshot
+    let context: DashboardProviderContext
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(snapshot.companionAccountName)
+                    Text(context.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.codexInk)
                         .lineLimit(1)
-                    if !snapshot.companionPlanBadgeText.isEmpty {
-                        Text(snapshot.companionPlanBadgeText)
+                    if !context.badge.isEmpty {
+                        Text(context.badge)
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.codexGreen)
+                            .foregroundStyle(context.badgeColor)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
-                            .background(Color.codexGreen.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                            .background(context.badgeColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
                     }
                 }
-                Text(snapshot.accountEmail)
+                Text(context.subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)
@@ -1586,17 +1938,12 @@ private struct CompanionAccountRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let summaryLine = snapshot.subscriptionCompactSummaryLine {
-                ChatGPTBillingCompactLink(
-                    title: summaryLine,
-                    emphasizesExpiry: snapshot.showsSubscriptionExpiryReminder
-                ) {
-                    openURL(ChatGPTWebLinks.billingPage)
-                }
-            } else {
-                ChatGPTBillingCompactLink(title: "订阅与账单") {
-                    openURL(ChatGPTWebLinks.billingPage)
-                }
+            ChatGPTBillingCompactLink(
+                title: context.summaryText,
+                helpTitle: context.accountLinkTitle,
+                emphasizesExpiry: context.emphasizesAccountLink
+            ) {
+                openURL(context.accountLinkURL)
             }
         }
         .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
@@ -1605,7 +1952,7 @@ private struct CompanionAccountRow: View {
             CodexDivider()
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("当前账号 \(snapshot.companionAccountName)")
+        .accessibilityLabel("当前连接 \(context.title)")
     }
 }
 
@@ -1881,6 +2228,41 @@ private struct ActivityHeading: View {
     }
 }
 
+/// Account-independent activity area shared by every locally connected Agent.
+/// Native Codex tasks and Hook-backed Agent tasks already arrive in the same
+/// `activeTasks` collection, so the card stack remains stable while accounts
+/// are switched in the dashboard below.
+private struct GlobalAgentTaskSection: View {
+    let activity: CodexActivitySnapshot
+    let integrations: [AgentIntegrationStatus]
+    @Binding var selectedTaskID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(activity.dashboardTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Spacer(minLength: 4)
+
+                CompanionLocalAgentsControl(
+                    activity: activity,
+                    integrations: integrations
+                )
+            }
+
+            TaskStackView(
+                snapshot: activity,
+                selectedTaskID: $selectedTaskID
+            )
+            .padding(.top, 15)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct QuotaAtAGlanceChip: View {
     let usage: CodexUsageSnapshot
     let isLoggedIn: Bool
@@ -2001,11 +2383,18 @@ private struct TaskStackView: View {
         let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         return VStack(alignment: .leading, spacing: 7) {
             HStack {
-                HStack(spacing: 5) {
-                    Circle().fill(displayState.statusColor).frame(width: 8, height: 8)
-                    Text(displayState.taskLabel)
-                        .foregroundStyle(displayState.statusColor)
-                        .fontWeight(.semibold)
+                HStack(spacing: 7) {
+                    BrandIconView(
+                        asset: .agent(displayAgentID),
+                        size: 18,
+                        cornerRadius: 6
+                    )
+                    HStack(spacing: 5) {
+                        Circle().fill(displayState.statusColor).frame(width: 8, height: 8)
+                        Text(displayState.taskLabel)
+                            .foregroundStyle(displayState.statusColor)
+                            .fontWeight(.semibold)
+                    }
                 }
                 Spacer()
                 Text(tasks.isEmpty ? "\(snapshot.activeTaskCount) 个活跃任务" : "任务 \(selectedIndex + 1) / \(tasks.count)")
@@ -2072,6 +2461,11 @@ private struct TaskStackView: View {
     }
 
     private var displayState: CodexActivityState { displayedTask?.state ?? snapshot.state }
+    private var displayAgentID: AgentID {
+        let agentName = displayedTask?.agentDisplayName ?? "Codex"
+        return BuiltInAgentCatalog.prioritized
+            .first(where: { $0.displayName == agentName })?.id ?? .codex
+    }
     private var displayTitle: String {
         if let displayedTask { return displayedTask.title }
         return switch snapshot.state {
@@ -2177,41 +2571,65 @@ private struct QuotaRingCard: View {
     }
 }
 
-private struct SyncFooterView: View {
-    let snapshot: CodexUsageSnapshot
+private struct DashboardProviderContext {
+    let asset: BrandAssetID
+    let title: String
+    let subtitle: String
+    let badge: String
+    let badgeColor: Color
+    let statusText: String
+    let statusColor: Color
+    let summaryText: String
+    let accountLinkTitle: String
+    let accountLinkURL: URL
+    let officialLinkHelp: String
+    let officialLinkURL: URL
+    let syncState: String
+    let syncedAt: Date
     let isRefreshing: Bool
+    let emphasizesAccountLink: Bool
+}
+
+private enum DashboardProviderLinks {
+    static let codexUsage = URL(string: "https://chatgpt.com/codex/settings/usage")!
+    static let deepSeekUsage = URL(string: "https://platform.deepseek.com/usage")!
+}
+
+private struct SyncFooterView: View {
+    let context: DashboardProviderContext
     let actions: UsageActions
     let showsDetachedButton: Bool
     var isCompact = false
+    let onRefresh: () -> Void
     let onOpenSettings: () -> Void
 
     @State private var showQuitConfirmation = false
 
     private var hasRefreshError: Bool {
-        !["成功", "预览数据", "刷新中", "授权中"].contains(snapshot.refreshState)
+        !["成功", "预览数据", "刷新中", "授权中"].contains(context.syncState)
     }
 
     /// 竖版底部只剩约 90pt，同步文案必须缩写，完整内容留在 tooltip。
     private var syncText: String {
-        let lastSuccess = UsageDateFormat.syncTime(snapshot.fetchedAt)
+        let lastSuccess = UsageDateFormat.syncTime(context.syncedAt)
         guard isCompact else {
-            if isRefreshing { return "正在刷新…" }
+            if context.isRefreshing { return "正在刷新…" }
             return hasRefreshError
-                ? "\(snapshot.refreshState) · 上次成功：\(lastSuccess)"
+                ? "\(context.syncState) · 上次成功：\(lastSuccess)"
                 : "上次同步：\(lastSuccess)"
         }
 
-        if isRefreshing { return "刷新中…" }
-        if hasRefreshError { return snapshot.refreshState }
+        if context.isRefreshing { return "刷新中…" }
+        if hasRefreshError { return context.syncState }
         let short = lastSuccess.hasPrefix("今天 ") ? String(lastSuccess.dropFirst(3)) : lastSuccess
         return "同步 \(short)"
     }
 
     private var syncHelpText: String {
         if hasRefreshError {
-            return "\(snapshot.refreshState) · 上次成功：\(UsageDateFormat.syncTime(snapshot.fetchedAt))"
+            return "\(context.syncState) · 上次成功：\(UsageDateFormat.syncTime(context.syncedAt))"
         }
-        return "上次同步：\(UsageDateFormat.syncTime(snapshot.fetchedAt))"
+        return "上次同步：\(UsageDateFormat.syncTime(context.syncedAt))"
     }
 
     var body: some View {
@@ -2223,11 +2641,13 @@ private struct SyncFooterView: View {
                 .help(syncHelpText)
             Spacer(minLength: 3)
             HStack(spacing: isCompact ? 3 : 5) {
+                Button { NSWorkspace.shared.open(context.officialLinkURL) } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                    .buttonStyle(DashboardIconButtonStyle(helpText: context.officialLinkHelp, isCompact: isCompact))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
                 Button(action: onOpenSettings) { Image(systemName: "gearshape") }
                     .buttonStyle(DashboardIconButtonStyle(helpText: "设置", isCompact: isCompact))
-                Button(action: actions.openUsagePage) { Image(systemName: "arrow.up.right.square") }
-                    .buttonStyle(DashboardIconButtonStyle(helpText: "打开官方 Usage", isCompact: isCompact))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
                 if showsDetachedButton {
                     Button(action: actions.openDetachedWindow) { Image(systemName: "rectangle.on.rectangle.angled") }
                         .buttonStyle(DashboardIconButtonStyle(helpText: "打开分离窗口", isCompact: isCompact))
@@ -2241,8 +2661,8 @@ private struct SyncFooterView: View {
             .buttonStyle(DashboardIconButtonStyle(helpText: "关闭软件", isCompact: isCompact))
             .accessibilityLabel("关闭软件")
             .padding(.leading, isCompact ? 1 : 2)
-            Button(action: actions.refresh) {
-                if isRefreshing {
+            Button(action: onRefresh) {
+                if context.isRefreshing {
                     ProgressView()
                         .controlSize(.mini)
                         .tint(Color.codexOnPrimary)
@@ -2252,7 +2672,7 @@ private struct SyncFooterView: View {
                 }
             }
             .buttonStyle(DashboardRefreshButtonStyle(isCompact: isCompact))
-            .disabled(isRefreshing)
+            .disabled(context.isRefreshing)
             .padding(.leading, isCompact ? 2 : 4)
         }
         .padding(.top, isCompact ? 11 : 14)
@@ -2381,6 +2801,7 @@ extension UsageDateFormat {
 }
 
 extension Color {
+    static let deepSeekBrand = Color(red: 0.302, green: 0.420, blue: 0.996)
     static let codexSidebarTop = codexDynamic(
         light: (0.973, 0.984, 0.978),
         dark: (0.145, 0.155, 0.151)

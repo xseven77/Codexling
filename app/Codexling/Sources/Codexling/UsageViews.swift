@@ -11,20 +11,19 @@ struct DetachedUsageWindowView: View {
     @Bindable var updater: AppUpdateController
     let actions: UsageActions
     let onContentLayoutChanged: (DetachedWindowContentMode) -> Void
-    let onSettingsMeasuredHeight: (CGFloat) -> Void
-    var onDashboardMeasuredHeight: (CGFloat) -> Void = { _ in }
-    @State private var showsSettings = false
+    let onOpenSettings: () -> Void
+    var onDashboardMeasuredHeight: (CGFloat, String) -> Void = { _, _ in }
 
     private var dashboardContentMode: DetachedWindowContentMode {
         .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
     }
 
     private var showsHorizontalDashboard: Bool {
-        !showsSettings && settings.dashboardOrientation == .horizontal
+        settings.dashboardOrientation == .horizontal
     }
 
     private var showsVerticalDashboard: Bool {
-        !showsSettings && settings.dashboardOrientation == .vertical
+        settings.dashboardOrientation == .vertical
     }
 
     private var fillsDashboardContentView: Bool {
@@ -32,58 +31,23 @@ struct DetachedUsageWindowView: View {
     }
 
     var body: some View {
-        Group {
-            if showsSettings {
-                SettingsView(
-                    store: store,
-                    settings: settings,
-                    multiAgentSettings: multiAgentSettings,
-                    updater: updater,
-                    layout: .window,
-                    onLogout: {
-                        actions.disconnect()
-                        showsSettings = false
-                        DispatchQueue.main.async {
-                            onContentLayoutChanged(
-                                .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
-                            )
-                        }
-                    },
-                    onClose: {
-                        showsSettings = false
-                        DispatchQueue.main.async {
-                            onContentLayoutChanged(dashboardContentMode)
-                        }
-                    },
-                    onMeasuredContentHeightChange: onSettingsMeasuredHeight
-                )
-            } else {
-                CompanionDashboardView(
-                    store: store,
-                    settings: settings,
-                    multiAgentSettings: multiAgentSettings,
-                    activityStore: activityStore,
-                    frameStore: frameStore,
-                    companionStatsStore: companionStatsStore,
-                    actions: actions,
-                    layout: .window,
-                    showsDetachedButton: false,
-                    onOpenSettings: {
-                        showsSettings = true
-                        DispatchQueue.main.async {
-                            onContentLayoutChanged(.settings)
-                        }
-                    },
-                    onMeasuredContentHeightChange: onDashboardMeasuredHeight
-                )
-            }
-        }
+        CompanionDashboardView(
+            store: store,
+            settings: settings,
+            multiAgentSettings: multiAgentSettings,
+            activityStore: activityStore,
+            frameStore: frameStore,
+            companionStatsStore: companionStatsStore,
+            actions: actions,
+            layout: .window,
+            showsDetachedButton: false,
+            onOpenSettings: onOpenSettings,
+            onMeasuredContentHeightChange: onDashboardMeasuredHeight
+        )
         .modifier(DetachedUsageWindowRootFrame(fillsContentView: fillsDashboardContentView))
         .preferredColorScheme(settings.resolvedColorScheme)
         .background {
-            if showsSettings {
-                Color.codexBackground
-            } else if showsHorizontalDashboard {
+            if showsHorizontalDashboard {
                 DashboardWindowChromeBackground()
             } else if showsVerticalDashboard {
                 Color.codexCard
@@ -96,11 +60,9 @@ struct DetachedUsageWindowView: View {
             onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: store.isLoggedIn) { _, _ in
-            guard !showsSettings else { return }
             onContentLayoutChanged(dashboardContentMode)
         }
         .onChange(of: settings.dashboardOrientation) { _, _ in
-            guard !showsSettings else { return }
             onContentLayoutChanged(dashboardContentMode)
         }
     }
@@ -696,6 +658,9 @@ struct CodexMaterialWaveLayer: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        // A wave may be larger than its GeometryReader so it can cover every
+        // corner, but it must never render outside the owning material region.
+        .clipped()
         .allowsHitTesting(false)
     }
 }
@@ -872,6 +837,9 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
     var cornerRadius: CGFloat = 9
     var usesCapsule: Bool = false
     var ink: CodexMaterialWaveInk = .adaptiveMint
+    /// AppKit overlays can intercept a click before SwiftUI sees it. Increment
+    /// this value to replay the same material response from the button center.
+    var externalRippleTrigger = 0
     @ViewBuilder var label: () -> Label
 
     @Environment(\.isEnabled) private var isEnabled
@@ -886,6 +854,12 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
             } else {
                 chrome(clippedBy: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
+        }
+        .onChange(of: externalRippleTrigger) { _, _ in
+            spawnRipple(at: CGPoint(
+                x: resolvedBoardSize.width / 2,
+                y: resolvedBoardSize.height / 2
+            ))
         }
     }
 
@@ -1194,4 +1168,16 @@ extension Color {
     static let codexRed = Color(red: 1.000, green: 0.373, blue: 0.373)
     static let codexPink = Color(red: 1.000, green: 0.373, blue: 0.373)
     static let codexAmber = Color(red: 1.000, green: 0.745, blue: 0.000)
+}
+
+extension ProviderBalanceIndicator {
+    /// The shared quota ladder used by provider badges, connection marks, and
+    /// monetary balance values.
+    var color: Color {
+        switch self {
+        case .healthy: .codexGreen
+        case .low: .codexAmber
+        case .depleted: .codexRed
+        }
+    }
 }

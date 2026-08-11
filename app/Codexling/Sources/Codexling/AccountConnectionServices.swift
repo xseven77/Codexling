@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 struct ConnectionRegistrySnapshot: Codable, Sendable {
@@ -167,11 +168,13 @@ protocol DeepSeekCredentialStoring: Sendable {
 enum DeepSeekCredentialError: LocalizedError {
     case keychain(OSStatus)
     case missing
+    case interactionRequired
 
     var errorDescription: String? {
         switch self {
         case .keychain(let status): "Keychain 操作失败（\(status)）"
         case .missing: "Keychain 中没有找到此 API Key"
+        case .interactionRequired: "此 Key 由旧版本签名保存，请重新添加后再刷新"
         }
     }
 }
@@ -179,13 +182,27 @@ enum DeepSeekCredentialError: LocalizedError {
 struct DeepSeekCredentialStore: DeepSeekCredentialStoring {
     static let service = "com.qiizo.Codexling.credentials"
 
-    func save(apiKey: String, handle: String) throws {
-        let data = Data(apiKey.utf8)
-        let query: [String: Any] = [
+    static func nonInteractiveQuery(handle: String) -> [String: Any] {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: handle,
+            kSecUseAuthenticationContext as String: context,
         ]
+    }
+
+    private func throwCredentialError(for status: OSStatus) throws -> Never {
+        if status == errSecInteractionNotAllowed || status == errSecAuthFailed {
+            throw DeepSeekCredentialError.interactionRequired
+        }
+        throw DeepSeekCredentialError.keychain(status)
+    }
+
+    func save(apiKey: String, handle: String) throws {
+        let data = Data(apiKey.utf8)
+        let query = Self.nonInteractiveQuery(handle: handle)
         let attributes: [String: Any] = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
@@ -194,38 +211,30 @@ struct DeepSeekCredentialStore: DeepSeekCredentialStoring {
             let status = SecItemAdd(insert as CFDictionary, nil)
             guard status == errSecSuccess else { throw DeepSeekCredentialError.keychain(status) }
         } else if updateStatus != errSecSuccess {
-            throw DeepSeekCredentialError.keychain(updateStatus)
+            try throwCredentialError(for: updateStatus)
         }
     }
 
     func read(handle: String) throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: handle,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        var query = Self.nonInteractiveQuery(handle: handle)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status != errSecItemNotFound else { throw DeepSeekCredentialError.missing }
         guard status == errSecSuccess,
               let data = result as? Data,
               let value = String(data: data, encoding: .utf8) else {
-            throw DeepSeekCredentialError.keychain(status)
+            try throwCredentialError(for: status)
         }
         return value
     }
 
     func delete(handle: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: handle,
-        ]
+        let query = Self.nonInteractiveQuery(handle: handle)
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw DeepSeekCredentialError.keychain(status)
+            try throwCredentialError(for: status)
         }
     }
 }
@@ -244,7 +253,11 @@ enum DeepSeekBalanceError: LocalizedError {
     }
 }
 
-struct DeepSeekBalanceService {
+protocol DeepSeekBalanceFetching: Sendable {
+    func fetch(apiKey: String, connectionID: ConnectionID) async throws -> ProviderBalanceSnapshot
+}
+
+struct DeepSeekBalanceService: DeepSeekBalanceFetching {
     private struct Response: Decodable {
         struct Balance: Decodable {
             let currency: String

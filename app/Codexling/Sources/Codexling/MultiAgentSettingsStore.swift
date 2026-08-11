@@ -11,13 +11,14 @@ final class MultiAgentSettingsStore {
     private let codexRuntimeManager: CodexAccountRuntimeManager
     private let codexAppServerSupervisor: CodexAppServerSupervisor
     private let credentialStore: any DeepSeekCredentialStoring
-    private let deepSeekBalanceService: DeepSeekBalanceService
+    private let deepSeekBalanceService: any DeepSeekBalanceFetching
 
     private(set) var integrations: [AgentIntegrationStatus] = []
     private(set) var mutatingAgentIDs: Set<AgentID> = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
     private(set) var isMutatingConnections = false
+    private(set) var isRefreshingConnections = false
     private(set) var isCodexOAuthInProgress = false
     private(set) var lastMessage: String?
     private var activeCodexOAuthService: CodexUsageService?
@@ -31,7 +32,8 @@ final class MultiAgentSettingsStore {
         codexRuntimeManager: CodexAccountRuntimeManager = CodexAccountRuntimeManager(),
         codexAppServerSupervisor: CodexAppServerSupervisor = CodexAppServerSupervisor(),
         credentialStore: any DeepSeekCredentialStoring = DeepSeekCredentialStore(),
-        deepSeekBalanceService: DeepSeekBalanceService = DeepSeekBalanceService()
+        deepSeekBalanceService: any DeepSeekBalanceFetching = DeepSeekBalanceService(),
+        startsAutomaticRefresh: Bool = true
     ) {
         self.hookManager = hookManager
         self.registryStorage = registryStorage
@@ -46,7 +48,9 @@ final class MultiAgentSettingsStore {
         deepSeekConnections = registry.deepSeekConnections
         refresh()
         validateSelectedConnection()
-        Task { await refreshCodexAccounts() }
+        if startsAutomaticRefresh {
+            Task { await refreshAllConnections() }
+        }
     }
 
     func refresh() {
@@ -123,7 +127,35 @@ final class MultiAgentSettingsStore {
         deepSeekConnections.first(where: isSelected)
     }
 
-    func refreshCodexAccounts() async {
+    @discardableResult
+    func refreshCodexAccounts() async -> RefreshOutcome {
+        guard !isRefreshingConnections else {
+            return RefreshOutcome(failures: ["连接正在刷新"])
+        }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        return await refreshCodexAccountsWithoutLock()
+    }
+
+    /// Shared refresh entry point for the timer and every manual refresh
+    /// surface. New connection types should be added here so there is only one
+    /// scheduling policy for all accounts and API keys.
+    @discardableResult
+    func refreshAllConnections() async -> RefreshOutcome {
+        guard !isRefreshingConnections, !isMutatingConnections else {
+            return RefreshOutcome(failures: ["连接正在刷新"])
+        }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+
+        var outcome = await refreshCodexAccountsWithoutLock()
+        for connection in deepSeekConnections {
+            outcome.merge(await refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false))
+        }
+        return outcome
+    }
+
+    private func refreshCodexAccountsWithoutLock() async -> RefreshOutcome {
         let manager = codexRuntimeManager
         let supervisor = codexAppServerSupervisor
         let accounts = codexAccounts
@@ -178,6 +210,17 @@ final class MultiAgentSettingsStore {
             }
         }
         if changed { try? saveRegistry() }
+
+        var outcome = RefreshOutcome()
+        for result in results {
+            guard let account = accounts.first(where: { $0.id == result.id }), account.isEnabled else { continue }
+            if result.state == .connected, result.usage != nil {
+                outcome.successCount += 1
+            } else {
+                outcome.failures.append("\(account.label) 未能刷新")
+            }
+        }
+        return outcome
     }
 
     func stopCodexAppServers() {
@@ -325,23 +368,42 @@ final class MultiAgentSettingsStore {
     }
 
     func refreshDeepSeekConnection(_ connection: DeepSeekAPIConnection) async {
-        guard !isMutatingConnections else { return }
-        isMutatingConnections = true
-        defer { isMutatingConnections = false }
+        guard !isRefreshingConnections, !isMutatingConnections else { return }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        _ = await refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: true)
+    }
+
+    private func refreshDeepSeekConnectionWithoutLock(
+        _ connection: DeepSeekAPIConnection,
+        publishesMessage: Bool
+    ) async -> RefreshOutcome {
         do {
             let key = try credentialStore.read(handle: connection.credentialHandle)
             let balance = try await deepSeekBalanceService.fetch(apiKey: key, connectionID: connection.id)
-            guard let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) else { return }
+            guard let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) else {
+                return RefreshOutcome(failures: ["\(connection.label)：连接已不存在"])
+            }
             deepSeekConnections[index].balance = balance
             deepSeekConnections[index].authenticationState = .connected
             try saveRegistry()
-            lastMessage = "\(connection.label) 余额已刷新"
+            if publishesMessage { lastMessage = "\(connection.label) 余额已刷新" }
+            return RefreshOutcome(successCount: 1)
+        } catch DeepSeekCredentialError.interactionRequired {
+            // Never let a scheduled refresh summon a system password dialog.
+            // Keep the last successful balance visible until the user replaces
+            // the credential under the current stable application signature.
+            let message = "\(connection.label)：此 Key 需要重新保存，已保留上次余额"
+            if publishesMessage { lastMessage = message }
+            return RefreshOutcome(failures: [message])
         } catch {
             if let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) {
                 deepSeekConnections[index].authenticationState = .invalid
                 try? saveRegistry()
             }
-            lastMessage = "刷新失败：\(error.localizedDescription)"
+            let message = "\(connection.label)：\(error.localizedDescription)"
+            if publishesMessage { lastMessage = "刷新失败：\(error.localizedDescription)" }
+            return RefreshOutcome(failures: [message])
         }
     }
 

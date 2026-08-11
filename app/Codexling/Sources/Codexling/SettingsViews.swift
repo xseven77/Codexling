@@ -3,8 +3,11 @@ import SwiftUI
 
 private enum SettingsLayoutMetrics {
     static let sectionSpacing: CGFloat = 24
-    static let sidebarWidth: CGFloat = 154
-    static let splitMinimumHeight: CGFloat = 560
+    static let sidebarWidth: CGFloat = 166
+    /// Clears the native traffic lights without reserving a separate title row.
+    static let windowTopInset: CGFloat = 14
+    static let sidebarTopInset: CGFloat = 14
+    static let windowBottomInset: CGFloat = 12
 }
 
 private enum SettingsTab: String, CaseIterable, Identifiable {
@@ -26,10 +29,10 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .accounts: "统一查看本机账号与 API Key"
-        case .agents: "本地 Agent 探测与 Hook 管理"
-        case .general: "应用、外观与刷新行为"
-        case .pet: "Pet、状态胶囊与任务浮窗"
+        case .accounts: "管理本机账号与 API Key"
+        case .agents: "接入并管理本地 Coding Agent"
+        case .general: "更新、外观、布局与刷新"
+        case .pet: "菜单栏、任务浮窗与 Pet"
         }
     }
 
@@ -47,6 +50,7 @@ private struct PendingAgentHookAction: Identifiable {
     let agentID: AgentID
     let agentName: String
     let installs: Bool
+    var authorizationOnly = false
 
     var id: String { "\(agentID.rawValue)-\(installs ? "install" : "uninstall")" }
 }
@@ -58,16 +62,17 @@ struct SettingsView: View {
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
     let onLogout: () -> Void
-    let onClose: () -> Void
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var showsLogoutConfirmation = false
     @State private var showsPetPicker = false
     @State private var showsCodexRestartConfirmation = false
     @State private var isRestartingCodex = false
     @State private var pendingHookAction: PendingAgentHookAction?
+    @State private var pendingAccountRemoval: PendingAccountRemoval?
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @State private var selectedTab: SettingsTab = .accounts
+    @State private var showsStickySettingsTitle = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -114,6 +119,9 @@ struct SettingsView: View {
             .alert(item: $pendingHookAction) { pending in
                 hookActionAlert(pending)
             }
+            .alert(item: $pendingAccountRemoval) { pending in
+                accountRemovalAlert(pending)
+            }
             .onChange(of: multiAgentSettings.lastMessage) { _, message in
                 guard let message else { return }
                 showToast(message, systemImage: message.contains("失败") ? "exclamationmark.triangle.fill" : "link.badge.plus")
@@ -150,8 +158,7 @@ struct SettingsView: View {
     }
 
     private var baseContent: some View {
-        VStack(spacing: 0) {
-            header
+        Group {
             if layout == .window {
                 settingsSplitView
             } else {
@@ -209,22 +216,47 @@ struct SettingsView: View {
             ScrollView {
                 selectedSettingsContent
                     .padding(.horizontal, 20)
-                    .padding(.top, 18)
-                    .padding(.bottom, 24)
+                    .padding(.top, SettingsLayoutMetrics.windowTopInset)
+                    .padding(.bottom, SettingsLayoutMetrics.windowBottomInset)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background {
+                        ZStack {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: SettingsMeasuredContentHeightKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                            ScrollIndicatorHider()
+                        }
+                    }
             }
-            .scrollIndicators(.automatic)
+            .coordinateSpace(name: SettingsScrollCoordinateSpace.name)
+            .onPreferenceChange(SettingsHeaderMinYKey.self) { minY in
+                if showsStickySettingsTitle {
+                    if minY > -44 {
+                        showsStickySettingsTitle = false
+                    }
+                } else if minY < -72 {
+                    showsStickySettingsTitle = true
+                }
+            }
+            .scrollIndicators(.hidden)
             .background(Color.codexBackground.opacity(0.50))
         }
-        .frame(minHeight: SettingsLayoutMetrics.splitMinimumHeight)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: SettingsMeasuredContentHeightKey.self,
-                    value: geometry.size.height + DetachedWindowMetrics.chromeHeaderHeight
-                )
+        .overlay(alignment: .top) {
+            if showsStickySettingsTitle {
+                HStack(alignment: .top, spacing: 0) {
+                    Color.clear
+                        .frame(width: SettingsLayoutMetrics.sidebarWidth + 1, height: 110)
+                    stickySettingsTitle
+                }
+                .offset(y: -34)
+                .allowsHitTesting(false)
+                .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.24), value: showsStickySettingsTitle)
         .id(settingsMeasuredContentIdentity)
     }
 
@@ -285,20 +317,28 @@ struct SettingsView: View {
                 .padding(.horizontal, 10)
         }
         .padding(.horizontal, 10)
-        .padding(.top, 18)
+        .padding(.top, SettingsLayoutMetrics.sidebarTopInset)
         .padding(.bottom, 14)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(Color.codexCard.opacity(0.72))
     }
 
     private var selectedSettingsContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedTab.title)
                     .font(.system(size: 20, weight: .bold))
                 Text(selectedTab.subtitle)
                     .font(.system(size: 11))
                     .foregroundStyle(Color.codexMuted)
+            }
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: SettingsHeaderMinYKey.self,
+                        value: geometry.frame(in: .named(SettingsScrollCoordinateSpace.name)).minY
+                    )
+                }
             }
 
             switch selectedTab {
@@ -314,6 +354,30 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var stickySettingsTitle: some View {
+        Text(selectedTab.title)
+            .font(.system(size: 16, weight: .bold))
+            .foregroundStyle(Color.codexInk)
+            .padding(.horizontal, 20)
+            .padding(.top, 19)
+            .frame(height: 110, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background {
+                LinearGradient(
+                    stops: [
+                        .init(color: Color.codexBackground, location: 0),
+                        .init(color: Color.codexBackground, location: 0.48),
+                        .init(color: Color.codexBackground.opacity(0.72), location: 0.72),
+                        .init(color: Color.codexBackground.opacity(0), location: 1),
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private var settingsMeasuredContentIdentity: String {
@@ -334,40 +398,71 @@ struct SettingsView: View {
     private var accountPoolSection: some View {
         SettingsSection(
             title: "已连接",
-            subtitle: "账号凭据保持隔离；新增账号或 API Key 请使用主界面的加号。"
+            subtitle: "按供应商分组，凭据彼此隔离；新增连接请使用主界面的加号。"
         ) {
-            VStack(spacing: 0) {
-                if store.isLoggedIn {
-                    accountPoolRow(
-                        asset: .codex,
-                        title: store.snapshot.companionAccountName,
-                        subtitle: store.snapshot.accountEmail,
-                        badge: store.snapshot.planName.isEmpty ? "当前 Codex" : store.snapshot.planName,
-                        badgeColor: Color.codexGreen
-                    )
-                    CodexDivider()
+            VStack(spacing: 12) {
+                if store.isLoggedIn || !multiAgentSettings.codexAccounts.isEmpty {
+                    accountProviderGroup(
+                        name: "Codex",
+                        detail: "账号",
+                        count: (store.isLoggedIn ? 1 : 0) + multiAgentSettings.codexAccounts.count
+                    ) {
+                        if store.isLoggedIn {
+                            accountPoolRow(
+                                asset: .codex,
+                                title: store.snapshot.companionAccountName,
+                                subtitle: store.snapshot.accountEmail,
+                                badge: store.snapshot.planName.isEmpty ? "当前 Codex" : store.snapshot.planName,
+                                badgeColor: Color.codexGreen,
+                                actionTitle: "退出"
+                            ) {
+                                showsLogoutConfirmation = true
+                            }
+                            if !multiAgentSettings.codexAccounts.isEmpty {
+                                CodexDivider()
+                            }
+                        }
+
+                        ForEach(multiAgentSettings.codexAccounts) { connection in
+                            accountPoolRow(
+                                asset: .codex,
+                                title: connection.label,
+                                subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
+                                badge: connection.authenticationState == .connected ? "已连接" : "待登录",
+                                badgeColor: connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber,
+                                actionTitle: "删除"
+                            ) {
+                                pendingAccountRemoval = .codex(connection)
+                            }
+                            if connection.id != multiAgentSettings.codexAccounts.last?.id {
+                                CodexDivider()
+                            }
+                        }
+                    }
                 }
 
-                ForEach(multiAgentSettings.codexAccounts) { connection in
-                    accountPoolRow(
-                        asset: .codex,
-                        title: connection.label,
-                        subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
-                        badge: connection.authenticationState == .connected ? "已连接" : "待登录",
-                        badgeColor: connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber
-                    )
-                    CodexDivider()
-                }
-
-                ForEach(multiAgentSettings.deepSeekConnections) { connection in
-                    accountPoolRow(
-                        asset: .deepSeek,
-                        title: connection.label,
-                        subtitle: "sk-•••• \(connection.keySuffix)",
-                        badge: deepSeekPoolBadge(connection),
-                        badgeColor: deepSeekPoolColor(connection)
-                    )
-                    CodexDivider()
+                if !multiAgentSettings.deepSeekConnections.isEmpty {
+                    accountProviderGroup(
+                        name: "DeepSeek",
+                        detail: "API Key",
+                        count: multiAgentSettings.deepSeekConnections.count
+                    ) {
+                        ForEach(multiAgentSettings.deepSeekConnections) { connection in
+                            accountPoolRow(
+                                asset: .deepSeek,
+                                title: connection.label,
+                                subtitle: "sk-•••• \(connection.keySuffix)",
+                                badge: deepSeekPoolBadge(connection),
+                                badgeColor: deepSeekPoolColor(connection),
+                                actionTitle: "删除"
+                            ) {
+                                pendingAccountRemoval = .deepSeek(connection)
+                            }
+                            if connection.id != multiAgentSettings.deepSeekConnections.last?.id {
+                                CodexDivider()
+                            }
+                        }
+                    }
                 }
 
                 if !store.isLoggedIn,
@@ -386,10 +481,40 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 128)
                     .padding(16)
+                    .settingsGroupSurface()
                 }
             }
-            .settingsGroupSurface()
         }
+    }
+
+    private func accountProviderGroup<Content: View>(
+        name: String,
+        detail: String,
+        count: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Color.codexMuted)
+                Spacer()
+                Text("\(count)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.codexMuted.opacity(0.09), in: Capsule())
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+
+            CodexDivider()
+            content()
+        }
+        .settingsGroupSurface()
     }
 
     private func accountPoolRow(
@@ -397,14 +522,24 @@ struct SettingsView: View {
         title: String,
         subtitle: String,
         badge: String,
-        badgeColor: Color
+        badgeColor: Color,
+        actionTitle: String,
+        action: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 12) {
             BrandIconView(asset: asset, size: 38, cornerRadius: 10)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 7) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    Text(badge)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(badgeColor.opacity(0.10), in: Capsule())
+                }
                 Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
@@ -412,15 +547,36 @@ struct SettingsView: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            Text(badge)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(badgeColor)
+            Button(actionTitle, action: action)
+                .buttonStyle(.plain)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Color.codexRed)
                 .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(badgeColor.opacity(0.10), in: Capsule())
+                .padding(.vertical, 5)
+                .background(Color.codexRed.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color.codexRed.opacity(0.14), lineWidth: 0.7)
+                }
         }
         .padding(.horizontal, 14)
         .frame(minHeight: 64)
+    }
+
+    private func accountRemovalAlert(_ pending: PendingAccountRemoval) -> Alert {
+        Alert(
+            title: Text(pending.title),
+            message: Text(pending.message),
+            primaryButton: .destructive(Text("删除")) {
+                switch pending {
+                case let .codex(connection):
+                    multiAgentSettings.removeCodexAccount(connection)
+                case let .deepSeek(connection):
+                    multiAgentSettings.removeDeepSeekConnection(connection)
+                }
+            },
+            secondaryButton: .cancel(Text("取消"))
+        )
     }
 
     private func deepSeekPoolBadge(_ connection: DeepSeekAPIConnection) -> String {
@@ -430,14 +586,10 @@ struct SettingsView: View {
     }
 
     private func deepSeekPoolColor(_ connection: DeepSeekAPIConnection) -> Color {
-        switch ProviderBalanceIndicator.resolve(
+        ProviderBalanceIndicator.resolve(
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
-        ) {
-        case .healthy: Color.codexGreen
-        case .low: Color.codexAmber
-        case .depleted: Color.codexRed
-        }
+        ).color
     }
 
     private var accountCard: some View {
@@ -543,8 +695,8 @@ struct SettingsView: View {
 
     private var agentIntegrationsSection: some View {
         SettingsSection(
-            title: "Agents 与 Hooks",
-            subtitle: "Codex 由 Codexling 内置适配，无需安装 Hook。其他 Agent 的 Hook 只向本地 Bridge 上报脱敏生命周期状态。"
+            title: "接入状态",
+            subtitle: "Codex 无需配置；其他 Agent 仅向本地 Bridge 上报脱敏生命周期事件。"
         ) {
             VStack(spacing: 0) {
                 ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
@@ -593,7 +745,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func hookActionButton(_ integration: AgentIntegrationStatus) -> some View {
         if integration.id == .codex {
-            Label("默认支持", systemImage: "checkmark.circle.fill")
+            Label("无需配置", systemImage: "checkmark.circle.fill")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.codexGreen)
                 .frame(width: 74, alignment: .trailing)
@@ -614,12 +766,13 @@ struct SettingsView: View {
                     )
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-            case .notInstalled, .conflict, .failed:
-                Button("安装") {
+            case .notInstalled, .authorizationRequired, .conflict, .failed:
+                Button(integration.hookState == .authorizationRequired ? "完成授权" : "安装") {
                     pendingHookAction = PendingAgentHookAction(
                         agentID: integration.id,
                         agentName: integration.name,
-                        installs: true
+                        installs: true,
+                        authorizationOnly: integration.hookState == .authorizationRequired
                     )
                 }
                 .buttonStyle(CodexlingPetInstallButtonStyle())
@@ -633,17 +786,25 @@ struct SettingsView: View {
     private func hookConfirmationMessage(for pending: PendingAgentHookAction) -> String {
         if pending.installs {
             let eventCount = pending.agentID == .hermes ? 7 : 8
-            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook，命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。"
+            let authorization = pending.agentID == .hermes
+                ? "；同时仅授权这 7 条 Codexling Bridge 命令，不会开启 Hermes 的全局 Hook 自动批准"
+                : ""
+            if pending.authorizationOnly {
+                return "将重新校准 Codexling 的 Hermes Hook，并仅授权 7 条 Codexling Bridge 命令；不会开启 Hermes 的全局 Hook 自动批准。"
+            }
+            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook\(authorization)。命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。"
         }
         return "只移除命令中包含 codexling-agent-bridge 的配置项；其他 Hook 与 Agent 配置保持不变。"
     }
 
     private func hookActionAlert(_ pending: PendingAgentHookAction) -> Alert {
         if pending.installs {
+            let actionTitle = pending.authorizationOnly ? "完成 Hermes Hook 授权？" : "安装 \(pending.agentName) Hook？"
+            let actionLabel = pending.authorizationOnly ? "完成授权" : "安装"
             return Alert(
-                title: Text("安装 \(pending.agentName) Hook？"),
+                title: Text(actionTitle),
                 message: Text(hookConfirmationMessage(for: pending)),
-                primaryButton: .default(Text("安装")) {
+                primaryButton: .default(Text(actionLabel)) {
                     multiAgentSettings.installHook(for: pending.agentID)
                 },
                 secondaryButton: .cancel(Text("取消"))
@@ -660,10 +821,10 @@ struct SettingsView: View {
     }
 
     private func agentAvailabilityTitle(_ integration: AgentIntegrationStatus) -> String {
-        if integration.id == .codex { return "内置适配" }
+        if integration.id == .codex { return "内置" }
         if integration.cliInstalled && integration.desktopInstalled { return "CLI + Desktop" }
-        if integration.cliInstalled { return "CLI 已安装" }
-        if integration.desktopInstalled { return "Desktop 已安装" }
+        if integration.cliInstalled { return "CLI" }
+        if integration.desktopInstalled { return "Desktop" }
         return "未发现"
     }
 
@@ -675,13 +836,14 @@ struct SettingsView: View {
     private func hookStatusLine(_ integration: AgentIntegrationStatus) -> String {
         if integration.id == .codex {
             return integration.cliInstalled || integration.desktopInstalled
-                ? "已自动接入 · 无需安装 Hook"
-                : "内置适配已就绪 · Codex 启动后自动接入"
+                ? "已接入"
+                : "已就绪 · Codex 启动后自动接入"
         }
         return switch integration.hookState {
-        case .builtIn: "内置适配 · 无需安装 Hook"
-        case .notInstalled: "Hook 未安装"
-        case .installed: "Hook 已安装 · 本地脱敏事件"
+        case .builtIn: "已接入"
+        case .notInstalled: "未接入"
+        case .authorizationRequired: "已配置 · 等待授权"
+        case .installed: "已接入 · 仅本地脱敏事件"
         case .unavailable(let message): message
         case .conflict(let message), .failed(let message): message
         }
@@ -691,42 +853,12 @@ struct SettingsView: View {
         switch state {
         case .builtIn, .installed: Color.codexGreen
         case .conflict, .failed: Color.codexRed
-        case .notInstalled, .unavailable: Color.codexMuted
+        case .notInstalled, .authorizationRequired, .unavailable: Color.codexMuted
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 0) {
-            Color.clear.frame(width: 42, height: 28)
-            Spacer()
-            Text("设置")
-                .font(.system(size: 15, weight: .semibold))
-            Spacer()
-            HStack(spacing: 4) {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.codexInk)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
-                .offset(y: -3)
-                .help("关闭设置")
-                .accessibilityLabel("关闭设置")
-                Color.clear.frame(width: 10, height: 28)
-            }
-            .frame(width: 42)
-        }
-        .padding(.horizontal, 16)
-        .frame(maxWidth: .infinity)
-        .frame(height: DetachedWindowMetrics.chromeHeaderHeight)
-        .background(CodexChromeBackground(intensity: .header))
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var updateSection: some View {
-        SettingsSection(title: "应用") {
+        SettingsSection(title: "应用与偏好") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -827,8 +959,7 @@ struct SettingsView: View {
     private var petSection: some View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             SettingsSection(
-                title: "状态栏与 Pet",
-                subtitle: "调整胶囊透明度与任务活动效果。"
+                title: "状态显示"
             ) {
                 VStack(spacing: 0) {
                 SettingsInlineRow(
@@ -902,8 +1033,7 @@ struct SettingsView: View {
             }
 
             SettingsSection(
-                title: "当前 Pet",
-                subtitle: "未安装 Codexling Pet 时显示安装入口；安装后重扫并自动选中。"
+                title: "Pet 选择"
             ) {
                 VStack(spacing: 8) {
                 if let pet = settings.selectedPet {
@@ -988,8 +1118,8 @@ struct SettingsView: View {
 
     private var thirdPartyPetResourcesSection: some View {
         SettingsSection(
-            title: "更多 Pet",
-            subtitle: "到下列站点下载更多精灵，放入 ~/.codex/pets 后点「重新扫描」。感谢 Petdex、codex-pets.net 与 GitHub 社区的整理与分享。"
+            title: "Pet 资源",
+            subtitle: "下载后放入 ~/.codex/pets，再返回上方重新扫描。"
         ) {
             VStack(spacing: 0) {
                 SettingsExternalLinkRow(
@@ -1251,6 +1381,34 @@ struct SettingsView: View {
 private struct SettingsToast: Equatable {
     let message: String
     let systemImage: String
+}
+
+private enum PendingAccountRemoval: Identifiable {
+    case codex(CodexAccountConnection)
+    case deepSeek(DeepSeekAPIConnection)
+
+    var id: ConnectionID {
+        switch self {
+        case let .codex(connection): connection.id
+        case let .deepSeek(connection): connection.id
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .codex: "删除 Codex 账号？"
+        case .deepSeek: "删除 DeepSeek API Key？"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case let .codex(connection):
+            "将删除 \(connection.label) 的本地独立运行目录和连接记录，不会删除供应商侧账号。"
+        case let .deepSeek(connection):
+            "将从本机 Keychain 删除 \(connection.label) 的 API Key 和连接记录，此操作无法撤销。"
+        }
+    }
 }
 
 private struct ScrollIndicatorHider: NSViewRepresentable {
@@ -1787,6 +1945,18 @@ private enum SettingsMeasuredContentHeightKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private enum SettingsScrollCoordinateSpace {
+    static let name = "settings-content-scroll"
+}
+
+private enum SettingsHeaderMinYKey: PreferenceKey {
+    static let defaultValue = CGFloat.greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
     }
 }
 

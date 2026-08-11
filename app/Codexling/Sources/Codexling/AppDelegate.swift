@@ -4,6 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusBarController?
     private var windowController: DetachedWindowController?
+    private var settingsWindowController: SettingsWindowController?
     private let snapshotStore = UsageSnapshotStore()
     private let settingsStore = AppSettingsStore()
     private let multiAgentSettingsStore = MultiAgentSettingsStore()
@@ -27,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onThemeChanged = { [weak self] _ in
             self?.statusController?.refreshThemeAppearance()
             self?.windowController?.refreshThemeAppearance()
+            self?.settingsWindowController?.refreshThemeAppearance()
+        }
+        settingsStore.onWindowAlwaysOnTopChanged = { [weak self] _ in
+            self?.windowController?.refreshAlwaysOnTop()
         }
         settingsStore.onPetSettingsChanged = { [weak self] in
             self?.syncCompanionState()
@@ -43,12 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let actions = UsageActions(
             refresh: { [weak self] in
-                guard let self else { return }
-                if self.snapshotStore.isLoggedIn {
-                    self.autoRefreshUsage()
-                } else {
-                    self.openDetachedWindow()
-                }
+                self?.manualRefreshUsage()
             },
             openUsagePage: {
                 if let url = URL(string: "https://chatgpt.com/codex/settings/usage") {
@@ -98,9 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncCompanionState()
         migrateLegacyTokenIfNeeded()
         openDetachedWindow()
-        if snapshotStore.isLoggedIn {
-            autoRefreshUsage()
-        }
+        autoRefreshUsage()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -131,48 +129,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func autoRefreshUsage() {
-        refreshUsage(allowOAuthLogin: false)
+        performUnifiedRefresh(showsToast: false)
     }
 
-    private func refreshUsage(allowOAuthLogin: Bool) {
-        guard !isRefreshing else { return }
-        guard allowOAuthLogin || snapshotStore.isLoggedIn else { return }
+    private func manualRefreshUsage() {
+        performUnifiedRefresh(showsToast: true)
+    }
+
+    private func performUnifiedRefresh(showsToast: Bool) {
+        guard !snapshotStore.isUnifiedRefreshing else {
+            if showsToast {
+                snapshotStore.showManualRefreshToast(for: RefreshOutcome(failures: ["正在刷新，请稍候"]))
+            }
+            return
+        }
+
+        snapshotStore.setUnifiedRefreshing(true)
+        Task { [weak self] in
+            guard let self else { return }
+            var outcome = await self.multiAgentSettingsStore.refreshAllConnections()
+            outcome.merge(await self.refreshUsage(allowOAuthLogin: false))
+            self.snapshotStore.setUnifiedRefreshing(false)
+            if showsToast {
+                self.snapshotStore.showManualRefreshToast(for: outcome)
+            }
+        }
+    }
+
+    private func refreshUsage(allowOAuthLogin: Bool) async -> RefreshOutcome {
+        guard !isRefreshing else { return RefreshOutcome(failures: ["Codex 正在刷新"]) }
+        guard allowOAuthLogin || snapshotStore.isLoggedIn else { return RefreshOutcome() }
 
         isRefreshing = true
         snapshotStore.markRefreshing(allowsAuthorization: allowOAuthLogin)
         statusController?.refreshStatusTitle()
 
-        Task { [weak self] in
-            guard let self else { return }
-
-            do {
-                let snapshot = allowOAuthLogin
-                    ? try await self.usageService.connectAndFetch()
-                    : try await self.usageService.fetchWithStoredToken()
-                await MainActor.run {
-                    self.snapshotStore.apply(snapshot)
-                    self.isRefreshing = false
-                    self.statusController?.refreshStatusTitle()
-                }
-            } catch {
-                await MainActor.run {
-                    self.isRefreshing = false
-                    if !allowOAuthLogin, let codexError = error as? CodexUsageError, codexError == .noStoredToken {
-                        self.snapshotStore.markAuthenticationExpired()
-                        self.statusController?.refreshStatusTitle()
-                        return
-                    }
-                    if !allowOAuthLogin,
-                       let codexError = error as? CodexUsageError,
-                       codexError == .invalidTokenResponse {
-                        self.snapshotStore.markAuthenticationExpired()
-                        self.statusController?.refreshStatusTitle()
-                        return
-                    }
-                    self.snapshotStore.markFailed(error.localizedDescription)
-                    self.statusController?.refreshStatusTitle()
-                }
+        do {
+            let snapshot = allowOAuthLogin
+                ? try await usageService.connectAndFetch()
+                : try await usageService.fetchWithStoredToken()
+            snapshotStore.apply(snapshot)
+            isRefreshing = false
+            statusController?.refreshStatusTitle()
+            return RefreshOutcome(successCount: 1)
+        } catch {
+            isRefreshing = false
+            if !allowOAuthLogin,
+               let codexError = error as? CodexUsageError,
+               codexError == .noStoredToken || codexError == .invalidTokenResponse {
+                snapshotStore.markAuthenticationExpired()
+            } else {
+                snapshotStore.markFailed(error.localizedDescription)
             }
+            statusController?.refreshStatusTitle()
+            return RefreshOutcome(failures: ["Codex：\(error.localizedDescription)"])
         }
     }
 
@@ -201,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 companionStatsStore: companionStatsStore,
                 updater: updateController,
                 actions: actions,
+                onOpenSettings: { [weak self] in
+                    self?.openSettingsWindow()
+                },
                 onClose: { [weak self] in
                     self?.handleDetachedWindowClosed()
                 }
@@ -229,13 +242,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func openSettingsWindow() {
+        guard let actions else { return }
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(
+                store: snapshotStore,
+                settings: settingsStore,
+                multiAgentSettings: multiAgentSettingsStore,
+                updater: updateController,
+                actions: actions,
+                onClose: { [weak self] in
+                    self?.handleSettingsWindowClosed()
+                }
+            )
+        }
+
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let targetScreen = windowController?.currentScreen
+        settingsWindowController?.show(on: targetScreen)
+        DispatchQueue.main.async { [weak self] in
+            self?.settingsWindowController?.show(on: targetScreen)
+        }
+    }
+
     private func handleDetachedWindowClosed() {
-        // A closed window starts a fresh navigation session next time it is
-        // opened. Releasing the controller resets transient SwiftUI state such
-        // as `showsSettings`, so reopening always lands on the dashboard.
         windowController = nil
-        // Return to menu-bar-only mode after the window is closed.
-        NSApp.setActivationPolicy(.accessory)
+        if settingsWindowController == nil {
+            // Return to menu-bar-only mode only after both independent windows close.
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func handleSettingsWindowClosed() {
+        settingsWindowController = nil
+        if windowController == nil {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
