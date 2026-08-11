@@ -401,7 +401,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         let usesPetColumn = if case .dashboard(_, .horizontal) = contentMode { true } else { false }
         let showsOrientationToggle = if case .dashboard = contentMode { true } else { false }
         let controlWidth: CGFloat = showsOrientationToggle ? 66 : 28
-        let trailingInset: CGFloat = 18
+        let trailingInset: CGFloat = 12
         let x: CGFloat
         if usesPetColumn {
             // Horizontal dashboard: align with the right edge of the generic
@@ -416,10 +416,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
         // Use a stable top inset instead of reading standard-button frames
         // while AppKit is in the middle of an orientation resize.
-        // The 12pt symbols are vertically centered inside the 28pt hit box;
-        // placing that box at the frame's top aligns symbol centers with the
-        // standard traffic-light controls.
-        let topInset: CGFloat = 0
+        // Keep the controls just below the absolute titlebar edge so their
+        // optical center follows the traffic lights without looking top-heavy.
+        let topInset: CGFloat = 4
         titleControlsView.frame = NSRect(
             x: round(x),
             y: round(frameView.bounds.maxY - topInset - 28),
