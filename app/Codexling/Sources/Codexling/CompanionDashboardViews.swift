@@ -1996,11 +1996,6 @@ private struct CompanionPetHeader: View {
                     waveColorMode: settings.statusBarWaveColorMode
                 )
 
-                Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.codexMuted)
-                    .padding(.top, 8)
-
                 GlobalAgentTaskSection(
                     activity: activity,
                     integrations: integrations,
@@ -2011,6 +2006,12 @@ private struct CompanionPetHeader: View {
                 if fillHeight {
                     Spacer(minLength: 0)
                 }
+
+                Text("今天一起工作 \(CompanionCopy.todayDuration(minutes: todayMinutes))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.top, fillHeight ? 0 : 12)
+                    .padding(.bottom, fillHeight ? 10 : 4)
             }
             .padding(.top, fillHeight ? 60 : Self.chromeTopPadding)
             .padding(.bottom, 14)
