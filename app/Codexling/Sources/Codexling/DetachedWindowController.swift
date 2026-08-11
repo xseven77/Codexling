@@ -9,7 +9,7 @@ enum DetachedWindowContentMode: Equatable {
 enum DetachedWindowMetrics {
     static let quotaCardWidth: CGFloat = 169
     static let quotaCardSpacing: CGFloat = 9
-    static let sidebarWidth: CGFloat = 188
+    static let sidebarWidth: CGFloat = 290
     static let dashboardContentPadding: CGFloat = 22
 
     /// 主界面固定宽度：侧栏 + 内容区内边距 + 两张额度卡。
@@ -28,13 +28,13 @@ enum DetachedWindowMetrics {
     static var verticalProvisionalHeight: CGFloat { loggedInDashboardHeight }
     static let verticalMinHeight: CGFloat = 360
 
-    static let maxWidth: CGFloat = 680
+    static let maxWidth: CGFloat = 800
     static let minHeight: CGFloat = 420
     static let maxHeight: CGFloat = 960
     static let loginDashboardHeight: CGFloat = 440
     /// 横版已登录：连接栏、账号上下文、任务、额度、重置券与底部工具栏完整可见。
-    static let loggedInDashboardHeight: CGFloat = 760
-    static let horizontalMinHeight: CGFloat = 420
+    static let loggedInDashboardHeight: CGFloat = 550
+    static let horizontalMinHeight: CGFloat = 480
 
     static func dashboardWidth(for orientation: DashboardOrientation) -> CGFloat {
         switch orientation {
@@ -198,7 +198,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var settingsMeasuredContentHeight: CGFloat?
     private var titleControlsView: TitleControlsView!
     private var connectionSwitcherHoverObserver: Any?
-    private var connectionSwitcherHoverReenableWorkItem: DispatchWorkItem?
 
     init(
         store: UsageSnapshotStore,
@@ -269,6 +268,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.isReleasedWhenClosed = false
         installConnectionSwitcherHoverObserver()
+        installRightColumnTitlebarBlocker()
         // The status-bar capsule is a direct action. Avoid AppKit's default
         // document-window reveal animation so the result follows mouse-up.
         window.animationBehavior = .none
@@ -659,6 +659,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             NotificationCenter.default.removeObserver(observer)
             connectionSwitcherHoverObserver = nil
         }
+        if let blocker = rightColumnTitlebarBlocker {
+            NSEvent.removeMonitor(blocker)
+            rightColumnTitlebarBlocker = nil
+        }
         onClose?()
     }
 
@@ -749,12 +753,8 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private func applyBackgroundDragging(for mode: DetachedWindowContentMode) {
         switch mode {
         case .dashboard:
-            // Buttons and other controls keep their own pointer handling;
-            // unhandled content and card backgrounds move the main window.
             window.isMovableByWindowBackground = true
         case .settings:
-            // Settings contains drag-sensitive controls, so it retains normal
-            // content interaction and uses the title bar for window movement.
             window.isMovableByWindowBackground = false
         }
     }
@@ -777,15 +777,31 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
               let hovering = notification.userInfo?["hovering"] as? Bool
         else { return }
 
-        connectionSwitcherHoverReenableWorkItem?.cancel()
-        if hovering {
-            window.isMovableByWindowBackground = false
-        } else {
-            let work = DispatchWorkItem { [weak self] in
-                self?.window.isMovableByWindowBackground = true
-            }
-            connectionSwitcherHoverReenableWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        window.isMovableByWindowBackground = !hovering
+    }
+
+    // MARK: - Right column titlebar blocker
+
+    /// 只拦截右侧内容区顶部 22pt 的标题栏拖拽，不碰左侧 Pet 区和窗口按钮。
+    private var rightColumnTitlebarBlocker: Any?
+
+    private func installRightColumnTitlebarBlocker() {
+        rightColumnTitlebarBlocker = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            guard let self,
+                  case .dashboard(isLoggedIn: _, orientation: _) = self.contentMode,
+                  let contentView = self.window.contentView
+            else { return event }
+
+            let point = contentView.convert(event.locationInWindow, from: nil)
+            let sidebarWidth = DetachedWindowMetrics.sidebarWidth
+
+            // 只处理右侧区域（x > sidebarWidth）的标题栏高度（y <= 22）
+            guard point.x > sidebarWidth, point.y <= 22 else { return event }
+
+            // 吞掉事件，阻止标题栏拖拽
+            return nil
         }
     }
 

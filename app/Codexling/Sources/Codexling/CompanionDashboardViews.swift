@@ -181,33 +181,43 @@ struct CompanionDashboardView: View {
     private var horizontalDashboardWindowLayout: some View {
         GeometryReader { geometry in
             HStack(alignment: .top, spacing: 0) {
-                CompanionSidebar(
+                CompanionPetHeader(
                     snapshot: store.snapshot,
                     activity: activityStore.snapshot,
                     integrations: multiAgentSettings.integrations,
                     settings: settings,
                     frameStore: frameStore,
                     todayMinutes: companionStatsStore.todayMinutes,
-                    fillColumnHeight: true
+                    fillHeight: true,
+                    selectedTaskID: $selectedTaskID
                 )
                 .frame(width: DetachedWindowMetrics.sidebarWidth)
-                .zIndex(2)
+                .frame(maxHeight: .infinity)
+                .zIndex(30)
 
                 VStack(spacing: 0) {
                     dashboardConnectionBar
-                    if multiAgentSettings.selectedDeepSeekConnection == nil {
-                        CompanionHorizontalAccountHeader(
-                            context: selectedProviderContext
+
+                    dashboardContentFrame(fillsHeight: true) {
+                        if multiAgentSettings.selectedDeepSeekConnection == nil {
+                            CompanionAccountRow(context: selectedProviderContext)
+                        }
+
+                        horizontalDashboardMainContent
+
+                        Spacer(minLength: 0)
+
+                        SyncFooterView(
+                            context: selectedProviderContext,
+                            actions: actions,
+                            showsDetachedButton: showsDetachedButton,
+                            onRefresh: refreshSelectedProvider,
+                            onOpenSettings: onOpenSettings
                         )
+                        .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
+                        .padding(.bottom, 14)
                     }
-                    horizontalDashboardMainContent
-                        .layoutPriority(1)
-                    Spacer(minLength: 0)
-                    horizontalDashboardSyncFooter
-                        .layoutPriority(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(Color.codexCard.opacity(0.96))
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
             .background {
@@ -218,26 +228,30 @@ struct CompanionDashboardView: View {
 
     private var horizontalDashboardCompactLayout: some View {
         HStack(alignment: .top, spacing: 0) {
-            CompanionSidebar(
+            CompanionPetHeader(
                 snapshot: store.snapshot,
                 activity: activityStore.snapshot,
                 integrations: multiAgentSettings.integrations,
                 settings: settings,
                 frameStore: frameStore,
                 todayMinutes: companionStatsStore.todayMinutes,
-                expandsVertically: false
+                fillHeight: true,
+                selectedTaskID: $selectedTaskID
             )
             .frame(width: DetachedWindowMetrics.sidebarWidth)
-            .zIndex(2)
+            .frame(maxHeight: .infinity)
+            .zIndex(30)
 
             VStack(spacing: 0) {
                 dashboardConnectionBar
-                if multiAgentSettings.selectedDeepSeekConnection == nil {
-                    CompanionHorizontalAccountHeader(
-                        context: selectedProviderContext
-                    )
+
+                dashboardContentFrame(fillsHeight: true) {
+                    if multiAgentSettings.selectedDeepSeekConnection == nil {
+                        CompanionAccountRow(context: selectedProviderContext)
+                    }
+
+                    horizontalDashboardRightColumn
                 }
-                horizontalDashboardRightColumn
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -259,23 +273,11 @@ struct CompanionDashboardView: View {
 
     private var horizontalDashboardMainContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ActivityHeading(
-                activity: activityStore.snapshot,
-                usage: store.snapshot,
-                isLoggedIn: store.isLoggedIn
-            )
-
             if store.snapshot.showsSubscriptionExpiryReminder,
                let message = store.snapshot.subscriptionExpiryReminderMessage {
                 SubscriptionExpiryReminderBanner(message: message)
                     .padding(.top, 12)
             }
-
-            TaskStackView(
-                snapshot: activityStore.snapshot,
-                selectedTaskID: $selectedTaskID
-            )
-            .padding(.top, 19)
 
             selectedConnectionSection
         }
@@ -290,13 +292,14 @@ struct CompanionDashboardView: View {
             snapshot: store.snapshot,
             showsCurrentCodex: store.isLoggedIn,
             store: multiAgentSettings,
-            onAdd: { showsConnectionSheet = true }
+            onAdd: { showsConnectionSheet = true },
+            compact: true
         )
-        .padding(.horizontal, 16)
+        .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
         .frame(height: 59)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.codexCard.opacity(0.96))
-        .overlay(alignment: .bottom) { Color.codexLine.frame(height: 1) }
+        .overlay(alignment: .bottom) { CodexDivider() }
     }
 
     private var horizontalDashboardSyncFooter: some View {
@@ -333,6 +336,22 @@ struct CompanionDashboardView: View {
         .padding(.top, 18)
     }
 
+    // MARK: - 共用：主体内容外框
+
+    /// 统一的背景色 + 层级外框，内部内容由调用方组合。
+    @ViewBuilder
+    private func dashboardContentFrame<Content: View>(
+        fillsHeight: Bool,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(spacing: 0, content: content)
+        .frame(maxWidth: .infinity,
+               maxHeight: fillsHeight ? .infinity : nil,
+               alignment: .topLeading)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 0))
+        .zIndex(30)
+    }
+
     // MARK: - 竖向布局
 
     private var verticalDashboard: some View {
@@ -353,14 +372,64 @@ struct CompanionDashboardView: View {
     private var verticalDashboardWindowLayout: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                verticalDashboardHeaderStack
+                CompanionPetHeader(
+                    snapshot: store.snapshot,
+                    activity: activityStore.snapshot,
+                    integrations: multiAgentSettings.integrations,
+                    settings: settings,
+                    frameStore: frameStore,
+                    todayMinutes: companionStatsStore.todayMinutes,
+                    selectedTaskID: $selectedTaskID
+                )
+                .zIndex(30)
+
+                DashboardConnectionSwitcher(
+                    snapshot: store.snapshot,
+                    showsCurrentCodex: store.isLoggedIn,
+                    store: multiAgentSettings,
+                    onAdd: { showsConnectionSheet = true },
+                    compact: true
+                )
+                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                .frame(height: 59)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.codexCard.opacity(0.96))
+                .overlay(alignment: .bottom) { CodexDivider() }
+
+                dashboardContentFrame(fillsHeight: true) {
+                    if multiAgentSettings.selectedDeepSeekConnection == nil {
+                        CompanionAccountRow(context: selectedProviderContext)
+                    }
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        if store.snapshot.showsSubscriptionExpiryReminder,
+                           let message = store.snapshot.subscriptionExpiryReminderMessage {
+                            SubscriptionExpiryReminderBanner(message: message)
+                                .padding(.bottom, 3)
+                        }
+                        selectedVerticalConnectionSection
+                    }
+                    .padding(.top, 18)
+                    .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                    .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 : 36)
+                }
+
                 Spacer(minLength: 0)
-                verticalDashboardSyncFooter
+
+                SyncFooterView(
+                    context: selectedProviderContext,
+                    actions: actions,
+                    showsDetachedButton: showsDetachedButton,
+                    isCompact: true,
+                    onRefresh: refreshSelectedProvider,
+                    onOpenSettings: onOpenSettings
+                )
+                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                .padding(.bottom, 14)
+                .background(Color.codexCard)
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
-            .background {
-                Color.codexCard
-            }
+            .background { Color.codexCard }
         }
     }
 
@@ -390,27 +459,33 @@ struct CompanionDashboardView: View {
             .background(Color.codexCard.opacity(0.96))
             .overlay(alignment: .bottom) { CodexDivider() }
 
-            if multiAgentSettings.selectedDeepSeekConnection == nil {
-                CompanionAccountRow(context: selectedProviderContext)
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                if store.snapshot.showsSubscriptionExpiryReminder,
-                   let message = store.snapshot.subscriptionExpiryReminderMessage {
-                    SubscriptionExpiryReminderBanner(message: message)
-                        .padding(.bottom, 3)
+            dashboardContentFrame(fillsHeight: false) {
+                if multiAgentSettings.selectedDeepSeekConnection == nil {
+                    CompanionAccountRow(context: selectedProviderContext)
                 }
 
-                selectedVerticalConnectionSection
+                VStack(alignment: .leading, spacing: 0) {
+                    if store.snapshot.showsSubscriptionExpiryReminder,
+                       let message = store.snapshot.subscriptionExpiryReminderMessage {
+                        SubscriptionExpiryReminderBanner(message: message)
+                            .padding(.bottom, 3)
+                    }
+                    selectedVerticalConnectionSection
+                }
+                .padding(.top, 18)
+                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+
+                SyncFooterView(
+                    context: selectedProviderContext,
+                    actions: actions,
+                    showsDetachedButton: showsDetachedButton,
+                    isCompact: true,
+                    onRefresh: refreshSelectedProvider,
+                    onOpenSettings: onOpenSettings
+                )
+                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 + 14 : 36 + 14)
             }
-            // A single shared lead-in keeps every provider aligned without
-            // stacking branch-specific top padding.
-            .padding(.top, 18)
-            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-            .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 : 36)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 0))
-            .zIndex(30)
         }
     }
 
@@ -430,7 +505,6 @@ struct CompanionDashboardView: View {
     private var verticalDashboardMeasureColumn: some View {
         VStack(spacing: 0) {
             verticalDashboardHeaderStack
-            verticalDashboardSyncFooter
         }
     }
 
@@ -567,6 +641,7 @@ private struct DashboardConnectionSwitcher: View {
 
     @State private var draggingItemKey: String? = nil
     @State private var dragOffset: CGSize = .zero
+    @State private var isDragActive = false
 
     /// 拖拽排序后的统一连接项列表。
     private var orderedItems: [ConnectionSwitcherItem] {
@@ -619,82 +694,72 @@ private struct DashboardConnectionSwitcher: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            if compact {
-                HStack(spacing: 7) {
-                    ForEach(orderedItems) { item in
-                        let isDragging = draggingItemKey == item.key
-                        connectionButton(
-                            asset: item.asset,
-                            title: item.title,
-                            subtitle: item.subtitle,
-                            color: item.color,
-                            selected: item.selected,
-                            credential: item.credential,
-                            action: item.action
-                        )
-                        .offset(x: isDragging ? dragOffset.width : 0,
-                                y: isDragging ? dragOffset.height : 0)
-                        .scaleEffect(isDragging ? 1.18 : 1.0)
-                        .shadow(color: isDragging ? .black.opacity(0.22) : .clear,
-                                radius: isDragging ? 10 : 0,
-                                y: isDragging ? 5 : 0)
-                        .zIndex(isDragging ? 10 : 0)
-                        .gesture(
-                            DragGesture(minimumDistance: 3, coordinateSpace: .named("switcher"))
-                                .onChanged { value in
-                                    if draggingItemKey == nil {
-                                        draggingItemKey = item.key
-                                        NSCursor.closedHand.push()
-                                    }
-                                    dragOffset = value.translation
+            HStack(spacing: 7) {
+                ForEach(orderedItems) { item in
+                    let isDragging = draggingItemKey == item.key
+                    connectionButton(
+                        asset: item.asset,
+                        title: item.title,
+                        subtitle: item.subtitle,
+                        color: item.color,
+                        selected: item.selected,
+                        credential: item.credential,
+                        action: item.action
+                    )
+                    .offset(x: isDragging ? dragOffset.width : 0,
+                            y: isDragging ? dragOffset.height : 0)
+                    .scaleEffect(isDragging ? 1.18 : 1.0)
+                    .shadow(color: isDragging ? .black.opacity(0.22) : .clear,
+                            radius: isDragging ? 10 : 0,
+                            y: isDragging ? 5 : 0)
+                    .zIndex(isDragging ? 10 : 0)
+                    .gesture(
+                        DragGesture(minimumDistance: 3, coordinateSpace: .named("switcher"))
+                            .onChanged { value in
+                                if draggingItemKey == nil {
+                                    draggingItemKey = item.key
+                                    isDragActive = true
+                                    NSCursor.closedHand.push()
+                                    NotificationCenter.default.post(
+                                        name: .connectionSwitcherHoverChanged,
+                                        object: nil,
+                                        userInfo: ["hovering": true]
+                                    )
                                 }
-                                .onEnded { value in
-                                    NSCursor.closedHand.pop()
-                                    let currentIdx = orderedItems.firstIndex(where: { $0.key == item.key }) ?? 0
-                                    let offsetSteps = Int(round(value.translation.width / slotWidth))
-                                    let targetIdx = max(0, min(orderedItems.count - 1, currentIdx + offsetSteps))
+                                dragOffset = value.translation
+                            }
+                            .onEnded { value in
+                                isDragActive = false
+                                NSCursor.closedHand.pop()
+                                let currentIdx = orderedItems.firstIndex(where: { $0.key == item.key }) ?? 0
+                                let stepWidth = compact ? slotWidth : (slotWidth * 2.8)
+                                let offsetSteps = Int(round(value.translation.width / stepWidth))
+                                let targetIdx = max(0, min(orderedItems.count - 1, currentIdx + offsetSteps))
 
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                        draggingItemKey = nil
-                                        dragOffset = .zero
-                                        if targetIdx != currentIdx {
-                                            store.moveConnection(
-                                                fromOffsets: IndexSet(integer: currentIdx),
-                                                toOffset: targetIdx > currentIdx ? targetIdx + 1 : targetIdx
-                                            )
-                                        }
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    draggingItemKey = nil
+                                    dragOffset = .zero
+                                    if targetIdx != currentIdx {
+                                        store.moveConnection(
+                                            fromOffsets: IndexSet(integer: currentIdx),
+                                            toOffset: targetIdx > currentIdx ? targetIdx + 1 : targetIdx
+                                        )
                                     }
                                 }
-                        )
-                    }
-                }
-                .coordinateSpace(name: "switcher")
-                .onHover { hovering in
-                    guard draggingItemKey == nil else { return }
-                    if hovering {
-                        NSCursor.openHand.set()
-                    } else {
-                        NSCursor.arrow.set()
-                    }
-                }
-                Spacer(minLength: 0)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 7) {
-                        ForEach(orderedItems) { item in
-                            connectionButton(
-                                asset: item.asset,
-                                title: item.title,
-                                subtitle: item.subtitle,
-                                color: item.color,
-                                selected: item.selected,
-                                credential: item.credential,
-                                action: item.action
-                            )
-                        }
-                    }
+                            }
+                    )
                 }
             }
+            .coordinateSpace(name: "switcher")
+            .onHover { hovering in
+                guard draggingItemKey == nil else { return }
+                if hovering {
+                    NSCursor.openHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+            Spacer(minLength: 0)
             Button(action: onAdd) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
@@ -711,6 +776,7 @@ private struct DashboardConnectionSwitcher: View {
             .help("添加 Codex 账号或 DeepSeek API Key")
         }
         .onHover { hovering in
+            if isDragActive { return }
             NotificationCenter.default.post(
                 name: .connectionSwitcherHoverChanged,
                 object: nil,
@@ -1679,6 +1745,7 @@ private final class CompanionLocalAgentsPanelController {
 
     func show(relativeTo anchorView: NSView, horizontalOffset: CGFloat, opensUpward: Bool) {
         guard let parentWindow = anchorView.window else { return }
+        panel.appearance = parentWindow.appearance
         presentationGeneration += 1
         isDismissing = false
         lastOpensUpward = opensUpward
@@ -1894,6 +1961,7 @@ private struct CompanionPetHeader: View {
     @Bindable var settings: AppSettingsStore
     @Bindable var frameStore: PetFrameStore
     let todayMinutes: Int
+    var fillHeight = false
     @Binding var selectedTaskID: String?
     @State private var ripples: [CodexMaterialWaveToken] = []
 
@@ -1939,22 +2007,23 @@ private struct CompanionPetHeader: View {
                     selectedTaskID: $selectedTaskID
                 )
                 .padding(.top, 16)
+
+                if fillHeight {
+                    Spacer(minLength: 0)
+                }
             }
-            .padding(.top, Self.chromeTopPadding)
+            .padding(.top, fillHeight ? 60 : Self.chromeTopPadding)
             .padding(.bottom, 14)
             .padding(.horizontal, 12)
             .zIndex(1)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize(horizontal: false, vertical: !fillHeight)
         .companionPetInteraction(
             space: Self.headerSpace,
             frameStore: frameStore,
             ripples: $ripples,
             fallbackRippleLocation: CGPoint(x: 146, y: 110)
         )
-        .overlay(alignment: .bottom) {
-            CodexDivider()
-        }
     }
 }
 
@@ -2193,11 +2262,10 @@ private struct CompanionSidebar: View {
     /// 在父级 HStack 已确定行高时铺满侧栏（独立横版）。
     var fillColumnHeight = false
     var expandsVertically = true
+    @Binding var selectedTaskID: String?
     @State private var ripples: [CodexMaterialWaveToken] = []
 
     var body: some View {
-        let centersPetVertically = expandsVertically && !fillColumnHeight
-
         ZStack {
             LinearGradient(
                 colors: [Color.codexSidebarTop, Color.codexSidebarBottom],
@@ -2209,15 +2277,22 @@ private struct CompanionSidebar: View {
             // Wave sits on the sidebar background, beneath pet and chrome.
             CodexMaterialWaveLayer(ripples: $ripples)
 
-            petView
-                .frame(width: 145, height: 218)
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: centersPetVertically ? .infinity : nil,
-                    alignment: .center
+            VStack(spacing: 0) {
+                petView
+                    .frame(width: 145, height: 218)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .zIndex(1)
+                    .allowsHitTesting(false)
+
+                TaskStackView(
+                    snapshot: activity,
+                    selectedTaskID: $selectedTaskID
                 )
-                .zIndex(1)
-                .allowsHitTesting(false)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+
+                Spacer(minLength: 0)
+            }
         }
         .overlay(alignment: .bottom) {
             sidebarFooter
@@ -2341,14 +2416,11 @@ private struct ActivityHeading: View {
     var isCompact = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(activity.dashboardTitle)
-                .font(.system(size: isCompact ? 17 : 20, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(isCompact ? 0.85 : 1)
-            Spacer(minLength: 4)
-            QuotaAtAGlanceChip(usage: usage, isLoggedIn: isLoggedIn)
-        }
+        Text(activity.dashboardTitle)
+            .font(.system(size: isCompact ? 17 : 20, weight: .semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(isCompact ? 0.85 : 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
