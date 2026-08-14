@@ -422,7 +422,7 @@ final class StatusBarController: NSObject {
             )
         }
 
-        // 系统状态栏胶囊：每块屏的菜单栏各一份（降级胶囊）
+        // 系统状态栏胶囊：刘海关闭时显示（降级胶囊）
         if statusItem.isVisible, let button = statusItem.button {
             let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
             let reservedText = statusCapsuleReservedText(
@@ -460,9 +460,6 @@ final class StatusBarController: NSObject {
             )
             synchronizeHoverPanelVisibility(for: activity, relativeTo: button)
         }
-
-        // 内容刷新会改 statusItem.length，可能触发系统重排窗口；重新按屏隐藏刘海目标屏的胶囊。
-        applyPerScreenStatusBarVisibility()
 
         ensureRotationTimers()
     }
@@ -517,28 +514,14 @@ final class StatusBarController: NSObject {
             notchPanels.removeValue(forKey: number)
         }
 
-        // 菜单栏胶囊：NSStatusItem 会复制到每块屏的菜单栏，因此始终保留 item，
-        // 只按屏幕隐藏刘海目标屏上的那一个窗口，其余屏正常显示。
-        statusItem.isVisible = true
-        statusItem.button?.isHidden = false
-        applyPerScreenStatusBarVisibility()
+        // 菜单栏胶囊：刘海开启时全局隐藏（由刘海面板取代），关闭时显示。
+        // macOS 的 NSStatusItem 会复制到每块屏且预留宽度是全局共享的，无法只从刘海屏移除空隙，
+        // 因此开启刘海时选择全局隐藏菜单栏胶囊。
+        let notchEnabled = !targetScreens.isEmpty
+        statusItem.isVisible = !notchEnabled
+        statusItem.button?.isHidden = notchEnabled
 
         refreshStatusTitle()
-    }
-
-    /// 按显示器控制菜单栏胶囊显隐：刘海目标屏隐藏对应的 NSStatusBarWindow，其余屏显示。
-    /// macOS 开启「显示器使用独立空间」后，每块屏各有一个 NSStatusBarWindow，
-    /// 逐屏设置 alphaValue 即可实现「只藏刘海屏、其余屏保留」，而不是悬停胶囊。
-    private func applyPerScreenStatusBarVisibility() {
-        let targetNumbers = Set(targetScreens.map(\.screenNumber))
-        for window in NSApp.windows {
-            guard String(describing: type(of: window)) == "NSStatusBarWindow" else { continue }
-            guard let screen = window.screen else { continue }
-            let hidden = targetNumbers.contains(screen.screenNumber)
-            // alphaValue 对 NSStatusBarWindow 无效，改隐藏该窗口的 contentView 才能逐屏隐藏胶囊。
-            window.contentView?.isHidden = hidden
-            window.ignoresMouseEvents = hidden
-        }
     }
 
     /// 供设置面板在选择显示器后触发红边预览。
