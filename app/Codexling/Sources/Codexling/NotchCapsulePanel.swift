@@ -75,9 +75,19 @@ final class NotchCapsuleViewModel {
     var onProviderHover: ((Bool) -> Void)?
 }
 
+/// 自定义命中视图：透明区域返回 nil 让鼠标事件穿透到下层，
+/// 只对收起胶囊 / 展开面板区域拦截点击。
+final class NotchHitTestView: NSView {
+    /// 命中判定（点坐标为视图 bounds 坐标，原点在左下角）。
+    var shouldHit: (NSPoint) -> Bool = { _ in true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        shouldHit(point) ? super.hitTest(point) : nil
+    }
+}
+
 /// 刘海屏伴侣面板：固定尺寸透明 NSPanel 顶部贴主屏顶边，内容在窗口内顶部居中。
-/// 收起/展开只改内容，不改窗口 frame。收起态穿透鼠标，用全局/本地监控检测
-/// 进入刘海区域后展开；展开态接受鼠标，移出区域或 Esc / 点击面板外关闭。
+/// 收起态只拦截顶部胶囊的点击（点击展开），展开态拦截整个面板；鼠标移出或 Esc 收起。
 @MainActor
 final class NotchCapsulePanelController {
     private static let openedSize = NSSize(width: 700, height: 330)
@@ -86,12 +96,10 @@ final class NotchCapsulePanelController {
     private let panel: NSPanel
     private let viewModel = NotchCapsuleViewModel()
     private let hosting: NSHostingController<NotchCapsuleView>
+    private let hitTestView = NotchHitTestView()
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var screen: NSScreen?
-    /// 点击关闭后，鼠标仍在刘海区域内时不立即重新展开，等其离开后再恢复自动展开。
-    private var suppressReopenUntilLeave = false
-    private var expandWorkItem: DispatchWorkItem?
     private var collapseWorkItem: DispatchWorkItem?
 
     var onClick: (() -> Void)?
@@ -109,7 +117,12 @@ final class NotchCapsulePanelController {
             backing: .buffered,
             defer: false
         )
-        panel.contentViewController = hosting
+        // 用自定义命中视图包裹 SwiftUI 内容：透明区域穿透鼠标，胶囊/面板区域拦截点击。
+        panel.contentView = hitTestView
+        hosting.view.frame = NSRect(origin: .zero, size: Self.windowSize)
+        hosting.view.autoresizingMask = [.width, .height]
+        hitTestView.addSubview(hosting.view)
+
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.level = .mainMenu + 3
@@ -121,10 +134,10 @@ final class NotchCapsulePanelController {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]
         panel.isMovableByWindowBackground = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
+        updateHitTestPolicy()
 
         // self 完全初始化后再注入回调，转发到公开属性。
-        viewModel.onClick = { [weak self] in self?.closePanel() }
         viewModel.onSelectAgent = { [weak self] index in self?.onSelectAgent?(index) }
         viewModel.onSelectProvider = { [weak self] index in self?.onSelectProvider?(index) }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
@@ -157,6 +170,7 @@ final class NotchCapsulePanelController {
         viewModel.closedWidth = notchWidth + 230
         viewModel.closedHeight = safeTop
         viewModel.screenName = self.screen?.displayName ?? "显示器"
+        updateHitTestPolicy()
         positionPanel()
         panel.orderFrontRegardless()
         installMonitors()
@@ -164,7 +178,6 @@ final class NotchCapsulePanelController {
 
     func hide() {
         removeMonitors()
-        cancelExpand()
         cancelCollapse()
         viewModel.isExpanded = false
         panel.orderOut(nil)
@@ -179,15 +192,30 @@ final class NotchCapsulePanelController {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
             viewModel.isExpanded = expanded
         }
-        panel.ignoresMouseEvents = !expanded
+        updateHitTestPolicy()
     }
 
     private func closePanel() {
-        // 点击关闭：抑制鼠标仍停留时立即重新展开。
-        suppressReopenUntilLeave = true
-        cancelExpand()
         cancelCollapse()
         setExpanded(false)
+    }
+
+    /// 更新命中区域：展开态拦截整个面板；收起态只拦截顶部收起胶囊，其余透明区域穿透。
+    private func updateHitTestPolicy() {
+        let closedWidth = viewModel.closedWidth
+        let closedHeight = viewModel.closedHeight
+        hitTestView.shouldHit = { [weak self] point in
+            guard let self else { return false }
+            if self.viewModel.isExpanded { return true }
+            let bounds = self.hitTestView.bounds
+            let capsuleRect = NSRect(
+                x: (bounds.width - closedWidth) / 2,
+                y: bounds.height - closedHeight,
+                width: closedWidth,
+                height: closedHeight
+            )
+            return capsuleRect.contains(point)
+        }
     }
 
     private func positionPanel() {
@@ -206,19 +234,17 @@ final class NotchCapsulePanelController {
         removeMonitors()
         globalMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown]
-        ) { [weak self] _ in
-            DispatchQueue.main.async { self?.evaluatePointer() }
+        ) { [weak self] event in
+            DispatchQueue.main.async { self?.handleEvent(event) }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .leftMouseDown]
+            matching: [.keyDown, .leftMouseDown, .mouseMoved, .leftMouseDragged]
         ) { [weak self] event in
             if event.type == .keyDown, event.keyCode == 53 { // Esc
                 DispatchQueue.main.async { self?.closePanel() }
                 return nil
             }
-            if event.type == .leftMouseDown {
-                DispatchQueue.main.async { self?.evaluatePointer() }
-            }
+            DispatchQueue.main.async { self?.handleEvent(event) }
             return event
         }
     }
@@ -234,36 +260,35 @@ final class NotchCapsulePanelController {
         }
     }
 
-    private func evaluatePointer() {
+    private func handleEvent(_ event: NSEvent) {
         guard screen != nil else { return }
-        if viewModel.isExpanded {
-            if !isPointerInsideOpenedRect() {
-                scheduleCollapse()
-            } else {
-                cancelCollapse()
-            }
-        } else if isPointerInsideClosedRect() {
-            cancelCollapse()
-            if !suppressReopenUntilLeave {
-                scheduleExpand()
-            }
+        if event.type == .leftMouseDown {
+            handleClick()
         } else {
-            // 鼠标已离开刘海区域，恢复正常的悬停展开。
-            suppressReopenUntilLeave = false
-            cancelExpand()
+            handleMouseMove()
         }
     }
 
-    /// 展开前短暂延迟，避免鼠标快速掠过刘海区域时误展开。
-    private func scheduleExpand() {
-        guard expandWorkItem == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.expandWorkItem = nil
-            self.setExpanded(true)
+    /// 收起态点击刘海胶囊展开；展开态点击面板外部收起。
+    private func handleClick() {
+        if viewModel.isExpanded {
+            if !isPointerInsideOpenedRect() {
+                cancelCollapse()
+                setExpanded(false)
+            }
+        } else if isPointerInsideClosedRect() {
+            setExpanded(true)
         }
-        expandWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// 展开态下鼠标移出面板后自动收起。
+    private func handleMouseMove() {
+        guard viewModel.isExpanded else { return }
+        if !isPointerInsideOpenedRect() {
+            scheduleCollapse()
+        } else {
+            cancelCollapse()
+        }
     }
 
     /// 收起前短暂延迟，消除「一出现马上缩小又展开」的抖动。
@@ -276,11 +301,6 @@ final class NotchCapsulePanelController {
         }
         collapseWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
-    }
-
-    private func cancelExpand() {
-        expandWorkItem?.cancel()
-        expandWorkItem = nil
     }
 
     private func cancelCollapse() {
