@@ -38,44 +38,50 @@ struct ResetCouponSummaryView: View {
     }
 }
 
+/// 居中空态（方案 E-1）：虚线圆环图标 + 居中双行文字 + 虚线容器。
 private struct ResetCouponEmptyStateView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var isDark: Bool { colorScheme == .dark }
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 6) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.codexMist.opacity(isDark ? 0.35 : 0.55))
-                    .frame(width: 34, height: 34)
-                Image(systemName: "arrow.counterclockwise.circle")
+                Circle()
+                    .strokeBorder(
+                        Color.codexMuted.opacity(isDark ? 0.50 : 0.55),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+                    .frame(width: 38, height: 38)
+                Image(systemName: "ticket")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.codexMuted.opacity(0.75))
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("重置券 0 张")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("当前没有可用重置券")
-                    .font(.system(size: 9))
                     .foregroundStyle(Color.codexMuted)
             }
 
-            Spacer(minLength: 0)
+            Text("重置券 0 张")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.codexInk)
+
+            Text("当前没有可用重置券")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 14)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 18)
         .background(
-            Color.codexCard.opacity(isDark ? 0.98 : 1),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            Color.codexMist.opacity(isDark ? 0.20 : 0.24),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.codexLine.opacity(isDark ? 0.42 : 0.78), lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    Color.codexLine.opacity(isDark ? 0.50 : 0.60),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
         }
-        .shadow(color: Color.black.opacity(isDark ? 0.1 : 0.04), radius: 10, x: 0, y: 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("重置券 0 张，当前没有可用重置券")
     }
 }
 
