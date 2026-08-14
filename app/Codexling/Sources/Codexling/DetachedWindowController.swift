@@ -797,6 +797,16 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             let point = contentView.convert(event.locationInWindow, from: nil)
             let sidebarWidth = DetachedWindowMetrics.sidebarWidth
 
+            // 置顶 / 方向切换按钮必须保持可点：命中标题栏控件区域时直接放行。
+            // 竖版布局下按钮贴窗口右缘（x > sidebarWidth 且顶部 22pt），
+            // 否则会被下面的拦截逻辑吞掉，表现为「点不了」。
+            if let titleControlsView {
+                let localPoint = titleControlsView.convert(event.locationInWindow, from: nil)
+                if titleControlsView.bounds.contains(localPoint) {
+                    return event
+                }
+            }
+
             // 只处理右侧区域（x > sidebarWidth）的标题栏高度（y <= 22）
             guard point.x > sidebarWidth, point.y <= 22 else { return event }
 
