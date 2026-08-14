@@ -205,12 +205,23 @@ final class StatusBarController: NSObject {
     private let store: UsageSnapshotStore
     private let settings: AppSettingsStore
     private let activityStore: CodexActivityStore
+    private let multiAgentSettings: MultiAgentSettingsStore
     private let frameStore: PetFrameStore
     private let companionStatsStore: CompanionStatsStore
     private let actions: UsageActions
     private let openDetachedWindowFromStatusItem: (NSScreen?) -> Void
     private let hoverPanel = PetHoverPanelController()
     private var capsuleView: StatusCapsuleView?
+    private let notchDetector: MenuBarNotchDetector
+    private let highlightOverlay = ScreenHighlightOverlay()
+    private var notchPanels: [UInt32: NotchCapsulePanelController] = [:]
+    private var ticker = StatusBarTicker()
+    private var agentTickTimer: Timer?
+    private var providerTickTimer: Timer?
+    /// 鼠标悬停在展开面板的 agent 区域时暂停 agent 轮播。
+    private var isAgentAreaHovering = false
+    /// 鼠标悬停在展开面板的供应商区域时暂停供应商轮播。
+    private var isProviderAreaHovering = false
     private var pendingHoverWorkItem: DispatchWorkItem?
     private var pendingHoverHideWorkItem: DispatchWorkItem?
     private var hoverSafeTriangle: HoverSafeTriangle?
@@ -224,6 +235,7 @@ final class StatusBarController: NSObject {
         store: UsageSnapshotStore,
         settings: AppSettingsStore,
         activityStore: CodexActivityStore,
+        multiAgentSettings: MultiAgentSettingsStore,
         frameStore: PetFrameStore,
         companionStatsStore: CompanionStatsStore,
         actions: UsageActions,
@@ -232,12 +244,18 @@ final class StatusBarController: NSObject {
         self.store = store
         self.settings = settings
         self.activityStore = activityStore
+        self.multiAgentSettings = multiAgentSettings
         self.frameStore = frameStore
         self.companionStatsStore = companionStatsStore
         self.actions = actions
         self.openDetachedWindowFromStatusItem = openDetachedWindowFromStatusItem
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        notchDetector = MenuBarNotchDetector()
         super.init()
+
+        notchDetector.onChange = { [weak self] in
+            self?.applyMode()
+        }
 
         hoverPanel.onMouseEntered = { [weak self] in
             self?.cancelHoverPanelHide()
@@ -271,10 +289,22 @@ final class StatusBarController: NSObject {
         }
         configureStatusButton()
         refreshStatusTitle()
+        applyMode()
+
+        // 启动初期 NSScreen.screens 可能尚未枚举完全部显示器（尤其外接屏），
+        // 只显示内建屏刘海。稍后再执行一次，确保所有目标屏的刘海都出现。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.applyMode()
+        }
     }
 
     func refreshThemeAppearance() {
         refreshStatusTitle()
+    }
+
+    /// 刘海显示位置设置变化后重新选择屏幕并切换模式。
+    func refreshNotchDisplay() {
+        applyMode()
     }
 
     private func configureStatusButton() {
@@ -337,34 +367,40 @@ final class StatusBarController: NSObject {
         openDetachedWindowFromStatusItem(statusItem.button?.window?.screen)
     }
 
+    /// 刘海模式：状态栏胶囊已隐藏，打开主窗口时用主屏作为落点。
+    private func openFromNotchPanel() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastStatusItemOpenTimestamp > 0.12 else { return }
+        lastStatusItemOpenTimestamp = now
+        hideHoverPanelUnlessTaskIsActive()
+        openDetachedWindowFromStatusItem(NSScreen.main)
+    }
+
     func refreshStatusTitle() {
-        guard let button = statusItem.button else {
-            DispatchQueue.main.async { [weak self] in
-                self?.refreshStatusTitle()
-            }
-            return
-        }
-
         let snapshot = store.snapshot
-        let quotaText = statusBarQuotaText(snapshot: snapshot, isLoggedIn: store.isLoggedIn)
-
         let activity = activityStore.snapshot
         let activityState = activity.state
+
+        // 双维度数据：左区 Agent 状态、右区供应商额度（独立轮播）
+        let agentTicks = currentAgentTicks()
+        let providerTicks = currentProviderTicks()
+        ticker.clampAgent(to: agentTicks.count)
+        ticker.clampProvider(to: providerTicks.count)
+        let activeAgentCount = agentTicks.count
+        let waitingCount = agentTicks.filter { $0.state == .waitingForUser }.count
+
+        // 共享：降级胶囊/状态栏文本与颜色
         let health = QuotaHealthLevel.from(
             window: snapshot.primaryWindow,
             isLoggedIn: store.isLoggedIn
         )
-        let showsWave = settings.statusBarWaveEnabled
-            && activityState.showsActivityWave
-        let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
-        let compactText = activityState.statusBarText.map {
-            "\($0)·\(quotaText)"
-        } ?? quotaText
-        let reservedText = statusCapsuleReservedText(
-            snapshot: snapshot,
-            isLoggedIn: store.isLoggedIn,
-            showsActivity: activityState.statusBarText != nil
-        )
+        let showsWave = settings.statusBarWaveEnabled && activityState.showsActivityWave
+        let agentText = agentTicks.indices.contains(ticker.agentIndex)
+            ? agentTicks[ticker.agentIndex].statusText : ""
+        let providerText = providerTicks.indices.contains(ticker.providerIndex)
+            ? providerTicks[ticker.providerIndex].quotaText
+            : (store.isLoggedIn ? "无额度" : "未登录")
+        let compactText = agentText.isEmpty ? providerText : "\(agentText)·\(providerText)"
         let indicatorColor = settings.statusBarIndicatorColorMode.resolvedNSColor(
             activityState: activityState,
             quotaHealth: health
@@ -374,32 +410,255 @@ final class StatusBarController: NSObject {
             quotaHealth: health
         )
 
-        // Pet animation remains available in the main window and hover card.
-        capsuleView?.petImage = nil
-        capsuleView?.update(
-            background: .neutral,
-            text: compactText,
-            reservedText: reservedText,
-            backgroundOpacity: CGFloat(settings.statusBarOpacityPercent / 100),
-            colorScheme: settings.resolvedColorScheme,
-            foregroundColor: nil,
-            showsPet: false,
-            indicatorColor: indicatorColor,
-            waveColor: waveColor,
-            showsWave: showsWave,
-            cornerRatio: cornerRatio
-        )
-        if let capsuleView {
-            statusItem.length = capsuleView.preferredWidth
+        // 刘海面板：目标屏幕
+        for screen in targetScreens {
+            notchPanel(for: screen).update(
+                agentTicks: agentTicks,
+                providerTicks: providerTicks,
+                agentIndex: ticker.agentIndex,
+                providerIndex: ticker.providerIndex,
+                activeAgentCount: activeAgentCount,
+                waitingCount: waitingCount
+            )
         }
 
-        updateHoverContent(
-            button: button,
-            activity: activity,
-            showsWave: showsWave
-        )
-        synchronizeHoverPanelVisibility(for: activity, relativeTo: button)
+        // 系统状态栏胶囊：每块屏的菜单栏各一份（降级胶囊）
+        if statusItem.isVisible, let button = statusItem.button {
+            let cornerRatio = CGFloat(settings.statusBarCornerPercent / 100)
+            let reservedText = statusCapsuleReservedText(
+                snapshot: snapshot,
+                isLoggedIn: store.isLoggedIn,
+                showsActivity: !agentTicks.isEmpty || activityState.statusBarText != nil
+            )
 
+            capsuleView?.petImage = nil
+            let providerLogo = providerTicks.indices.contains(ticker.providerIndex)
+                ? BrandAssetCatalog.image(for: providerTicks[ticker.providerIndex].asset)
+                : nil
+            capsuleView?.update(
+                background: .neutral,
+                text: compactText,
+                reservedText: reservedText,
+                backgroundOpacity: CGFloat(settings.statusBarOpacityPercent / 100),
+                colorScheme: settings.resolvedColorScheme,
+                foregroundColor: nil,
+                showsPet: false,
+                indicatorColor: indicatorColor,
+                waveColor: waveColor,
+                showsWave: showsWave,
+                cornerRatio: cornerRatio,
+                providerLogo: providerLogo
+            )
+            if let capsuleView {
+                statusItem.length = capsuleView.preferredWidth
+            }
+
+            updateHoverContent(
+                button: button,
+                activity: activity,
+                showsWave: showsWave
+            )
+            synchronizeHoverPanelVisibility(for: activity, relativeTo: button)
+        }
+
+        // 内容刷新会改 statusItem.length，可能触发系统重排窗口；重新按屏隐藏刘海目标屏的胶囊。
+        applyPerScreenStatusBarVisibility()
+
+        ensureRotationTimers()
+    }
+
+    // MARK: - 刘海模式与降级模式切换
+
+    /// 目标屏幕（显示刘海面板，无论刘海屏 / 非刘海屏）。
+    private var targetScreens: [NSScreen] {
+        switch settings.notchDisplayTarget {
+        case .off:
+            return []
+        case .allDisplays:
+            return NSScreen.screens
+        case .specificScreen(let number):
+            return NSScreen.screens.filter { $0.screenNumber == number }
+        }
+    }
+
+    private func notchPanel(for screen: NSScreen) -> NotchCapsulePanelController {
+        if let panel = notchPanels[screen.screenNumber] { return panel }
+        let panel = NotchCapsulePanelController()
+        panel.onClick = { [weak self] in self?.openFromNotchPanel() }
+        panel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
+        panel.onSelectAgent = { [weak self] index in
+            self?.ticker.agentIndex = index
+            self?.refreshStatusTitle()
+        }
+        panel.onSelectProvider = { [weak self] index in
+            self?.ticker.providerIndex = index
+            self?.refreshStatusTitle()
+        }
+        panel.onAgentHover = { [weak self] hovering in
+            self?.isAgentAreaHovering = hovering
+        }
+        panel.onProviderHover = { [weak self] hovering in
+            self?.isProviderAreaHovering = hovering
+        }
+        notchPanels[screen.screenNumber] = panel
+        return panel
+    }
+
+    private func applyMode() {
+        let targetNumbers = Set(targetScreens.map(\.screenNumber))
+
+        // 刘海面板：目标屏幕（悬停屏幕顶部中央）。
+        for screen in targetScreens {
+            notchPanel(for: screen).show(on: screen)
+        }
+        // 清理非目标屏幕的刘海面板。
+        for (number, panel) in notchPanels where !targetNumbers.contains(number) {
+            panel.hide()
+            notchPanels.removeValue(forKey: number)
+        }
+
+        // 菜单栏胶囊：NSStatusItem 会复制到每块屏的菜单栏，因此始终保留 item，
+        // 只按屏幕隐藏刘海目标屏上的那一个窗口，其余屏正常显示。
+        statusItem.isVisible = true
+        statusItem.button?.isHidden = false
+        applyPerScreenStatusBarVisibility()
+
+        refreshStatusTitle()
+    }
+
+    /// 按显示器控制菜单栏胶囊显隐：刘海目标屏隐藏对应的 NSStatusBarWindow，其余屏显示。
+    /// macOS 开启「显示器使用独立空间」后，每块屏各有一个 NSStatusBarWindow，
+    /// 逐屏设置 alphaValue 即可实现「只藏刘海屏、其余屏保留」，而不是悬停胶囊。
+    private func applyPerScreenStatusBarVisibility() {
+        let targetNumbers = Set(targetScreens.map(\.screenNumber))
+        for window in NSApp.windows {
+            guard String(describing: type(of: window)) == "NSStatusBarWindow" else { continue }
+            guard let screen = window.screen else { continue }
+            let hidden = targetNumbers.contains(screen.screenNumber)
+            // alphaValue 对 NSStatusBarWindow 无效，改隐藏该窗口的 contentView 才能逐屏隐藏胶囊。
+            window.contentView?.isHidden = hidden
+            window.ignoresMouseEvents = hidden
+        }
+    }
+
+    /// 供设置面板在选择显示器后触发红边预览。
+    func highlightScreen(_ screen: NSScreen) {
+        highlightOverlay.flash(on: screen)
+    }
+
+    // MARK: - 双维度数据提取
+
+    private func currentAgentTicks() -> [StatusBarAgentTick] {
+        let snapshot = activityStore.snapshot
+        let statuses = snapshot.activeAgentStatuses
+        guard !statuses.isEmpty else { return [] }
+        return statuses.map { status in
+            let latest = snapshot.activeTasks
+                .filter { $0.agentDisplayName == status.agentName }
+                .max(by: { $0.updatedAt < $1.updatedAt })
+            return StatusBarAgentTick(
+                name: status.agentName,
+                state: status.state,
+                taskCount: status.taskCount,
+                asset: BrandAssetID.forAgentDisplayName(status.agentName),
+                taskTitle: latest?.title ?? "",
+                taskDetail: latest?.detail ?? ""
+            )
+        }
+    }
+
+    private func currentProviderTicks() -> [StatusBarProviderTick] {
+        var ticks: [StatusBarProviderTick] = []
+        if store.isLoggedIn, let tick = currentCodexProviderTick() {
+            ticks.append(tick)
+        }
+        for account in multiAgentSettings.codexAccounts {
+            if let tick = StatusBarProviderTickFactory.codexTick(
+                id: "codex.\(account.id.rawValue.uuidString.lowercased())",
+                label: account.label,
+                accountName: account.label,
+                usage: account.usage
+            ) {
+                ticks.append(tick)
+            }
+        }
+        for connection in multiAgentSettings.deepSeekConnections {
+            if let tick = StatusBarProviderTickFactory.deepSeekTick(connection) {
+                ticks.append(tick)
+            }
+        }
+        return ticks
+    }
+
+    private func currentCodexProviderTick() -> StatusBarProviderTick? {
+        let snapshot = store.snapshot
+        guard snapshot.hasShortWindow || snapshot.hasWeeklyWindow else { return nil }
+        let accountName = snapshot.accountName?.isEmpty == false
+            ? snapshot.accountName!
+            : snapshot.workspaceName
+
+        // 主值优先周额度，主窗口（shortWindow）作为副值。标签取自窗口本身，
+        // 因为 Plus 等计划可能只有周额度窗口（primary_window=604800s，无 5h）。
+        var quotaText: String
+        var detailText = ""
+        if snapshot.hasWeeklyWindow {
+            quotaText = "\(statusBarWindowLabel(snapshot.weekly.label)) \(snapshot.weekly.percentText)"
+            if snapshot.hasShortWindow, let short = snapshot.shortWindow {
+                detailText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
+            }
+        } else if let short = snapshot.shortWindow {
+            quotaText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
+        } else {
+            quotaText = "无额度"
+        }
+
+        return StatusBarProviderTick(
+            id: "codex.current",
+            providerName: "Codex",
+            accountName: accountName.isEmpty ? "Codex" : accountName,
+            asset: .codex,
+            quotaText: quotaText,
+            detailText: detailText
+        )
+    }
+
+    // MARK: - 独立轮播
+
+    private func ensureRotationTimers() {
+        if agentTickTimer == nil {
+            let timer = Timer(timeInterval: 2.8, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.advanceAgentTick()
+                }
+            }
+            agentTickTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        if providerTickTimer == nil {
+            let timer = Timer(timeInterval: 3.6, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.advanceProviderTick()
+                }
+            }
+            providerTickTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func advanceAgentTick() {
+        guard !isAgentAreaHovering else { return }
+        let count = currentAgentTicks().count
+        guard count > 1 else { return }
+        ticker.advanceAgent(count: count)
+        refreshStatusTitle()
+    }
+
+    private func advanceProviderTick() {
+        guard !isProviderAreaHovering else { return }
+        let count = currentProviderTicks().count
+        guard count > 1 else { return }
+        ticker.advanceProvider(count: count)
+        refreshStatusTitle()
     }
 
     private func refreshPetFrame() {
@@ -416,12 +675,26 @@ final class StatusBarController: NSObject {
         showsWave: Bool
     ) {
         guard store.isLoggedIn || activity.keepsHoverPanelVisible else {
-            hoverPanel.update(
-                title: "登录以查看 Codex 用量",
-                detail: "连接 ChatGPT 账号后，即可查看额度与任务状态",
-                meta: "点击打开窗口并登录",
-                showsWave: false
-            )
+            let connectedLabels = multiAgentSettings.deepSeekConnections.map(\.label)
+                + multiAgentSettings.codexAccounts.map(\.label)
+            if connectedLabels.isEmpty {
+                hoverPanel.update(
+                    title: "尚未连接账号",
+                    detail: "登录 Codex 或添加 API Key 后，即可查看用量",
+                    meta: "点击打开窗口",
+                    showsWave: false
+                )
+            } else {
+                let providerText = connectedLabels.count == 1
+                    ? connectedLabels[0]
+                    : "\(connectedLabels.count) 个供应商"
+                hoverPanel.update(
+                    title: "已连接 \(providerText)",
+                    detail: "可查看余额与用量",
+                    meta: "点击打开窗口查看详情",
+                    showsWave: false
+                )
+            }
             button.toolTip = nil
             return
         }
@@ -791,6 +1064,7 @@ final class StatusCapsuleView: NSView {
     private static let inlineContentGap: CGFloat = 4
     private static let dotSize: CGFloat = 8
     private static let capsuleHeight: CGFloat = 24
+    private static let providerLogoSize: CGFloat = 13
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
     private static let activityFlowPresentation =
         ActivityCapsuleWavePresentation.rotatingBorder(lineWidth: 2)
@@ -813,6 +1087,8 @@ final class StatusCapsuleView: NSView {
     private var waveColor: NSColor?
     private var showsWave = false
     private var cornerRatio: CGFloat = 0.5
+    /// 额度前展示的供应商 logo（降级胶囊用）。
+    private var providerLogo: NSImage?
     private var isTrackingPress = false
     private var lastClickTimestamp: TimeInterval = -.infinity
     private var trackingAreaReference: NSTrackingArea?
@@ -876,7 +1152,8 @@ final class StatusCapsuleView: NSView {
         indicatorColor: NSColor?,
         waveColor: NSColor? = nil,
         showsWave: Bool,
-        cornerRatio: CGFloat
+        cornerRatio: CGFloat,
+        providerLogo: NSImage? = nil
     ) {
         self.background = background
         self.colorScheme = colorScheme
@@ -887,6 +1164,7 @@ final class StatusCapsuleView: NSView {
         self.showsPet = showsPet
         self.indicatorColor = indicatorColor
         self.waveColor = waveColor
+        self.providerLogo = providerLogo
         let waveVisibilityChanged = self.showsWave != showsWave
         self.showsWave = showsWave
         self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
@@ -977,6 +1255,19 @@ final class StatusCapsuleView: NSView {
             )
             CTLineDraw(line, context)
             context.restoreGState()
+
+            // CTLineDraw 不会渲染 NSTextAttachment 的图片，这里手动画供应商 logo（垂直居中）。
+            if let logo = providerLogo {
+                let textStartX = indicatorPadding + indicatorWidth + Self.indicatorTextGap
+                let offset = CTLineGetOffsetForStringIndex(line, providerLogoInsertIndex, nil)
+                let logoRect = NSRect(
+                    x: textStartX + offset,
+                    y: (bounds.height - Self.providerLogoSize) / 2,
+                    width: Self.providerLogoSize,
+                    height: Self.providerLogoSize
+                )
+                logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1)
+            }
         }
     }
 
@@ -1024,6 +1315,12 @@ final class StatusCapsuleView: NSView {
             let nextLocation = NSMaxRange(separator)
             searchRange = NSRange(location: nextLocation, length: source.length - nextLocation)
         }
+
+        // 在额度文本前插入对应供应商 logo：有 agent 前缀时插在「·」之后，否则插在开头。
+        // 用 CTRunDelegate 精确预留「logo 宽度 + 右侧间距」，保证左右 margin 对称。
+        if providerLogo != nil {
+            result.insert(Self.logoPlaceholderString(), at: providerLogoInsertIndex)
+        }
         return result
     }
 
@@ -1052,6 +1349,40 @@ final class StatusCapsuleView: NSView {
             return max(0, (bounds.height - StatusPetBadgeRenderer.size.height) / 2)
         }
         return Self.leadingPadding
+    }
+
+    /// 供应商 logo 在文本中的插入位置：有 agent 前缀时在「·」之后，否则在开头。
+    private var providerLogoInsertIndex: Int {
+        let source = text as NSString
+        let separator = source.range(of: "·")
+        return separator.location != NSNotFound ? separator.location + 1 : 0
+    }
+
+    /// 用 CTRunDelegate 预留 logo 占位宽度（logo 宽 + 右侧 `inlineContentGap`）。
+    /// CTLine 不识别 NSTextAttachment 的宽度，必须用 run delegate 才能精确排版。
+    private static func logoPlaceholderString() -> NSAttributedString {
+        let width = providerLogoSize + inlineContentGap
+        let refCon = UnsafeMutableRawPointer.allocate(
+            byteCount: MemoryLayout<CGFloat>.size,
+            alignment: MemoryLayout<CGFloat>.alignment
+        )
+        refCon.storeBytes(of: width, as: CGFloat.self)
+
+        var callbacks = CTRunDelegateCallbacks(
+            version: kCTRunDelegateVersion1,
+            dealloc: { pointer in pointer.deallocate() },
+            getAscent: { _ in 0 },
+            getDescent: { _ in 0 },
+            getWidth: { pointer in pointer.load(as: CGFloat.self) }
+        )
+        let runDelegate = CTRunDelegateCreate(&callbacks, refCon)!
+        let placeholder = NSMutableAttributedString(string: "\u{FFFC}")
+        placeholder.addAttribute(
+            NSAttributedString.Key(kCTRunDelegateAttributeName as String),
+            value: runDelegate,
+            range: NSRange(location: 0, length: 1)
+        )
+        return placeholder
     }
 
     override func viewDidMoveToWindow() {

@@ -45,6 +45,8 @@ actor CodexUsageService {
     private let tokenStore: CodexOAuthTokenStore
     private var activeOAuthCallbackServer: OAuthCallbackServer?
     private var oauthCancellationRequested = false
+    /// 这些接口经代理/VPN 访问时可能耗时 6–13s，20s 超时太紧，放宽到 60s。
+    private static let requestTimeout: TimeInterval = 60
 
     init(tokenStore: CodexOAuthTokenStore = CodexOAuthTokenStore()) {
         self.tokenStore = tokenStore
@@ -71,6 +73,12 @@ actor CodexUsageService {
 
     func disconnect() {
         tokenStore.clear()
+    }
+
+    /// 是否已成功落盘 OAuth token。OAuth 成功但额度抓取失败时，可据此判断
+    /// 「已登录」而非「登录失败」。
+    func hasStoredToken() -> Bool {
+        tokenStore.hasStoredToken()
     }
 
     /// Stops the in-flight browser authorization wait immediately. The caller
@@ -161,7 +169,7 @@ actor CodexUsageService {
     private func exchangeCodeForToken(code: String, verifier: String) async throws -> CodexOAuthToken {
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = Self.requestTimeout
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = formBody([
             "grant_type": "authorization_code",
@@ -197,7 +205,7 @@ actor CodexUsageService {
     private func refreshToken(_ token: CodexOAuthToken) async throws -> CodexOAuthToken {
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = Self.requestTimeout
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = formBody([
             "grant_type": "refresh_token",
@@ -279,7 +287,7 @@ actor CodexUsageService {
     ) async throws -> Any {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 20
+        request.timeoutInterval = Self.requestTimeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Codexling/0.1", forHTTPHeaderField: "User-Agent")
@@ -356,7 +364,7 @@ actor CodexUsageService {
     ) async -> CodexAPIProbe.ProbeHTTPResult {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 20
+        request.timeoutInterval = Self.requestTimeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Codexling/0.1", forHTTPHeaderField: "User-Agent")

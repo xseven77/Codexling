@@ -167,22 +167,36 @@ final class MultiAgentSettingsStore {
                 results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
                 continue
             }
+            let tokenStore: CodexOAuthTokenStore
             do {
-                let tokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: connection))
-                if tokenStore.hasStoredToken() {
-                    let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
-                    results.append(CodexAccountRefreshResult(
-                        id: connection.id,
-                        state: .connected,
-                        usage: codexAccountUsage(from: snapshot)
-                    ))
-                    continue
-                }
+                tokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: connection))
             } catch {
                 results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
                 continue
             }
 
+            if tokenStore.hasStoredToken() {
+                do {
+                    let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
+                    results.append(CodexAccountRefreshResult(
+                        id: connection.id,
+                        state: .connected,
+                        usage: snapshot
+                    ))
+                } catch let codexError as CodexUsageError where codexError == .noStoredToken || codexError == .invalidTokenResponse {
+                    // 令牌缺失或已失效 → 需要重新登录。
+                    results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
+                } catch CodexUsageError.quotaUnavailable {
+                    // 令牌有效但额度接口暂不可用 → 保持「已连接」，仅保留旧额度。
+                    results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage))
+                } catch {
+                    // 网络抖动等瞬时错误 → 不降级，保留原状态。
+                    results.append(CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage))
+                }
+                continue
+            }
+
+            // 没有本地 OAuth token → 回退到 CLI `codex login` 状态。
             let state = manager.authenticationState(for: connection)
             guard state == .connected else {
                 results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
@@ -194,7 +208,7 @@ final class MultiAgentSettingsStore {
                     homeURL: manager.homeURL(for: connection),
                     executableURL: manager.locateCodexExecutable()
                 )
-                results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: usage))
+                results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: codexUsage(from: usage)))
             } catch {
                 results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
             }
@@ -240,6 +254,7 @@ final class MultiAgentSettingsStore {
         isMutatingConnections = true
         defer { isMutatingConnections = false }
         var pendingConnection: CodexAccountConnection?
+        var pendingTokenStore: CodexOAuthTokenStore?
         do {
             let fallback = "Codex 账号 \(codexAccounts.count + 1)"
             var connection = try codexRuntimeManager.createAccount(label: fallback)
@@ -247,6 +262,7 @@ final class MultiAgentSettingsStore {
             let tokenStore = CodexOAuthTokenStore(
                 fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
             )
+            pendingTokenStore = tokenStore
             let service = CodexUsageService(tokenStore: tokenStore)
             activeCodexOAuthService = service
             isCodexOAuthInProgress = true
@@ -260,13 +276,26 @@ final class MultiAgentSettingsStore {
                 fallback: fallback
             )
             connection.authenticationState = .connected
-            connection.usage = codexAccountUsage(from: snapshot)
+            connection.usage = snapshot
             codexAccounts.append(connection)
             try saveRegistry()
             selectCodexConnection(connection)
             lastMessage = "已登录并保存 \(connection.label)"
             return true
         } catch {
+            // OAuth 已成功落盘 token，只是额度抓取失败（如请求超时）→ 仍视为已登录。
+            if let pendingConnection,
+               let tokenStore = pendingTokenStore,
+               tokenStore.hasStoredToken() {
+                var connection = pendingConnection
+                connection.authenticationState = .connected
+                connection.usage = nil
+                codexAccounts.append(connection)
+                try? saveRegistry()
+                selectCodexConnection(connection)
+                lastMessage = "已登录，额度获取失败：\(error.localizedDescription)"
+                return true
+            }
             if let pendingConnection {
                 try? codexRuntimeManager.removeRuntime(for: pendingConnection)
             }
@@ -303,7 +332,7 @@ final class MultiAgentSettingsStore {
                 fallback: connection.label
             )
             codexAccounts[index].authenticationState = .connected
-            codexAccounts[index].usage = codexAccountUsage(from: snapshot)
+            codexAccounts[index].usage = snapshot
             try saveRegistry()
             lastMessage = "已登录并更新 \(codexAccounts[index].label)"
             return true
@@ -521,21 +550,40 @@ final class MultiAgentSettingsStore {
         return trimmed.isEmpty ? fallback : String(trimmed.prefix(60))
     }
 
-    private func codexAccountUsage(from snapshot: CodexUsageSnapshot) -> CodexAccountUsageSnapshot {
-        CodexAccountUsageSnapshot(
-            email: snapshot.accountEmail,
-            planType: snapshot.planName,
-            primary: snapshot.shortWindow.map(codexRateLimitWindow),
-            secondary: snapshot.hasWeeklyWindow ? codexRateLimitWindow(snapshot.weekly) : nil,
-            fetchedAt: snapshot.fetchedAt
+    /// 把 CLI 回退路径返回的精简快照转成与主流程一致的全量快照。
+    private func codexUsage(from usage: CodexAccountUsageSnapshot) -> CodexUsageSnapshot {
+        CodexUsageSnapshot(
+            accountName: nil,
+            accountEmail: usage.email ?? "",
+            workspaceName: "",
+            planName: usage.planType ?? "",
+            shortWindow: usage.primary.map { usageWindow(from: $0, fallbackLabel: "5 小时") },
+            weekly: usage.secondary.map { usageWindow(from: $0, fallbackLabel: "周额度") }
+                ?? UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "未知"),
+            credits: CreditBalance(balance: 0, expiresAt: "未知"),
+            resetCoupons: usage.resetCoupons,
+            fetchedAt: usage.fetchedAt,
+            refreshState: "成功",
+            sourceURL: "",
+            subscriptionActiveUntilISO: usage.subscriptionActiveUntilISO,
+            subscriptionWillRenew: usage.subscriptionWillRenew
         )
     }
 
-    private func codexRateLimitWindow(_ window: UsageWindow) -> CodexAccountRateLimitWindow {
-        CodexAccountRateLimitWindow(
-            usedPercent: 100 - Int((window.percent * 100).rounded()),
-            resetsAt: UsageDateFormat.parseISO8601(window.resetsAt),
-            windowDurationMinutes: nil
+    private func usageWindow(from window: CodexAccountRateLimitWindow, fallbackLabel: String) -> UsageWindow {
+        let label: String
+        if let minutes = window.windowDurationMinutes {
+            if minutes >= 24 * 60 { label = "周额度" }
+            else if minutes >= 60 { label = "\(minutes / 60) 小时" }
+            else { label = "\(minutes) 分钟" }
+        } else {
+            label = fallbackLabel
+        }
+        return UsageWindow(
+            label: label,
+            remaining: window.remainingPercent,
+            total: 100,
+            resetsAt: window.resetsAt.map { UsageDateFormat.display($0) } ?? "未知"
         )
     }
 
@@ -550,5 +598,5 @@ final class MultiAgentSettingsStore {
 private struct CodexAccountRefreshResult: Sendable {
     let id: ConnectionID
     let state: ConnectionAuthenticationState
-    let usage: CodexAccountUsageSnapshot?
+    let usage: CodexUsageSnapshot?
 }

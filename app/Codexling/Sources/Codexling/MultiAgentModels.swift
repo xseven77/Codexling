@@ -168,6 +168,30 @@ struct CodexAccountUsageSnapshot: Equatable, Codable, Sendable {
     let primary: CodexAccountRateLimitWindow?
     let secondary: CodexAccountRateLimitWindow?
     let fetchedAt: Date
+    /// 订阅到期时间（RFC3339）。OAuth 路径会回填，CLI 路径可能为空。
+    let subscriptionActiveUntilISO: String?
+    let subscriptionWillRenew: Bool?
+    let resetCoupons: [ResetCoupon]
+
+    init(
+        email: String?,
+        planType: String?,
+        primary: CodexAccountRateLimitWindow?,
+        secondary: CodexAccountRateLimitWindow?,
+        fetchedAt: Date,
+        subscriptionActiveUntilISO: String? = nil,
+        subscriptionWillRenew: Bool? = nil,
+        resetCoupons: [ResetCoupon] = []
+    ) {
+        self.email = email
+        self.planType = planType
+        self.primary = primary
+        self.secondary = secondary
+        self.fetchedAt = fetchedAt
+        self.subscriptionActiveUntilISO = subscriptionActiveUntilISO
+        self.subscriptionWillRenew = subscriptionWillRenew
+        self.resetCoupons = resetCoupons
+    }
 }
 
 struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
@@ -176,7 +200,8 @@ struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
     let relativeHomeDirectory: String
     var authenticationState: ConnectionAuthenticationState
     var isEnabled: Bool
-    var usage: CodexAccountUsageSnapshot? = nil
+    /// 与主「当前 Codex」完全一致的全量快照（额度/账单/重置券）。
+    var usage: CodexUsageSnapshot? = nil
     let createdAt: Date
 }
 

@@ -33,6 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onWindowAlwaysOnTopChanged = { [weak self] _ in
             self?.windowController?.refreshAlwaysOnTop()
         }
+        settingsStore.onNotchDisplayTargetChanged = { [weak self] target in
+            self?.statusController?.refreshNotchDisplay()
+            // 选择具体显示器后，在该屏幕边缘闪红边提示。
+            if case .specificScreen(let number) = target,
+               let screen = NSScreen.screens.first(where: { $0.screenNumber == number }) {
+                self?.statusController?.highlightScreen(screen)
+            }
+        }
         settingsStore.onPetSettingsChanged = { [weak self] in
             self?.syncCompanionState()
             self?.statusController?.refreshStatusTitle()
@@ -48,12 +56,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let actions = UsageActions(
             refresh: { [weak self] in
-                self?.manualRefreshUsage()
+                guard let self else { return }
+                if self.hasAnyConnection {
+                    self.autoRefreshUsage()
+                } else {
+                    self.loginAndFetchUsage()
+                }
             },
             openUsagePage: {
                 if let url = URL(string: "https://chatgpt.com/codex/settings/usage") {
                     NSWorkspace.shared.open(url)
                 }
+            },
+            loginAndFetch: { [weak self] in
+                self?.loginAndFetchUsage()
             },
             disconnect: { [weak self] in
                 self?.disconnect()
@@ -71,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store: snapshotStore,
             settings: settingsStore,
             activityStore: activityStore,
+            multiAgentSettings: multiAgentSettingsStore,
             frameStore: frameStore,
             companionStatsStore: companionStatsStore,
             actions: actions,
@@ -132,8 +149,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         performUnifiedRefresh(showsToast: false)
     }
 
+    /// 是否已有任一可刷新的连接（主 Codex 已登录、附加 Codex 账号或 DeepSeek Key）。
+    /// 只有完全没有连接时才把「刷新」升级成「登录」。
+    private var hasAnyConnection: Bool {
+        snapshotStore.isLoggedIn
+            || !multiAgentSettingsStore.codexAccounts.isEmpty
+            || !multiAgentSettingsStore.deepSeekConnections.isEmpty
+    }
+
     private func manualRefreshUsage() {
         performUnifiedRefresh(showsToast: true)
+    }
+
+    /// 登录主流程：未登录时拉起 OAuth 授权，成功后 token 落盘并刷新额度。
+    private func loginAndFetchUsage() {
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.refreshUsage(allowOAuthLogin: true)
+            if self.snapshotStore.isLoggedIn {
+                // 主账号登录成功后切回「当前 Codex」。
+                // 即使额度抓取失败，只要 token 已落盘也视为已登录。
+                self.multiAgentSettingsStore.selectCurrentCodexConnection()
+            }
+        }
     }
 
     private func performUnifiedRefresh(showsToast: Bool) {
@@ -148,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             var outcome = await self.multiAgentSettingsStore.refreshAllConnections()
+            self.statusController?.refreshStatusTitle()
             outcome.merge(await self.refreshUsage(allowOAuthLogin: false))
             self.snapshotStore.setUnifiedRefreshing(false)
             if showsToast {
@@ -174,9 +213,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return RefreshOutcome(successCount: 1)
         } catch {
             isRefreshing = false
-            if !allowOAuthLogin,
-               let codexError = error as? CodexUsageError,
-               codexError == .noStoredToken || codexError == .invalidTokenResponse {
+            if allowOAuthLogin, await usageService.hasStoredToken() {
+                // OAuth 已成功并落盘 token，只是额度抓取失败（如请求超时）→
+                // 视为已登录，仅提示额度获取失败，避免误报成「登录失败」。
+                snapshotStore.markAuthenticated(message: "额度获取失败：\(error.localizedDescription)")
+            } else if !allowOAuthLogin,
+                      let codexError = error as? CodexUsageError,
+                      codexError == .noStoredToken || codexError == .invalidTokenResponse {
                 snapshotStore.markAuthenticationExpired()
             } else {
                 snapshotStore.markFailed(error.localizedDescription)

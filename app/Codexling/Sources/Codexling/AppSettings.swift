@@ -174,6 +174,42 @@ enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// 刘海面板出现的目标显示器。
+/// 选项由系统 `NSScreen.screens` 动态提供（具体显示器 + 所有显示器 + 关闭）。
+enum NotchDisplayTarget: Hashable, Sendable {
+    case off
+    case allDisplays
+    case specificScreen(UInt32)
+
+    var storageString: String {
+        switch self {
+        case .off: "off"
+        case .allDisplays: "all"
+        case .specificScreen(let number): "\(number)"
+        }
+    }
+
+    static func fromStorage(_ string: String) -> NotchDisplayTarget {
+        switch string {
+        case "off": return .off
+        case "all": return .allDisplays
+        default: return .specificScreen(UInt32(string) ?? 0)
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .off: "所有显示器都不开刘海"
+        case .allDisplays: "所有显示器"
+        case .specificScreen: "指定显示器"
+        }
+    }
+}
+
+extension NotchDisplayTarget: Identifiable {
+    public var id: String { storageString }
+}
+
 enum StatusCapsuleColorMode: String, CaseIterable, Identifiable {
     case activityState
     case quotaHealth
@@ -262,6 +298,7 @@ final class AppSettingsStore {
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
         static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
         static let dashboardOrientation = "codexling.dashboardOrientation"
+        static let notchDisplayTarget = "codexling.notchDisplayTarget"
     }
 
     private let defaults: UserDefaults
@@ -390,6 +427,14 @@ final class AppSettingsStore {
         }
     }
 
+    var notchDisplayTarget: NotchDisplayTarget {
+        didSet {
+            guard notchDisplayTarget != oldValue else { return }
+            defaults.set(notchDisplayTarget.storageString, forKey: Keys.notchDisplayTarget)
+            onNotchDisplayTargetChanged?(notchDisplayTarget)
+        }
+    }
+
     private(set) var availablePets: [CodexPet] = []
     private(set) var isCodexlingPetInstalled = false
     private(set) var codexlingPetInstallationError: String?
@@ -409,6 +454,7 @@ final class AppSettingsStore {
     var onPetSettingsChanged: (() -> Void)?
     var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
     var onWindowAlwaysOnTopChanged: ((Bool) -> Void)?
+    var onNotchDisplayTargetChanged: ((NotchDisplayTarget) -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
@@ -461,6 +507,18 @@ final class AppSettingsStore {
         windowAlwaysOnTop = defaults.object(forKey: Keys.windowAlwaysOnTop) as? Bool ?? false
         dashboardOrientation = defaults.string(forKey: Keys.dashboardOrientation)
             .flatMap(DashboardOrientation.init(rawValue:)) ?? .horizontal
+        if let stored = defaults.string(forKey: Keys.notchDisplayTarget) {
+            notchDisplayTarget = NotchDisplayTarget.fromStorage(stored)
+        } else {
+            // 首次启动：内建显示器是刘海屏则默认选中内建屏，否则默认所有显示器。
+            if let builtin = NSScreen.screens.first(where: \.isBuiltin), builtin.isNotched {
+                notchDisplayTarget = .specificScreen(builtin.screenNumber)
+            } else {
+                notchDisplayTarget = .allDisplays
+            }
+            // 首次启动的默认值也要持久化，后续启动直接读取，不再重复判定。
+            defaults.set(notchDisplayTarget.storageString, forKey: Keys.notchDisplayTarget)
+        }
         // The status capsule now has one behavior: open the detached window.
         // Remove the retired popover preference so older installations cannot
         // retain an unreachable mode.

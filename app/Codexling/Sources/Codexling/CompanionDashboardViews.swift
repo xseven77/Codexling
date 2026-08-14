@@ -51,53 +51,48 @@ struct CompanionDashboardView: View {
             )
         }
 
-        if let connection = multiAgentSettings.selectedCodexAccount {
-            let isConnected = connection.authenticationState == .connected
-            return DashboardProviderContext(
-                asset: .codex,
-                title: connection.label,
-                subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
-                badge: connection.usage?.planType ?? "Codex",
-                badgeColor: isConnected ? .codexGreen : .codexAmber,
-                statusText: isConnected ? activityStore.snapshot.state.taskLabel : "待登录",
-                statusColor: isConnected ? activityStore.snapshot.state.statusColor : .codexAmber,
-                summaryText: "独立 Codex 账号",
-                accountLinkTitle: "Codex Usage",
-                accountLinkURL: DashboardProviderLinks.codexUsage,
-                officialLinkHelp: "打开 Codex 官方 Usage",
-                officialLinkURL: DashboardProviderLinks.codexUsage,
-                syncState: isConnected ? "成功" : "待登录",
-                syncedAt: connection.usage?.fetchedAt ?? connection.createdAt,
-                isRefreshing: store.isUnifiedRefreshing,
-                emphasizesAccountLink: false
-            )
-        }
-
+        let snapshot = displayedCodexSnapshot
         return DashboardProviderContext(
             asset: .codex,
-            title: store.snapshot.companionAccountName,
-            subtitle: store.snapshot.accountEmail,
-            badge: store.snapshot.companionPlanBadgeText,
+            title: snapshot.companionAccountName,
+            subtitle: snapshot.accountEmail,
+            badge: snapshot.companionPlanBadgeText,
             badgeColor: .codexGreen,
             statusText: activityStore.snapshot.state.taskLabel,
             statusColor: activityStore.snapshot.state.statusColor,
-            summaryText: store.snapshot.subscriptionCompactSummaryLine ?? "订阅与账单",
+            summaryText: snapshot.subscriptionCompactSummaryLine ?? "订阅与账单",
             accountLinkTitle: "官方 Billing",
             accountLinkURL: ChatGPTWebLinks.billingPage,
             officialLinkHelp: "打开 Codex 官方 Usage",
             officialLinkURL: DashboardProviderLinks.codexUsage,
-            syncState: store.snapshot.refreshState,
-            syncedAt: store.snapshot.fetchedAt,
-            isRefreshing: store.snapshot.refreshState == "刷新中",
-            emphasizesAccountLink: store.snapshot.showsSubscriptionExpiryReminder
+            syncState: snapshot.refreshState,
+            syncedAt: snapshot.fetchedAt,
+            isRefreshing: snapshot.refreshState == "刷新中",
+            emphasizesAccountLink: snapshot.showsSubscriptionExpiryReminder
         )
     }
 
-    /// 订阅到期提醒来自 Codex 订阅快照，只在查看 Codex 连接时展示；
-    /// 切换到 DeepSeek 等非 Codex 连接时隐藏。
+    /// 选中的 Codex 快照：附加账号用其 usage，主账号用 store.snapshot。
+    private var displayedCodexSnapshot: CodexUsageSnapshot {
+        if let account = multiAgentSettings.selectedCodexAccount, let usage = account.usage {
+            return usage
+        }
+        return store.snapshot
+    }
+
+    /// 是否处于「已连接 Codex」状态（主账号或附加账号任一）。
+    private var isCodexConnected: Bool {
+        if let account = multiAgentSettings.selectedCodexAccount {
+            return account.authenticationState == .connected
+        }
+        return store.isLoggedIn
+    }
+
+    /// 订阅到期提醒来自当前选中的 Codex 快照，仅在已连接且未切到 DeepSeek 时展示。
     private var showsCodexSubscriptionExpiryReminder: Bool {
+        guard isCodexConnected else { return false }
         guard multiAgentSettings.selectedDeepSeekConnection == nil else { return false }
-        return store.snapshot.showsSubscriptionExpiryReminder
+        return displayedCodexSnapshot.showsSubscriptionExpiryReminder
     }
 
     private func refreshSelectedProvider() {
@@ -206,7 +201,7 @@ struct CompanionDashboardView: View {
                     dashboardConnectionBar
 
                     dashboardContentFrame(fillsHeight: true) {
-                        if multiAgentSettings.selectedDeepSeekConnection == nil {
+                        if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
                             CompanionAccountRow(context: selectedProviderContext)
                         }
 
@@ -253,7 +248,7 @@ struct CompanionDashboardView: View {
                 dashboardConnectionBar
 
                 dashboardContentFrame(fillsHeight: true) {
-                    if multiAgentSettings.selectedDeepSeekConnection == nil {
+                    if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
                         CompanionAccountRow(context: selectedProviderContext)
                     }
 
@@ -323,21 +318,22 @@ struct CompanionDashboardView: View {
     }
 
     private var quotaSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let snapshot = displayedCodexSnapshot
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("额度")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
-                if let nextReset = store.snapshot.detailWindow?.resetsAt {
+                if let nextReset = snapshot.detailWindow?.resetsAt {
                     Text("额度重置：\(UsageDateFormat.dateAndTime(nextReset))")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.codexMuted)
                 }
             }
 
-            QuotaCardsView(snapshot: store.snapshot, isLoggedIn: store.isLoggedIn)
+            QuotaCardsView(snapshot: snapshot, isLoggedIn: isCodexConnected)
 
-            ResetCouponSummaryView(coupons: store.snapshot.resetCoupons)
+            ResetCouponSummaryView(coupons: snapshot.resetCoupons)
                 .padding(.top, 4)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -405,7 +401,7 @@ struct CompanionDashboardView: View {
                 .overlay(alignment: .bottom) { CodexDivider() }
 
                 dashboardContentFrame(fillsHeight: true) {
-                    if multiAgentSettings.selectedDeepSeekConnection == nil {
+                    if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
                         CompanionAccountRow(context: selectedProviderContext)
                     }
 
@@ -468,7 +464,7 @@ struct CompanionDashboardView: View {
             .overlay(alignment: .bottom) { CodexDivider() }
 
             dashboardContentFrame(fillsHeight: false) {
-                if multiAgentSettings.selectedDeepSeekConnection == nil {
+                if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
                     CompanionAccountRow(context: selectedProviderContext)
                 }
 
@@ -553,12 +549,13 @@ struct CompanionDashboardView: View {
     }
 
     private var verticalQuotaSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let snapshot = displayedCodexSnapshot
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("额度")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 6)
-                if let nextReset = store.snapshot.detailWindow?.resetsAt {
+                if let nextReset = snapshot.detailWindow?.resetsAt {
                     Text("额度重置：\(UsageDateFormat.dateAndTime(nextReset))")
                         .font(.system(size: 10))
                         .foregroundStyle(Color.codexMuted)
@@ -566,9 +563,9 @@ struct CompanionDashboardView: View {
                 }
             }
 
-            VerticalQuotaRowsView(snapshot: store.snapshot, isLoggedIn: store.isLoggedIn)
+            VerticalQuotaRowsView(snapshot: snapshot, isLoggedIn: isCodexConnected)
 
-            ResetCouponSummaryView(coupons: store.snapshot.resetCoupons)
+            ResetCouponSummaryView(coupons: snapshot.resetCoupons)
                 .padding(.top, 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -584,16 +581,10 @@ struct CompanionDashboardView: View {
                 actions.refresh()
             }
             .padding(.top, 18)
-        } else if let connection = multiAgentSettings.selectedCodexAccount {
-            ManagedCodexDashboardCard(
-                connection: connection,
-                store: multiAgentSettings,
-                isRefreshing: store.isUnifiedRefreshing,
-                onRefresh: actions.refresh
-            )
-                .padding(.top, 18)
-        } else {
+        } else if isCodexConnected {
             quotaSection
+        } else {
+            notLoggedInSection
         }
     }
 
@@ -606,16 +597,75 @@ struct CompanionDashboardView: View {
             ) {
                 actions.refresh()
             }
-        } else if let connection = multiAgentSettings.selectedCodexAccount {
-            ManagedCodexDashboardCard(
-                connection: connection,
-                store: multiAgentSettings,
-                isRefreshing: store.isUnifiedRefreshing,
-                onRefresh: actions.refresh
-            )
-        } else {
+        } else if isCodexConnected {
             verticalQuotaSection
+        } else {
+            notLoggedInSection
         }
+    }
+
+    /// 未登录 / 授权中的简单状态，不展示额度等账号相关 UI。
+    private var notLoggedInSection: some View {
+        let authorizing = store.snapshot.refreshState == "授权中"
+        return VStack(spacing: 10) {
+            Spacer(minLength: 24)
+            if authorizing {
+                AuthorizingHourglassIcon()
+            } else {
+                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundStyle(Color.codexMuted.opacity(0.7))
+            }
+            Text(authorizing ? "等待授权…" : "尚未连接 Codex")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.codexInk)
+            Text(authorizing
+                ? "请在浏览器中完成 ChatGPT 授权"
+                : "登录后即可查看额度")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.codexMuted)
+
+            if !authorizing {
+                Button {
+                    actions.loginAndFetch()
+                } label: {
+                    Text("登录 Codex")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 20)
+                        .frame(height: 40)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 10, ink: .softLight))
+                .padding(.top, 6)
+            }
+            Spacer(minLength: 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 18)
+    }
+}
+
+/// 授权等待时的沙漏：转一圈后停 1 秒，再重复。
+private struct AuthorizingHourglassIcon: View {
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        Image(systemName: "hourglass")
+            .font(.system(size: 26, weight: .medium))
+            .foregroundStyle(Color.codexMuted.opacity(0.7))
+            .rotationEffect(.degrees(rotation))
+            .task {
+                while !Task.isCancelled {
+                    withAnimation(.linear(duration: 1.0)) {
+                        rotation += 360
+                    }
+                    // 等转完一圈
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    // 停 1 秒
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
     }
 }
 
@@ -853,9 +903,8 @@ private struct DashboardConnectionSwitcher: View {
 
     private func codexQuotaColor(for connection: CodexAccountConnection) -> Color {
         guard connection.authenticationState == .connected else { return .codexRed }
-        guard let remainingPercent = (connection.usage?.primary ?? connection.usage?.secondary)?.remainingPercent else {
-            return .codexMuted
-        }
+        guard let usage = connection.usage else { return .codexMuted }
+        let remainingPercent = Int((usage.primaryWindow.percent * 100).rounded())
 
         switch remainingPercent {
         case 50...:
@@ -888,177 +937,6 @@ private struct ConnectionSwitcherItem: Identifiable {
     let action: () -> Void
 
     var id: String { key }
-}
-
-private struct ManagedCodexDashboardCard: View {
-    let connection: CodexAccountConnection
-    @Bindable var store: MultiAgentSettingsStore
-    let isRefreshing: Bool
-    let onRefresh: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
-                BrandIconView(asset: .codex, size: 40, cornerRadius: 11)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text("Codex").font(.system(size: 20, weight: .bold))
-                        Text(connection.usage?.planType ?? "官方 CLI")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.codexGreen)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.codexGreen.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    Text([connection.label, connection.usage?.email].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 9)).foregroundStyle(Color.codexMuted)
-                }
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle().fill(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
-                        .frame(width: 6, height: 6)
-                    Text(connection.authenticationState == .connected ? "已连接" : "待登录")
-                }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background((connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber).opacity(0.10), in: Capsule())
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("当前任务")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Color.codexMuted)
-                        .textCase(.uppercase)
-                    Spacer()
-                    Text("独立 CODEX_HOME · \(connection.relativeHomeDirectory.prefix(8))")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Color.codexMuted)
-                }
-                VStack(spacing: 5) {
-                    Text(connection.authenticationState == .connected ? "现在很安静" : "等待官方登录")
-                        .font(.system(size: 12, weight: .bold))
-                    Text(connection.authenticationState == .connected
-                         ? "这个账号暂时没有由 Hook 上报的进行中任务"
-                         : "通过官方 OAuth 单独授权，不读取或复制其他账号的 token")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.codexMuted)
-                }
-                .frame(maxWidth: .infinity, minHeight: 94)
-                HStack {
-                    Button(action: onRefresh) {
-                        Group {
-                            if isRefreshing {
-                                ProgressView().controlSize(.mini)
-                            } else {
-                                Text("检查登录")
-                            }
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 13)
-                        .frame(height: 32)
-                        .background(Color.codexLine.opacity(0.45), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-                    .disabled(isRefreshing)
-                    Spacer()
-                    if connection.authenticationState != .connected {
-                        if store.isCodexOAuthInProgress {
-                            Button {
-                                store.cancelCurrentCodexOAuth()
-                            } label: {
-                                Label("取消登录", systemImage: "xmark")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.codexRed)
-                                    .padding(.horizontal, 13)
-                                    .frame(height: 32)
-                                    .background(Color.codexRed.opacity(0.09), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-                        } else {
-                            Button {
-                                Task { await store.authenticateCodexAccount(connection) }
-                            } label: {
-                                Text("官方登录")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.white)
-                                    .padding(.horizontal, 13)
-                                    .frame(height: 32)
-                                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
-                            .disabled(store.isMutatingConnections)
-                        }
-                    }
-                }
-            }
-            .padding(16)
-            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(Color.codexLine) }
-            .padding(.top, 20)
-
-            if let usage = connection.usage,
-               usage.primary != nil || usage.secondary != nil {
-                HStack {
-                    Text("额度").font(.system(size: 12, weight: .bold))
-                    Spacer()
-                    Text("来源：Codex 官方接口")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.codexMuted)
-                }
-                .padding(.top, 16)
-                HStack(spacing: 8) {
-                    if let primary = usage.primary {
-                        ManagedCodexQuotaRing(label: quotaLabel(primary), window: primary)
-                    }
-                    if let secondary = usage.secondary {
-                        ManagedCodexQuotaRing(label: quotaLabel(secondary), window: secondary)
-                    }
-                }
-                .padding(.top, 8)
-            }
-        }
-    }
-
-    private func quotaLabel(_ window: CodexAccountRateLimitWindow) -> String {
-        guard let minutes = window.windowDurationMinutes else { return "额度" }
-        if minutes >= 24 * 60 { return "本周" }
-        if minutes >= 60 { return "\(minutes / 60) 小时" }
-        return "\(minutes) 分钟"
-    }
-}
-
-private struct ManagedCodexQuotaRing: View {
-    let label: String
-    let window: CodexAccountRateLimitWindow
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().stroke(Color.codexLine, lineWidth: 5)
-                Circle()
-                    .trim(from: 0, to: CGFloat(window.remainingPercent) / 100)
-                    .stroke(Color.codexGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text("\(window.remainingPercent)")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label).font(.system(size: 10, weight: .bold))
-                Text("剩余 \(window.remainingPercent)%")
-                    .font(.system(size: 8))
-                    .foregroundStyle(Color.codexMuted)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity)
-        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 15).strokeBorder(Color.codexLine) }
-    }
 }
 
 private struct DeepSeekDashboardCard: View {

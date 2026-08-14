@@ -213,6 +213,17 @@ final class UsageSnapshotStore {
         snapshot.refreshState = message
     }
 
+    /// OAuth 已成功、token 已落盘，但额度抓取失败（如请求超时）。此时视为已登录，
+    /// 用空态替换掉可能的 `preview` 占位数据，避免展示假的账号/额度。
+    func markAuthenticated(message: String) {
+        isLoggedIn = true
+        if snapshot.sourceURL == "preview" {
+            snapshot = .empty(refreshState: message)
+        } else {
+            snapshot.refreshState = message
+        }
+    }
+
     func showManualRefreshToast(for outcome: RefreshOutcome) {
         refreshToastGeneration += 1
         let generation = refreshToastGeneration
@@ -315,6 +326,7 @@ struct UsageSnapshotCache {
 struct UsageActions {
     var refresh: () -> Void
     var openUsagePage: () -> Void
+    var loginAndFetch: () -> Void
     var disconnect: () -> Void
     var openDetachedWindow: () -> Void
     var quit: () -> Void
@@ -455,6 +467,25 @@ extension QuotaHealthLevel {
 }
 
 extension CodexUsageSnapshot {
+    /// 已登录但额度尚未获取成功时的空态，避免把 `preview` 的假数据当成真实额度展示。
+    static func empty(refreshState: String) -> CodexUsageSnapshot {
+        CodexUsageSnapshot(
+            accountName: nil,
+            accountEmail: "",
+            workspaceName: "",
+            planName: "",
+            shortWindow: nil,
+            weekly: UsageWindow(label: "周额度", remaining: 0, total: 0, resetsAt: "未知"),
+            credits: CreditBalance(balance: 0, expiresAt: "未知"),
+            resetCoupons: [],
+            fetchedAt: Date(),
+            refreshState: refreshState,
+            sourceURL: "",
+            subscriptionActiveUntilISO: nil,
+            subscriptionWillRenew: nil
+        )
+    }
+
     static let preview = CodexUsageSnapshot(
         accountName: "name",
         accountEmail: "name@example.com",

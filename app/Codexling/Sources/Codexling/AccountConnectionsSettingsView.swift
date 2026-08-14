@@ -125,8 +125,8 @@ struct AccountConnectionsModalView: View {
             if selectedTab == .agent {
                 connectionOption(
                     asset: .codex,
-                    title: "登录另一个 Codex 账号",
-                    subtitle: "通过官方 OAuth 授权",
+                    title: "添加 Codex 账号",
+                    subtitle: "通过官方 OAuth 授权，与主账号同级",
                     supportsOAuthCancellation: true
                 ) {
                     resetFields()
@@ -198,31 +198,18 @@ struct AccountConnectionsModalView: View {
             .disabled(store.isMutatingConnections)
 
             if supportsOAuthCancellation && store.isCodexOAuthInProgress {
-                Button {
+                CancelCodexOAuthButton {
                     store.cancelCurrentCodexOAuth()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                        Text("取消")
-                    }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.codexRed)
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
-                    .background(Color.codexRed.opacity(0.08), in: Capsule())
                 }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 15))
                 .padding(.trailing, 9)
-                .accessibilityLabel("取消 Codex OAuth 登录")
             }
         }
     }
 
     private var deepSeekForm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("连接名称", text: $label)
-                .textFieldStyle(.roundedBorder)
+            PlainTextField(text: $label, placeholder: "连接名称")
+                .frame(height: 28)
             PlainTextField(text: $apiKey, placeholder: "sk-…")
                 .frame(height: 28)
             Text("Key 明文显示，可选中复制", tableName: nil, bundle: nil, comment: "")
@@ -304,6 +291,43 @@ struct AccountConnectionsModalView: View {
 
     private var closeButtonSurface: Color {
         colorScheme == .dark ? Color.black.opacity(0.12) : Color.black.opacity(0.035)
+    }
+}
+
+/// 取消 Codex OAuth 的按钮：未悬停时只显示灰色 spin，悬停后才暴露「x 取消」。
+private struct CancelCodexOAuthButton: View {
+    let onCancel: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onCancel) {
+            Group {
+                if isHovered {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("取消")
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexRed)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.gray)
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                (isHovered ? Color.codexRed : Color.gray).opacity(0.08),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(CodexPressableStyle(cornerRadius: 15))
+        .onHover { isHovered in
+            self.isHovered = isHovered
+        }
+        .accessibilityLabel("取消 Codex OAuth 登录")
     }
 }
 

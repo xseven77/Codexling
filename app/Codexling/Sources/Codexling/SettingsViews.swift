@@ -463,7 +463,7 @@ struct SettingsView: View {
                             accountPoolRow(
                                 asset: .codex,
                                 title: connection.label,
-                                subtitle: connection.usage?.email ?? "独立 CODEX_HOME",
+                                subtitle: connection.usage?.accountEmail ?? "Codex 账号",
                                 badge: connection.authenticationState == .connected ? "已连接" : "待登录",
                                 badgeColor: connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber,
                                 actionTitle: "删除"
@@ -1069,6 +1069,18 @@ struct SettingsView: View {
                         selection: $settings.taskHoverDisplayMode,
                         options: TaskHoverDisplayMode.allCases,
                         title: \.title
+                    )
+                }
+                CodexDivider()
+
+                SettingsInlineRow(
+                    title: "刘海面板显示位置",
+                    subtitle: "选择显示刘海面板的显示器（其余显示器显示降级胶囊）"
+                ) {
+                    SettingsMenuPicker(
+                        selection: $settings.notchDisplayTarget,
+                        options: notchDisplayOptions,
+                        title: { notchDisplayTitle($0) }
                     )
                 }
                 }
@@ -2022,5 +2034,30 @@ struct SettingsGroupSurfaceModifier: ViewModifier {
                     lineWidth: CodexDivider.renderedThickness(displayScale: displayScale)
                 )
             }
+    }
+}
+
+// MARK: - 刘海显示器选项（系统 API 动态获取）
+
+private var notchDisplayOptions: [NotchDisplayTarget] {
+    var options: [NotchDisplayTarget] = []
+    for screen in NSScreen.screens {
+        options.append(.specificScreen(screen.screenNumber))
+    }
+    // 特殊选项放到最后。
+    options.append(.allDisplays)
+    options.append(.off)
+    return options
+}
+
+private func notchDisplayTitle(_ target: NotchDisplayTarget) -> String {
+    switch target {
+    case .off:
+        return "所有显示器都不开刘海"
+    case .allDisplays:
+        return "所有显示器"
+    case .specificScreen(let number):
+        return NSScreen.screens.first(where: { $0.screenNumber == number })?.displayName
+            ?? "显示器 \(number)"
     }
 }

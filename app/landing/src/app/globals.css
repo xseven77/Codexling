@@ -238,6 +238,64 @@ input:focus-visible {
   }
 }
 
+/* ============================================================
+   降级胶囊 · 顺时针边缘流光（贴近 Swift rotatingBorder）
+   光带沿胶囊边框顺时针旋转，颜色跟随当前 Agent 状态，只在 1.5pt 边缘显示。
+   旧 status-edge-glow 保留给首页其它组件，此处不复用。
+   ============================================================ */
+@property --capsule-flow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.status-capsule-flow {
+  position: relative;
+  isolation: isolate;
+}
+
+.status-capsule-flow::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--capsule-flow-angle),
+    transparent 0deg,
+    var(--capsule-flow-color, rgba(122, 66, 245, 0.95)) 55deg,
+    transparent 130deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: capsule-flow-spin 1.6s linear infinite;
+  pointer-events: none;
+}
+
+.status-capsule-flow__inner {
+  position: absolute;
+  z-index: 1;
+  inset: 1.5px;
+  border-radius: inherit;
+  background: var(--preview-card);
+}
+
+@keyframes capsule-flow-spin {
+  to {
+    --capsule-flow-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-capsule-flow::before {
+    animation: none;
+  }
+}
+
 @keyframes float {
   0%,
   100% {
