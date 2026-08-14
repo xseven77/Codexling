@@ -93,6 +93,13 @@ struct CompanionDashboardView: View {
         )
     }
 
+    /// 订阅到期提醒来自 Codex 订阅快照，只在查看 Codex 连接时展示；
+    /// 切换到 DeepSeek 等非 Codex 连接时隐藏。
+    private var showsCodexSubscriptionExpiryReminder: Bool {
+        guard multiAgentSettings.selectedDeepSeekConnection == nil else { return false }
+        return store.snapshot.showsSubscriptionExpiryReminder
+    }
+
     private func refreshSelectedProvider() {
         actions.refresh()
     }
@@ -273,10 +280,11 @@ struct CompanionDashboardView: View {
 
     private var horizontalDashboardMainContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if store.snapshot.showsSubscriptionExpiryReminder,
+            if showsCodexSubscriptionExpiryReminder,
                let message = store.snapshot.subscriptionExpiryReminderMessage {
                 SubscriptionExpiryReminderBanner(message: message)
                     .padding(.top, 12)
+                    .padding(.bottom, 12)
             }
 
             selectedConnectionSection
@@ -402,10 +410,10 @@ struct CompanionDashboardView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 0) {
-                        if store.snapshot.showsSubscriptionExpiryReminder,
+                        if showsCodexSubscriptionExpiryReminder,
                            let message = store.snapshot.subscriptionExpiryReminderMessage {
                             SubscriptionExpiryReminderBanner(message: message)
-                                .padding(.bottom, 3)
+                                .padding(.bottom, 12)
                         }
                         selectedVerticalConnectionSection
                     }
@@ -465,10 +473,10 @@ struct CompanionDashboardView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
-                    if store.snapshot.showsSubscriptionExpiryReminder,
+                    if showsCodexSubscriptionExpiryReminder,
                        let message = store.snapshot.subscriptionExpiryReminderMessage {
                         SubscriptionExpiryReminderBanner(message: message)
-                            .padding(.bottom, 3)
+                            .padding(.bottom, 12)
                     }
                     selectedVerticalConnectionSection
                 }
