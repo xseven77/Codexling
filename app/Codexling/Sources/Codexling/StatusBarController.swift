@@ -433,6 +433,9 @@ final class StatusBarController: NSObject {
             )
 
             capsuleView?.petImage = nil
+            let agentLogo = agentTicks.indices.contains(ticker.agentIndex)
+                ? BrandAssetCatalog.image(for: agentTicks[ticker.agentIndex].asset)
+                : nil
             let providerLogo = providerTicks.indices.contains(ticker.providerIndex)
                 ? BrandAssetCatalog.image(for: providerTicks[ticker.providerIndex].asset)
                 : nil
@@ -448,7 +451,8 @@ final class StatusBarController: NSObject {
                 waveColor: waveColor,
                 showsWave: showsWave,
                 cornerRatio: cornerRatio,
-                providerLogo: providerLogo
+                providerLogo: providerLogo,
+                agentLogo: agentLogo
             )
             if let capsuleView {
                 statusItem.length = capsuleView.preferredWidth
@@ -1039,6 +1043,7 @@ final class StatusCapsuleView: NSView {
     private static let dotSize: CGFloat = 8
     private static let capsuleHeight: CGFloat = 24
     private static let providerLogoSize: CGFloat = 13
+    private static let agentLogoSize: CGFloat = 14
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
     private static let activityFlowPresentation =
         ActivityCapsuleWavePresentation.rotatingBorder(lineWidth: 2)
@@ -1047,6 +1052,10 @@ final class StatusCapsuleView: NSView {
     var onMouseEntered: (() -> Void)?
     var onMouseExited: (() -> Void)?
     var petImage: NSImage? {
+        didSet { invalidateCapsuleDisplay() }
+    }
+    /// 当前 agent 的品牌 logo（降级胶囊左侧指示位，替代状态圆点）。
+    var agentLogo: NSImage? {
         didSet { invalidateCapsuleDisplay() }
     }
 
@@ -1076,14 +1085,25 @@ final class StatusCapsuleView: NSView {
 
     var preferredWidth: CGFloat {
         let textWidth = ceil(max(attributedText.size().width, attributedReservedText.size().width))
-        let indicatorWidth = showsPet && petImage != nil
-            ? StatusPetBadgeRenderer.size.width
-            : Self.dotSize
-        return indicatorPadding
-            + indicatorWidth
-            + Self.indicatorTextGap
+        return textLeadingOffset
             + textWidth
             + Self.trailingPadding
+    }
+
+    /// 从胶囊左边缘到文本起点的总偏移（指示器 + 指示器与文本的间距）。
+    private var textLeadingOffset: CGFloat {
+        if agentLogo != nil {
+            // [圆灯 8] [4] [logo 14] [4] → 文本，logo 左右 margin 与供应商 logo 一致（4pt）。
+            return indicatorPadding
+                + Self.dotSize
+                + Self.inlineContentGap
+                + Self.agentLogoSize
+                + Self.inlineContentGap
+        }
+        if showsPet, petImage != nil {
+            return indicatorPadding + StatusPetBadgeRenderer.size.width + Self.indicatorTextGap
+        }
+        return indicatorPadding + Self.dotSize + Self.indicatorTextGap
     }
 
     override init(frame frameRect: NSRect) {
@@ -1127,7 +1147,8 @@ final class StatusCapsuleView: NSView {
         waveColor: NSColor? = nil,
         showsWave: Bool,
         cornerRatio: CGFloat,
-        providerLogo: NSImage? = nil
+        providerLogo: NSImage? = nil,
+        agentLogo: NSImage? = nil
     ) {
         self.background = background
         self.colorScheme = colorScheme
@@ -1139,6 +1160,7 @@ final class StatusCapsuleView: NSView {
         self.indicatorColor = indicatorColor
         self.waveColor = waveColor
         self.providerLogo = providerLogo
+        self.agentLogo = agentLogo
         let waveVisibilityChanged = self.showsWave != showsWave
         self.showsWave = showsWave
         self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
@@ -1166,9 +1188,18 @@ final class StatusCapsuleView: NSView {
         drawMaterialRipples(clippedTo: outerPath)
         drawWave()
 
-        let indicatorWidth: CGFloat
-        if showsPet, let petImage {
-            indicatorWidth = StatusPetBadgeRenderer.size.width
+        if let agentLogo {
+            // 圆灯保持原位置与尺寸，logo 插在圆灯右侧和文本之间，左右 margin 与供应商 logo 一致。
+            drawStatusDot(centerX: indicatorPadding + Self.dotSize / 2, size: Self.dotSize)
+            let logoX = indicatorPadding + Self.dotSize + Self.inlineContentGap
+            let logoRect = NSRect(
+                x: logoX,
+                y: (bounds.height - Self.agentLogoSize) / 2,
+                width: Self.agentLogoSize,
+                height: Self.agentLogoSize
+            )
+            agentLogo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1)
+        } else if showsPet, let petImage {
             let imageRect = NSRect(
                 x: indicatorPadding,
                 y: bounds.midY - StatusPetBadgeRenderer.size.height / 2,
@@ -1177,31 +1208,7 @@ final class StatusCapsuleView: NSView {
             )
             petImage.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1)
         } else {
-            indicatorWidth = Self.dotSize
-            let dotRect = NSRect(
-                x: indicatorPadding,
-                y: (bounds.height - Self.dotSize) / 2,
-                width: Self.dotSize,
-                height: Self.dotSize
-            )
-            let haloPath = NSBezierPath(ovalIn: dotRect.insetBy(dx: -1.2, dy: -1.2))
-            NSColor.white.withAlphaComponent(0.58).setFill()
-            haloPath.fill()
-
-            NSGraphicsContext.saveGraphicsState()
-            let glow = NSShadow()
-            glow.shadowColor = NSColor.white.withAlphaComponent(0.72)
-            glow.shadowBlurRadius = 2.2
-            glow.shadowOffset = .zero
-            glow.set()
-            (indicatorColor ?? NSColor.secondaryLabelColor).setFill()
-            let dotPath = NSBezierPath(ovalIn: dotRect)
-            dotPath.fill()
-            NSGraphicsContext.restoreGraphicsState()
-
-            NSColor.white.withAlphaComponent(0.88).setStroke()
-            dotPath.lineWidth = 0.7
-            dotPath.stroke()
+            drawStatusDot(centerX: indicatorPadding + Self.dotSize / 2, size: Self.dotSize)
         }
 
         let title = attributedText
@@ -1224,7 +1231,7 @@ final class StatusCapsuleView: NSView {
             context.saveGState()
             context.textMatrix = .identity
             context.textPosition = CGPoint(
-                x: indicatorPadding + indicatorWidth + Self.indicatorTextGap,
+                x: textLeadingOffset,
                 y: baselineY
             )
             CTLineDraw(line, context)
@@ -1232,7 +1239,7 @@ final class StatusCapsuleView: NSView {
 
             // CTLineDraw 不会渲染 NSTextAttachment 的图片，这里手动画供应商 logo（垂直居中）。
             if let logo = providerLogo {
-                let textStartX = indicatorPadding + indicatorWidth + Self.indicatorTextGap
+                let textStartX = textLeadingOffset
                 let offset = CTLineGetOffsetForStringIndex(line, providerLogoInsertIndex, nil)
                 let logoRect = NSRect(
                     x: textStartX + offset,
@@ -1243,6 +1250,34 @@ final class StatusCapsuleView: NSView {
                 logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1)
             }
         }
+    }
+
+    /// 画状态圆灯（不同颜色表达不同状态），带一圈淡白 halo 保证在透明胶囊上可见。
+    private func drawStatusDot(centerX: CGFloat, size: CGFloat) {
+        let dotRect = NSRect(
+            x: centerX - size / 2,
+            y: (bounds.height - size) / 2,
+            width: size,
+            height: size
+        )
+        let haloPath = NSBezierPath(ovalIn: dotRect.insetBy(dx: -1.2, dy: -1.2))
+        NSColor.white.withAlphaComponent(0.58).setFill()
+        haloPath.fill()
+
+        NSGraphicsContext.saveGraphicsState()
+        let glow = NSShadow()
+        glow.shadowColor = NSColor.white.withAlphaComponent(0.72)
+        glow.shadowBlurRadius = 2.2
+        glow.shadowOffset = .zero
+        glow.set()
+        (indicatorColor ?? NSColor.secondaryLabelColor).setFill()
+        let dotPath = NSBezierPath(ovalIn: dotRect)
+        dotPath.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor.white.withAlphaComponent(0.88).setStroke()
+        dotPath.lineWidth = 0.7
+        dotPath.stroke()
     }
 
     private func invalidateCapsuleDisplay() {
