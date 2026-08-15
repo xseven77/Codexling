@@ -217,11 +217,8 @@ final class StatusBarController: NSObject {
     private var notchPanels: [UInt32: NotchCapsulePanelController] = [:]
     private var ticker = StatusBarTicker()
     private var agentTickTimer: Timer?
-    private var providerTickTimer: Timer?
     /// 鼠标悬停在展开面板的 agent 区域时暂停 agent 轮播。
     private var isAgentAreaHovering = false
-    /// 鼠标悬停在展开面板的供应商区域时暂停供应商轮播。
-    private var isProviderAreaHovering = false
     private var pendingHoverWorkItem: DispatchWorkItem?
     private var pendingHoverHideWorkItem: DispatchWorkItem?
     private var hoverSafeTriangle: HoverSafeTriangle?
@@ -385,7 +382,11 @@ final class StatusBarController: NSObject {
         let agentTicks = currentAgentTicks()
         let providerTicks = currentProviderTicks()
         ticker.clampAgent(to: agentTicks.count)
-        ticker.clampProvider(to: providerTicks.count)
+        if let selectedIndex = providerTicks.firstIndex(where: { $0.id == multiAgentSettings.selectedConnectionKey }) {
+            ticker.providerIndex = selectedIndex
+        } else {
+            ticker.clampProvider(to: providerTicks.count)
+        }
         let activeAgentCount = agentTicks.count
         let waitingCount = agentTicks.filter { $0.state == .waitingForUser }.count
 
@@ -487,15 +488,17 @@ final class StatusBarController: NSObject {
             self?.ticker.agentIndex = index
             self?.refreshStatusTitle()
         }
-        panel.onSelectProvider = { [weak self] index in
-            self?.ticker.providerIndex = index
-            self?.refreshStatusTitle()
+        panel.onSelectProvider = { [weak self] connectionID in
+            self?.multiAgentSettings.selectConnection(key: connectionID)
         }
         panel.onAgentHover = { [weak self] hovering in
             self?.isAgentAreaHovering = hovering
         }
         panel.onProviderHover = { [weak self] hovering in
-            self?.isProviderAreaHovering = hovering
+            self?.multiAgentSettings.setAccountCarouselPaused(
+                hovering,
+                source: .notch(screenNumber: screen.screenNumber)
+            )
         }
         notchPanels[screen.screenNumber] = panel
         return panel
@@ -545,15 +548,19 @@ final class StatusBarController: NSObject {
                 taskCount: status.taskCount,
                 asset: BrandAssetID.forAgentDisplayName(status.agentName),
                 taskTitle: latest?.title ?? "",
-                taskDetail: latest?.detail ?? ""
+                taskDetail: latest?.detail ?? "",
+                workspaceName: latest?.workspaceName,
+                gitBranch: latest?.gitBranch,
+                model: latest?.model,
+                updatedAt: latest?.updatedAt ?? status.updatedAt
             )
         }
     }
 
     private func currentProviderTicks() -> [StatusBarProviderTick] {
-        var ticks: [StatusBarProviderTick] = []
+        var ticksByKey: [String: StatusBarProviderTick] = [:]
         if store.isLoggedIn, let tick = currentCodexProviderTick() {
-            ticks.append(tick)
+            ticksByKey[tick.id] = tick
         }
         for account in multiAgentSettings.codexAccounts {
             if let tick = StatusBarProviderTickFactory.codexTick(
@@ -562,15 +569,15 @@ final class StatusBarController: NSObject {
                 accountName: account.label,
                 usage: account.usage
             ) {
-                ticks.append(tick)
+                ticksByKey[tick.id] = tick
             }
         }
         for connection in multiAgentSettings.deepSeekConnections {
             if let tick = StatusBarProviderTickFactory.deepSeekTick(connection) {
-                ticks.append(tick)
+                ticksByKey[tick.id] = tick
             }
         }
-        return ticks
+        return multiAgentSettings.orderedConnectionKeys.compactMap { ticksByKey[$0] }
     }
 
     private func currentCodexProviderTick() -> StatusBarProviderTick? {
@@ -617,15 +624,10 @@ final class StatusBarController: NSObject {
             agentTickTimer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
-        if providerTickTimer == nil {
-            let timer = Timer(timeInterval: 3.6, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.advanceProviderTick()
-                }
-            }
-            providerTickTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
-        }
+    }
+
+    func refreshProviderCarouselTimer() {
+        refreshStatusTitle()
     }
 
     private func advanceAgentTick() {
@@ -633,14 +635,6 @@ final class StatusBarController: NSObject {
         let count = currentAgentTicks().count
         guard count > 1 else { return }
         ticker.advanceAgent(count: count)
-        refreshStatusTitle()
-    }
-
-    private func advanceProviderTick() {
-        guard !isProviderAreaHovering else { return }
-        let count = currentProviderTicks().count
-        guard count > 1 else { return }
-        ticker.advanceProvider(count: count)
         refreshStatusTitle()
     }
 
@@ -701,21 +695,18 @@ final class StatusBarController: NSObject {
     ) {
         taskHoverPresentation.update(hasActiveTasks: activity.keepsHoverPanelVisible)
         hoverPanel.setTaskActive(taskHoverPresentation.hasActiveTasks)
-        let shouldKeepVisible = taskHoverPresentation.shouldAutoPresent(
-            isEnabled: settings.autoOpenTaskHoverEnabled
-        )
+        // 任务浮窗固定策略：不自动展开，仅悬停胶囊时显示，位置跟随当前高亮显示器。
+        let shouldKeepVisible = taskHoverPresentation.shouldAutoPresent(isEnabled: false)
 
         if shouldKeepVisible {
             pendingHoverWorkItem?.cancel()
             pendingHoverWorkItem = nil
             cancelHoverPanelHide()
-            let preferredScreen = settings.taskHoverDisplayMode == .primary
-                ? NSScreen.screens.first
-                : button.window?.screen
+            let preferredScreen = button.window?.screen
             hoverPanel.show(
                 relativeTo: button,
                 preferredScreen: preferredScreen,
-                alignsToScreenTopTrailing: settings.taskHoverDisplayMode == .primary
+                alignsToScreenTopTrailing: false
             )
         } else if isKeepingTaskHoverVisible {
             hideHoverPanel()

@@ -1,6 +1,22 @@
 import Foundation
 import Observation
 
+enum ConnectionCarousel {
+    static func nextKey(after selectedKey: String, availableKeys: [String]) -> String? {
+        guard availableKeys.count > 1 else { return nil }
+        guard let selectedIndex = availableKeys.firstIndex(of: selectedKey) else {
+            return availableKeys.first
+        }
+        return availableKeys[(selectedIndex + 1) % availableKeys.count]
+    }
+}
+
+enum AccountCarouselPauseSource: Hashable {
+    case dashboard
+    case dashboardInfo
+    case notch(screenNumber: UInt32)
+}
+
 @MainActor
 @Observable
 final class MultiAgentSettingsStore {
@@ -17,13 +33,22 @@ final class MultiAgentSettingsStore {
     private(set) var mutatingAgentIDs: Set<AgentID> = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
+    private(set) var connectionOrder: [String] = []
     private(set) var isMutatingConnections = false
     private(set) var isRefreshingConnections = false
     private(set) var isCodexOAuthInProgress = false
     private(set) var lastMessage: String?
+    private(set) var isAccountCarouselPaused = false
+    private var accountCarouselPauseSources: Set<AccountCarouselPauseSource> = []
+    var onSelectedConnectionChanged: (() -> Void)?
+    var onAccountCarouselPauseChanged: ((Bool) -> Void)?
     private var activeCodexOAuthService: CodexUsageService?
     var selectedConnectionKey: String {
-        didSet { UserDefaults.standard.set(selectedConnectionKey, forKey: Self.selectedConnectionDefaultsKey) }
+        didSet {
+            guard selectedConnectionKey != oldValue else { return }
+            UserDefaults.standard.set(selectedConnectionKey, forKey: Self.selectedConnectionDefaultsKey)
+            onSelectedConnectionChanged?()
+        }
     }
 
     init(
@@ -46,6 +71,7 @@ final class MultiAgentSettingsStore {
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
+        connectionOrder = registry.connectionOrder
         refresh()
         validateSelectedConnection()
         if startsAutomaticRefresh {
@@ -111,6 +137,41 @@ final class MultiAgentSettingsStore {
         selectedConnectionKey = "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
     }
 
+    func setAccountCarouselPaused(
+        _ isPaused: Bool,
+        source: AccountCarouselPauseSource = .dashboard
+    ) {
+        if isPaused {
+            accountCarouselPauseSources.insert(source)
+        } else {
+            accountCarouselPauseSources.remove(source)
+        }
+
+        let shouldPause = !accountCarouselPauseSources.isEmpty
+        guard isAccountCarouselPaused != shouldPause else { return }
+        isAccountCarouselPaused = shouldPause
+        onAccountCarouselPauseChanged?(shouldPause)
+    }
+
+    func selectNextConnection(includesCurrentCodex: Bool) {
+        let keys = orderedConnectionKeys.filter {
+            includesCurrentCodex || $0 != Self.currentCodexConnectionKey
+        }
+
+        guard let nextKey = ConnectionCarousel.nextKey(
+            after: selectedConnectionKey,
+            availableKeys: keys
+        ) else { return }
+
+        if nextKey == Self.currentCodexConnectionKey {
+            selectCurrentCodexConnection()
+        } else if let account = codexAccounts.first(where: { connectionKey(for: $0) == nextKey }) {
+            selectCodexConnection(account)
+        } else if let connection = deepSeekConnections.first(where: { connectionKey(for: $0) == nextKey }) {
+            selectDeepSeekConnection(connection)
+        }
+    }
+
     func isSelected(_ connection: CodexAccountConnection) -> Bool {
         selectedConnectionKey == "codex.\(connection.id.rawValue.uuidString.lowercased())"
     }
@@ -134,12 +195,19 @@ final class MultiAgentSettingsStore {
         }
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
-        return await refreshCodexAccountsWithoutLock()
+
+        var outcome = RefreshOutcome()
+        for connection in codexAccounts {
+            outcome.merge(await refreshCodexAccountWithoutLock(connection))
+        }
+        return outcome
     }
 
     /// Shared refresh entry point for the timer and every manual refresh
     /// surface. New connection types should be added here so there is only one
     /// scheduling policy for all accounts and API keys.
+    ///
+    /// 每个供应商独立并发请求、各自完成后立即生效（互不等待），最后合并成统一结果。
     @discardableResult
     func refreshAllConnections() async -> RefreshOutcome {
         guard !isRefreshingConnections, !isMutatingConnections else {
@@ -148,72 +216,84 @@ final class MultiAgentSettingsStore {
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
 
-        var outcome = await refreshCodexAccountsWithoutLock()
+        let codexAccounts = self.codexAccounts
+        let deepSeekConnections = self.deepSeekConnections
+
+        var tasks: [Task<RefreshOutcome, Never>] = []
+        for connection in codexAccounts {
+            tasks.append(Task { @MainActor [weak self] in
+                await self?.refreshCodexAccountWithoutLock(connection) ?? RefreshOutcome()
+            })
+        }
         for connection in deepSeekConnections {
-            outcome.merge(await refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false))
+            tasks.append(Task { @MainActor [weak self] in
+                await self?.refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false)
+                    ?? RefreshOutcome()
+            })
+        }
+
+        var outcome = RefreshOutcome()
+        for task in tasks {
+            outcome.merge(await task.value)
         }
         return outcome
     }
 
-    private func refreshCodexAccountsWithoutLock() async -> RefreshOutcome {
+    /// 抓取单个 Codex 账号的额度结果（纯抓取，不修改状态）。
+    private func fetchCodexAccountResult(_ connection: CodexAccountConnection) async -> CodexAccountRefreshResult {
         let manager = codexRuntimeManager
         let supervisor = codexAppServerSupervisor
-        let accounts = codexAccounts
-        var results: [CodexAccountRefreshResult] = []
-        for connection in accounts {
-            guard connection.isEnabled else {
-                results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
-                continue
-            }
-            let tokenStore: CodexOAuthTokenStore
-            do {
-                tokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: connection))
-            } catch {
-                results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
-                continue
-            }
 
-            if tokenStore.hasStoredToken() {
-                do {
-                    let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
-                    results.append(CodexAccountRefreshResult(
-                        id: connection.id,
-                        state: .connected,
-                        usage: snapshot
-                    ))
-                } catch let codexError as CodexUsageError where codexError == .noStoredToken || codexError == .invalidTokenResponse {
-                    // 令牌缺失或已失效 → 需要重新登录。
-                    results.append(CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil))
-                } catch CodexUsageError.quotaUnavailable {
-                    // 令牌有效但额度接口暂不可用 → 保持「已连接」，仅保留旧额度。
-                    results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage))
-                } catch {
-                    // 网络抖动等瞬时错误 → 不降级，保留原状态。
-                    results.append(CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage))
-                }
-                continue
-            }
+        guard connection.isEnabled else {
+            return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
+        }
+        let tokenStore: CodexOAuthTokenStore
+        do {
+            tokenStore = CodexOAuthTokenStore(fileURL: try manager.oauthTokenURL(for: connection))
+        } catch {
+            return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
+        }
 
-            // 没有本地 OAuth token → 回退到 CLI `codex login` 状态。
-            let state = manager.authenticationState(for: connection)
-            guard state == .connected else {
-                results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
-                continue
-            }
+        if tokenStore.hasStoredToken() {
             do {
-                let usage = try supervisor.snapshot(
-                    for: connection,
-                    homeURL: manager.homeURL(for: connection),
-                    executableURL: manager.locateCodexExecutable()
-                )
-                results.append(CodexAccountRefreshResult(id: connection.id, state: .connected, usage: codexUsage(from: usage)))
+                let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
+                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: snapshot)
+            } catch let codexError as CodexUsageError where codexError == .noStoredToken || codexError == .invalidTokenResponse {
+                // 令牌缺失或已失效 → 需要重新登录。
+                return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
+            } catch CodexUsageError.quotaUnavailable {
+                // 令牌有效但额度接口暂不可用 → 保持「已连接」，仅保留旧额度。
+                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage)
             } catch {
-                results.append(CodexAccountRefreshResult(id: connection.id, state: state, usage: nil))
+                // 网络抖动等瞬时错误 → 不降级，保留原状态。
+                return CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage)
             }
         }
+
+        // 没有本地 OAuth token → 回退到 CLI `codex login` 状态。
+        let state = manager.authenticationState(for: connection)
+        guard state == .connected else {
+            return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
+        }
+        do {
+            let usage = try supervisor.snapshot(
+                for: connection,
+                homeURL: manager.homeURL(for: connection),
+                executableURL: manager.locateCodexExecutable()
+            )
+            return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: codexUsage(from: usage))
+        } catch {
+            return CodexAccountRefreshResult(id: connection.id, state: state, usage: nil)
+        }
+    }
+
+    /// 应用单个账号的刷新结果（立即生效）并返回其刷新结果。
+    private func applyCodexAccountResult(
+        _ result: CodexAccountRefreshResult,
+        for connection: CodexAccountConnection
+    ) -> RefreshOutcome {
         var changed = false
-        for result in results {
-            guard let index = codexAccounts.firstIndex(where: { $0.id == result.id }) else { continue }
+        if let index = codexAccounts.firstIndex(where: { $0.id == result.id }) {
             if codexAccounts[index].authenticationState != result.state {
                 codexAccounts[index].authenticationState = result.state
                 changed = true
@@ -225,16 +305,17 @@ final class MultiAgentSettingsStore {
         }
         if changed { try? saveRegistry() }
 
-        var outcome = RefreshOutcome()
-        for result in results {
-            guard let account = accounts.first(where: { $0.id == result.id }), account.isEnabled else { continue }
-            if result.state == .connected, result.usage != nil {
-                outcome.successCount += 1
-            } else {
-                outcome.failures.append("\(account.label) 未能刷新")
-            }
+        guard connection.isEnabled else { return RefreshOutcome() }
+        if result.state == .connected, result.usage != nil {
+            return RefreshOutcome(successCount: 1)
+        } else {
+            return RefreshOutcome(failures: ["\(connection.label) 未能刷新"])
         }
-        return outcome
+    }
+
+    private func refreshCodexAccountWithoutLock(_ connection: CodexAccountConnection) async -> RefreshOutcome {
+        let result = await fetchCodexAccountResult(connection)
+        return applyCodexAccountResult(result, for: connection)
     }
 
     func stopCodexAppServers() {
@@ -352,6 +433,7 @@ final class MultiAgentSettingsStore {
             try codexRuntimeManager.removeRuntime(for: connection)
             codexAppServerSupervisor.remove(connectionID: connection.id)
             codexAccounts.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == connectionKey(for: connection) }
             validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已移除 \(connection.label) 的独立运行目录"
@@ -443,6 +525,7 @@ final class MultiAgentSettingsStore {
         do {
             try credentialStore.delete(handle: connection.credentialHandle)
             deepSeekConnections.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == connectionKey(for: connection) }
             validateSelectedConnection()
             try saveRegistry()
             lastMessage = "已从 Keychain 移除 \(connection.label)"
@@ -451,7 +534,7 @@ final class MultiAgentSettingsStore {
         }
     }
 
-    // MARK: - Connection Selection
+    // MARK: - Connection Ordering and Selection
 
     func connectionKey(for account: CodexAccountConnection) -> String {
         "codex.\(account.id.rawValue.uuidString.lowercased())"
@@ -459,6 +542,75 @@ final class MultiAgentSettingsStore {
 
     func connectionKey(for connection: DeepSeekAPIConnection) -> String {
         "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    /// 已保存的顺序优先；新连接追加到末尾，已删除或重复的 key 会被忽略。
+    var orderedConnectionKeys: [String] {
+        var seen: Set<String> = []
+        var result = connectionOrder.filter { key in
+            connectionExists(key) && seen.insert(key).inserted
+        }
+
+        func appendIfNeeded(_ key: String) {
+            guard connectionExists(key), seen.insert(key).inserted else { return }
+            result.append(key)
+        }
+
+        appendIfNeeded(Self.currentCodexConnectionKey)
+        codexAccounts.forEach { appendIfNeeded(connectionKey(for: $0)) }
+        deepSeekConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
+        return result
+    }
+
+    func moveConnection(fromOffsets source: IndexSet, toOffset destination: Int) {
+        var keys = orderedConnectionKeys
+        keys.move(fromOffsets: source, toOffset: destination)
+        connectionOrder = keys
+        persistConnectionOrder()
+    }
+
+    /// 只重排当前界面可见的连接，同时保持隐藏连接在完整顺序中的相对位置。
+    func moveConnection(key: String, to targetIndex: Int, among visibleKeys: [String]) {
+        var reorderedVisibleKeys = visibleKeys.filter(connectionExists)
+        guard let sourceIndex = reorderedVisibleKeys.firstIndex(of: key),
+              reorderedVisibleKeys.indices.contains(targetIndex),
+              sourceIndex != targetIndex
+        else { return }
+
+        let movedKey = reorderedVisibleKeys.remove(at: sourceIndex)
+        reorderedVisibleKeys.insert(movedKey, at: targetIndex)
+        let visibleKeySet = Set(reorderedVisibleKeys)
+        var iterator = reorderedVisibleKeys.makeIterator()
+        connectionOrder = orderedConnectionKeys.map { existingKey in
+            visibleKeySet.contains(existingKey) ? (iterator.next() ?? existingKey) : existingKey
+        }
+        persistConnectionOrder()
+    }
+
+    private func persistConnectionOrder() {
+        do {
+            try saveRegistry()
+        } catch {
+            NSLog("Codexling persist connection order failed: %@", error.localizedDescription)
+        }
+    }
+
+    func selectConnection(key: String) {
+        guard connectionExists(key) else { return }
+        selectedConnectionKey = key
+    }
+
+    private func connectionExists(_ key: String) -> Bool {
+        if key == Self.currentCodexConnectionKey { return true }
+        if key.hasPrefix("codex."),
+           let uuid = UUID(uuidString: String(key.dropFirst("codex.".count))) {
+            return codexAccounts.contains { $0.id.rawValue == uuid }
+        }
+        if key.hasPrefix("deepseek."),
+           let uuid = UUID(uuidString: String(key.dropFirst("deepseek.".count))) {
+            return deepSeekConnections.contains { $0.id.rawValue == uuid }
+        }
+        return false
     }
 
     // MARK: - Helpers
@@ -470,7 +622,8 @@ final class MultiAgentSettingsStore {
     private func saveRegistry() throws {
         try registryStorage.save(ConnectionRegistrySnapshot(
             codexAccounts: codexAccounts,
-            deepSeekConnections: deepSeekConnections
+            deepSeekConnections: deepSeekConnections,
+            connectionOrder: orderedConnectionKeys
         ))
     }
 

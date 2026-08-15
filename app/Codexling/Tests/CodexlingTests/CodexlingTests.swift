@@ -98,6 +98,31 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(StatusBarPetBackgroundColor.allCases.first, .neutral)
     }
 
+    @MainActor
+    func testAccountCarouselDefaultsOffAndPersistsInterval() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.accountCarouselInterval, .off)
+
+        settings.accountCarouselInterval = .seconds10
+
+        XCTAssertEqual(defaults.integer(forKey: "codexling.accountCarouselInterval"), 10)
+        XCTAssertEqual(AppSettingsStore(defaults: defaults).accountCarouselInterval, .seconds10)
+    }
+
+    func testConnectionCarouselAdvancesWrapsAndRecoversMissingSelection() {
+        let keys = ["codex.current", "codex.second", "deepseek.first"]
+
+        XCTAssertEqual(ConnectionCarousel.nextKey(after: keys[0], availableKeys: keys), keys[1])
+        XCTAssertEqual(ConnectionCarousel.nextKey(after: keys[2], availableKeys: keys), keys[0])
+        XCTAssertEqual(ConnectionCarousel.nextKey(after: "missing", availableKeys: keys), keys[0])
+        XCTAssertNil(ConnectionCarousel.nextKey(after: keys[0], availableKeys: [keys[0]]))
+        XCTAssertNil(ConnectionCarousel.nextKey(after: keys[0], availableKeys: []))
+    }
+
     func testStatusPetBadgeKeepsPetVisibleOnWhiteBackdrop() {
         let pet = NSImage(size: NSSize(width: 24, height: 21))
         pet.lockFocus()
@@ -428,32 +453,6 @@ final class CodexlingTests: XCTestCase {
         )
     }
 
-    @MainActor
-    func testTaskHoverAutoOpenDefaultsOnAndPersists() throws {
-        let suiteName = "CodexlingTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettingsStore(defaults: defaults)
-        XCTAssertTrue(settings.autoOpenTaskHoverEnabled)
-
-        settings.autoOpenTaskHoverEnabled = false
-        XCTAssertFalse(AppSettingsStore(defaults: defaults).autoOpenTaskHoverEnabled)
-    }
-
-    @MainActor
-    func testTaskHoverDisplayDefaultsToPrimaryAndPersists() throws {
-        let suiteName = "CodexlingTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.taskHoverDisplayMode, .primary)
-
-        settings.taskHoverDisplayMode = .current
-        XCTAssertEqual(AppSettingsStore(defaults: defaults).taskHoverDisplayMode, .current)
-    }
-
     func testTaskHoverDismissalLastsUntilActiveTasksEnd() {
         var state = TaskHoverPresentationState()
         state.update(hasActiveTasks: true)
@@ -578,6 +577,22 @@ final class CodexlingTests: XCTestCase {
 
         XCTAssertTrue(window.isMovableByWindowBackground)
         XCTAssertEqual(frameView.subviews, originalSubviews)
+    }
+
+    @MainActor
+    func testLogoRowHoverCanTemporarilyDisableNativeWindowDragging() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 420),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        WindowDraggingPolicy.apply(to: window, isEnabled: false)
+        XCTAssertFalse(window.isMovableByWindowBackground)
+
+        WindowDraggingPolicy.apply(to: window, isEnabled: true)
+        XCTAssertTrue(window.isMovableByWindowBackground)
     }
 
     @MainActor

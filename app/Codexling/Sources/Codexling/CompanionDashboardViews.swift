@@ -15,6 +15,8 @@ struct CompanionDashboardView: View {
     let onOpenSettings: () -> Void
     /// 竖向独立窗口上报内容自然高度。
     var onMeasuredContentHeightChange: (CGFloat, String) -> Void = { _, _ in }
+    /// logo 行悬停时通知所属窗口临时关闭背景拖拽。
+    var onConnectionSwitcherHoverChange: (Bool) -> Void = { _ in }
 
     @State private var selectedTaskID: String?
     @State private var showsConnectionSheet = false
@@ -291,9 +293,11 @@ struct CompanionDashboardView: View {
             showsCurrentCodex: store.isLoggedIn,
             store: multiAgentSettings,
             onAdd: { showsConnectionSheet = true },
-            compact: true
+            compact: true,
+            reportsHover: true,
+            onHoverChange: connectionSwitcherHoverChanged
         )
-        .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+        .padding(.trailing, 7)
         .frame(height: 59)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.codexCard.opacity(0.96))
@@ -349,6 +353,12 @@ struct CompanionDashboardView: View {
                alignment: .topLeading)
         .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 0))
         .zIndex(30)
+        .onHover { hovering in
+            multiAgentSettings.setAccountCarouselPaused(hovering, source: .dashboardInfo)
+        }
+        .onDisappear {
+            multiAgentSettings.setAccountCarouselPaused(false, source: .dashboardInfo)
+        }
     }
 
     // MARK: - 竖向布局
@@ -387,9 +397,11 @@ struct CompanionDashboardView: View {
                     showsCurrentCodex: store.isLoggedIn,
                     store: multiAgentSettings,
                     onAdd: { showsConnectionSheet = true },
-                    compact: true
+                    compact: true,
+                    reportsHover: true,
+                    onHoverChange: connectionSwitcherHoverChanged
                 )
-                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                .padding(.trailing, 7)
                 .frame(height: 59)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.codexCard.opacity(0.96))
@@ -450,9 +462,10 @@ struct CompanionDashboardView: View {
                 showsCurrentCodex: store.isLoggedIn,
                 store: multiAgentSettings,
                 onAdd: { showsConnectionSheet = true },
-                compact: true
+                compact: true,
+                reportsHover: false
             )
-            .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+            .padding(.trailing, 7)
             .frame(height: 59)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.codexCard.opacity(0.96))
@@ -486,6 +499,11 @@ struct CompanionDashboardView: View {
                 .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 + 14 : 36 + 14)
             }
         }
+    }
+
+    private func connectionSwitcherHoverChanged(_ hovering: Bool) {
+        multiAgentSettings.setAccountCarouselPaused(hovering)
+        onConnectionSwitcherHoverChange(hovering)
     }
 
     private var verticalDashboardSyncFooter: some View {
@@ -685,79 +703,155 @@ fileprivate enum CredentialBadge {
     }
 }
 
+enum ConnectionLogoRowMotion {
+    static var selectionAnimation: Animation {
+        .snappy(duration: 0.34)
+    }
+
+    static func offset(
+        viewportWidth: CGFloat,
+        itemWidth: CGFloat,
+        spacing: CGFloat,
+        edgeMargin: CGFloat,
+        itemCount: Int,
+        selectedIndex: Int
+    ) -> CGFloat {
+        guard itemCount > 0 else { return 0 }
+        let contentWidth = edgeMargin * 2
+            + CGFloat(itemCount) * itemWidth
+            + CGFloat(max(0, itemCount - 1)) * spacing
+        guard contentWidth > viewportWidth else { return 0 }
+        let clampedIndex = min(max(0, selectedIndex), itemCount - 1)
+        let selectedCenter = edgeMargin
+            + CGFloat(clampedIndex) * (itemWidth + spacing)
+            + itemWidth / 2
+        let centeredOffset = viewportWidth / 2 - selectedCenter
+        return min(0, max(viewportWidth - contentWidth, centeredOffset))
+    }
+}
+
 private struct DashboardConnectionSwitcher: View {
     let snapshot: CodexUsageSnapshot
     let showsCurrentCodex: Bool
     @Bindable var store: MultiAgentSettingsStore
     let onAdd: () -> Void
     var compact = false
+    var reportsHover = false
+    var onHoverChange: (Bool) -> Void = { _ in }
 
-    /// 固定展示顺序：当前 Codex、附加 Codex 账号、DeepSeek 连接。
+    @State private var draggingItemKey: String?
+    @State private var dragOffset: CGSize = .zero
+
+    /// 用户拖拽后的顺序同时也是自动轮播顺序。
     private var connectionItems: [ConnectionSwitcherItem] {
-        var items: [ConnectionSwitcherItem] = []
-
-        if showsCurrentCodex {
-            items.append(ConnectionSwitcherItem(
-                key: MultiAgentSettingsStore.currentCodexConnectionKey,
-                asset: .codex,
-                title: "Codex",
-                subtitle: snapshot.companionAccountName,
-                color: Color.codexGreen,
-                selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey,
-                credential: .account(currentCodexQuotaColor),
-                action: { store.selectCurrentCodexConnection() }
-            ))
+        store.orderedConnectionKeys.compactMap { key in
+            if key == MultiAgentSettingsStore.currentCodexConnectionKey {
+                guard showsCurrentCodex else { return nil }
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .codex,
+                    title: "Codex",
+                    subtitle: snapshot.companionAccountName,
+                    color: Color.codexGreen,
+                    selected: store.selectedConnectionKey == key,
+                    credential: .account(currentCodexQuotaColor),
+                    action: { store.selectCurrentCodexConnection() }
+                )
+            }
+            if let account = store.codexAccounts.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .codex,
+                    title: "Codex",
+                    subtitle: account.label,
+                    color: Color.codexGreen,
+                    selected: store.isSelected(account),
+                    credential: .account(codexQuotaColor(for: account)),
+                    action: { store.selectCodexConnection(account) }
+                )
+            }
+            if let connection = store.deepSeekConnections.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .deepSeek,
+                    title: "DeepSeek",
+                    subtitle: connection.label,
+                    color: .deepSeekBrand,
+                    selected: store.isSelected(connection),
+                    credential: .apiKey(balanceColor(for: connection)),
+                    action: { store.selectDeepSeekConnection(connection) }
+                )
+            }
+            return nil
         }
-
-        items.append(contentsOf: store.codexAccounts.map { account in
-            ConnectionSwitcherItem(
-                key: store.connectionKey(for: account),
-                asset: .codex,
-                title: "Codex",
-                subtitle: account.label,
-                color: Color.codexGreen,
-                selected: store.isSelected(account),
-                credential: .account(codexQuotaColor(for: account)),
-                action: { store.selectCodexConnection(account) }
-            )
-        })
-
-        items.append(contentsOf: store.deepSeekConnections.map { connection in
-            ConnectionSwitcherItem(
-                key: store.connectionKey(for: connection),
-                asset: .deepSeek,
-                title: "DeepSeek",
-                subtitle: connection.label,
-                color: .deepSeekBrand,
-                selected: store.isSelected(connection),
-                credential: .apiKey(balanceColor(for: connection)),
-                action: { store.selectDeepSeekConnection(connection) }
-            )
-        })
-
-        return items
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            HStack(spacing: 7) {
-                ForEach(connectionItems) { item in
-                    connectionButton(
-                        asset: item.asset,
-                        title: item.title,
-                        subtitle: item.subtitle,
-                        color: item.color,
-                        selected: item.selected,
-                        credential: item.credential,
-                        action: item.action
+        HStack(alignment: .center, spacing: 0) {
+            GeometryReader { geometry in
+                let rowOffset = connectionRowOffset(viewportWidth: geometry.size.width)
+                let trailingFadeVisible = showsTrailingFade(
+                    viewportWidth: geometry.size.width,
+                    rowOffset: rowOffset
+                )
+                ZStack(alignment: .leading) {
+                    HStack(alignment: .center, spacing: 7) {
+                        ForEach(connectionItems) { item in
+                            let isDragging = draggingItemKey == item.key
+                            connectionButton(
+                                asset: item.asset,
+                                title: item.title,
+                                subtitle: item.subtitle,
+                                color: item.color,
+                                selected: item.selected,
+                                credential: item.credential,
+                                action: item.action
+                            )
+                            .offset(
+                                x: isDragging ? dragOffset.width : 0,
+                                y: isDragging ? dragOffset.height : 0
+                            )
+                            .scaleEffect(isDragging ? 1.18 : 1)
+                            .shadow(
+                                color: isDragging ? .black.opacity(0.22) : .clear,
+                                radius: isDragging ? 10 : 0,
+                                y: isDragging ? 5 : 0
+                            )
+                            .zIndex(isDragging ? 10 : 0)
+                            .gesture(connectionDragGesture(for: item))
+                        }
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 50)
+                    .offset(x: rowOffset)
+                    .animation(ConnectionLogoRowMotion.selectionAnimation, value: store.selectedConnectionKey)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .coordinateSpace(name: "connection-switcher")
+                .mask {
+                    trailingLogoMask(
+                        viewportWidth: geometry.size.width,
+                        isVisible: trailingFadeVisible
                     )
                 }
+                .animation(.easeOut(duration: 0.18), value: trailingFadeVisible)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .clipped()
+            .onHover { hovering in
+                guard reportsHover else { return }
+                onHoverChange(hovering)
+            }
+            .onDisappear {
+                guard reportsHover else { return }
+                onHoverChange(false)
+            }
+
             Button(action: onAdd) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
             .buttonStyle(CodexPressableStyle(cornerRadius: 9))
@@ -769,8 +863,95 @@ private struct DashboardConnectionSwitcher: View {
             }
             .help("添加 Codex 账号或 DeepSeek API Key")
         }
+        .frame(height: 50, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("我的连接")
+    }
+
+    private func connectionDragGesture(for item: ConnectionSwitcherItem) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("connection-switcher"))
+            .onChanged { value in
+                if draggingItemKey == nil {
+                    draggingItemKey = item.key
+                    NSCursor.closedHand.push()
+                }
+                guard draggingItemKey == item.key else { return }
+                dragOffset = value.translation
+            }
+            .onEnded { value in
+                NSCursor.closedHand.pop()
+                guard let sourceIndex = connectionItems.firstIndex(where: { $0.key == item.key }) else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        draggingItemKey = nil
+                        dragOffset = .zero
+                    }
+                    return
+                }
+                let slotWidth: CGFloat = 49
+                let offsetSteps = Int(round(value.translation.width / slotWidth))
+                let targetIndex = min(max(0, sourceIndex + offsetSteps), connectionItems.count - 1)
+
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    draggingItemKey = nil
+                    dragOffset = .zero
+                    if targetIndex != sourceIndex {
+                        store.moveConnection(
+                            key: item.key,
+                            to: targetIndex,
+                            among: connectionItems.map(\.key)
+                        )
+                    }
+                }
+            }
+    }
+
+    private func connectionRowOffset(viewportWidth: CGFloat) -> CGFloat {
+        let selectedIndex = connectionItems.firstIndex(where: { $0.key == store.selectedConnectionKey }) ?? 0
+        return ConnectionLogoRowMotion.offset(
+            viewportWidth: viewportWidth,
+            itemWidth: 42,
+            spacing: 7,
+            edgeMargin: 7,
+            itemCount: connectionItems.count,
+            selectedIndex: selectedIndex
+        )
+    }
+
+    private func showsTrailingFade(viewportWidth: CGFloat, rowOffset: CGFloat) -> Bool {
+        let itemWidth: CGFloat = 42
+        let spacing: CGFloat = 7
+        let edgeMargin: CGFloat = 7
+        let count = connectionItems.count
+        guard count > 0 else { return false }
+        let lastLogoMaxX = rowOffset
+            + edgeMargin
+            + CGFloat(count) * itemWidth
+            + CGFloat(max(0, count - 1)) * spacing
+        return lastLogoMaxX > viewportWidth + 0.5
+    }
+
+    private func trailingLogoMask(viewportWidth: CGFloat, isVisible: Bool) -> LinearGradient {
+        let fadeWidth: CGFloat = 26
+        let fadeStart = max(0, 1 - fadeWidth / max(viewportWidth, 1))
+        let middle = fadeStart + (1 - fadeStart) * 0.58
+
+        return LinearGradient(
+            stops: isVisible
+                ? [
+                    .init(color: .white, location: 0),
+                    .init(color: .white, location: fadeStart),
+                    .init(color: .white.opacity(0.48), location: middle),
+                    .init(color: .clear, location: 1),
+                ]
+                : [
+                    .init(color: .white, location: 0),
+                    .init(color: .white, location: fadeStart),
+                    .init(color: .white, location: middle),
+                    .init(color: .white, location: 1),
+                ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
     }
 
     private func connectionButton(
@@ -782,33 +963,35 @@ private struct DashboardConnectionSwitcher: View {
         credential: CredentialBadge,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Group {
-                if compact {
+        Group {
+            if compact {
+                connectionIcon(asset: asset, credential: credential)
+                    .frame(width: 42, height: 42)
+            } else {
+                HStack(spacing: 6) {
                     connectionIcon(asset: asset, credential: credential)
-                        .frame(width: 42, height: 42)
-                } else {
-                    HStack(spacing: 6) {
-                        connectionIcon(asset: asset, credential: credential)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(.system(size: 10, weight: .bold))
-                            Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
-                        }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.system(size: 10, weight: .bold))
+                        Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
                     }
-                    .padding(.horizontal, 10)
-                    .frame(height: 42)
                 }
+                .padding(.horizontal, 10)
+                .frame(height: 42)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .frame(height: 42)
         .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
         }
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title)，\(subtitle)")
         .accessibilityValue(selected ? "已选择" : "未选择")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
     }
 
     private func connectionIcon(asset: BrandAssetID, credential: CredentialBadge) -> some View {

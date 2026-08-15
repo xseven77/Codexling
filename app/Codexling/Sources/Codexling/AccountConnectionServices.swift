@@ -6,6 +6,28 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
     var schemaVersion = currentSchemaVersion
     var codexAccounts: [CodexAccountConnection] = []
     var deepSeekConnections: [DeepSeekAPIConnection] = []
+    /// 用户拖拽后的连接顺序。旧配置没有此字段时按默认顺序补齐。
+    var connectionOrder: [String] = []
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        codexAccounts: [CodexAccountConnection] = [],
+        deepSeekConnections: [DeepSeekAPIConnection] = [],
+        connectionOrder: [String] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.codexAccounts = codexAccounts
+        self.deepSeekConnections = deepSeekConnections
+        self.connectionOrder = connectionOrder
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        codexAccounts = try container.decodeIfPresent([CodexAccountConnection].self, forKey: .codexAccounts) ?? []
+        deepSeekConnections = try container.decodeIfPresent([DeepSeekAPIConnection].self, forKey: .deepSeekConnections) ?? []
+        connectionOrder = try container.decodeIfPresent([String].self, forKey: .connectionOrder) ?? []
+    }
 }
 
 struct ConnectionRegistryStorage {

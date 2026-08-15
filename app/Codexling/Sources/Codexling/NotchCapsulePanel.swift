@@ -69,7 +69,7 @@ final class NotchCapsuleViewModel {
     // 交互回调（由 Controller 注入）
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
-    var onSelectProvider: ((Int) -> Void)?
+    var onSelectProvider: ((String) -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -104,7 +104,7 @@ final class NotchCapsulePanelController {
 
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
-    var onSelectProvider: ((Int) -> Void)?
+    var onSelectProvider: ((String) -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -125,6 +125,7 @@ final class NotchCapsulePanelController {
 
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
+        // 始终置顶（高于菜单栏）：收起态的假刘海也要盖住物理刘海两侧的 app icon，不能沉到菜单栏下面。
         panel.level = .mainMenu + 3
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -134,12 +135,13 @@ final class NotchCapsulePanelController {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]
         panel.isMovableByWindowBackground = false
-        panel.ignoresMouseEvents = false
+        // 收起态完全忽略鼠标（点击穿透到下层），展开后才接收鼠标事件。
+        panel.ignoresMouseEvents = true
         updateHitTestPolicy()
 
         // self 完全初始化后再注入回调，转发到公开属性。
         viewModel.onSelectAgent = { [weak self] index in self?.onSelectAgent?(index) }
-        viewModel.onSelectProvider = { [weak self] index in self?.onSelectProvider?(index) }
+        viewModel.onSelectProvider = { [weak self] connectionID in self?.onSelectProvider?(connectionID) }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
@@ -156,7 +158,15 @@ final class NotchCapsulePanelController {
         viewModel.agentTicks = agentTicks
         viewModel.providerTicks = providerTicks
         viewModel.agentIndex = agentIndex
-        viewModel.providerIndex = providerIndex
+        // 供应商选中项变化时显式包裹动画，确保 logo 行滚动和选中高亮在同一个动画事务里同步过渡，
+        // 不依赖 `.animation(value:)` 在 NSHostingController 里的隐式触发。
+        if viewModel.providerIndex != providerIndex {
+            withAnimation(ConnectionLogoRowMotion.selectionAnimation) {
+                viewModel.providerIndex = providerIndex
+            }
+        } else {
+            viewModel.providerIndex = providerIndex
+        }
         viewModel.activeAgentCount = activeAgentCount
         viewModel.waitingCount = waitingCount
     }
@@ -170,6 +180,8 @@ final class NotchCapsulePanelController {
         viewModel.closedWidth = notchWidth + 230
         viewModel.closedHeight = safeTop
         viewModel.screenName = self.screen?.displayName ?? "显示器"
+        viewModel.isExpanded = false
+        panel.ignoresMouseEvents = true
         updateHitTestPolicy()
         positionPanel()
         panel.orderFrontRegardless()
@@ -179,7 +191,10 @@ final class NotchCapsulePanelController {
     func hide() {
         removeMonitors()
         cancelCollapse()
+        onAgentHover?(false)
+        onProviderHover?(false)
         viewModel.isExpanded = false
+        panel.ignoresMouseEvents = true
         panel.orderOut(nil)
     }
 
@@ -189,9 +204,16 @@ final class NotchCapsulePanelController {
 
     private func setExpanded(_ expanded: Bool) {
         guard expanded != viewModel.isExpanded else { return }
+        if !expanded {
+            onAgentHover?(false)
+            onProviderHover?(false)
+        }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
             viewModel.isExpanded = expanded
         }
+        // 参考 ping-island：窗口保持固定尺寸，形变动画完全交给 SwiftUI 内容在固定窗口内完成。
+        // 收起态忽略鼠标事件（点击穿透），展开态才接收鼠标事件。
+        panel.ignoresMouseEvents = !expanded
         updateHitTestPolicy()
     }
 
@@ -220,6 +242,7 @@ final class NotchCapsulePanelController {
 
     private func positionPanel() {
         guard let screen else { return }
+        // 窗口固定为展开尺寸，始终贴屏幕顶部；收起态靠 ignoresMouseEvents 让点击穿透。
         let size = Self.windowSize
         let origin = NSPoint(
             x: screen.frame.midX - size.width / 2,
@@ -364,7 +387,7 @@ private struct NotchCapsuleView: View {
                 .fill(Color.black.opacity(0.97))
             if viewModel.isExpanded {
                 expandedContent
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    .transition(.opacity)
             } else {
                 collapsedContent
                     .transition(.opacity)
@@ -372,8 +395,8 @@ private struct NotchCapsuleView: View {
         }
         .frame(width: panelWidth, height: panelHeight)
         .clipShape(NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius))
-        .frame(maxWidth: .infinity)
-        .frame(maxHeight: .infinity, alignment: .top)
+        // 只水平居中、垂直贴顶，保证形变始终以屏幕顶部为锚点向下展开，不产生顶部空隙。
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
         .animation(.spring(response: 0.5, dampingFraction: 0.82), value: viewModel.isExpanded)
     }
@@ -482,29 +505,48 @@ private struct NotchCapsuleView: View {
             if let agent {
                 HStack(spacing: 7) {
                     StatusBarBrandBadge(asset: agent.asset, size: 22)
-                    Text("\(agent.name)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
+                    Text(agent.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
-                }
-                HStack(spacing: 7) {
                     Circle().fill(Color(nsColor: agent.state.statusNSColor)).frame(width: 7, height: 7)
                     Text(agent.statusText)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(nsColor: agent.state.statusNSColor))
+                        .lineLimit(1)
                 }
-                .padding(.top, 12)
                 Text(agent.taskTitle.isEmpty ? "当前没有运行任务" : agent.taskTitle)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .padding(.top, 10)
+                    .padding(.top, 12)
                 if !agent.taskDetail.isEmpty {
                     Text(agent.taskDetail)
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.45))
                         .lineLimit(1)
                         .padding(.top, 6)
+                }
+                if !agent.metadataItems.isEmpty {
+                    HStack(spacing: 10) {
+                        ForEach(agent.metadataItems, id: \.value) { item in
+                            Label(item.value, systemImage: item.icon)
+                                .lineLimit(1)
+                        }
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.top, 8)
+                }
+                if let updatedAt = agent.updatedAt {
+                    HStack(spacing: 5) {
+                        Text(agent.state.activityLabel)
+                        Text("·")
+                        Text("更新于\(UsageDateFormat.relative(updatedAt))")
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.top, 8)
                 }
             } else {
                 // 空态：暂无进行中的 Agent
@@ -610,34 +652,56 @@ private struct NotchCapsuleView: View {
             }
             Spacer(minLength: 0)
             if !viewModel.providerTicks.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(Array(viewModel.providerTicks.enumerated()), id: \.element.id) { index, tick in
-                        Button(action: { viewModel.onSelectProvider?(index) }) {
-                            StatusBarBrandBadge(asset: tick.asset, size: 24)
-                                .padding(4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(index == viewModel.providerIndex ? Color.white.opacity(0.15) : Color.white.opacity(0.04))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .strokeBorder(index == viewModel.providerIndex ? Color.white.opacity(0.25) : .clear, lineWidth: 1)
-                                )
-                                .overlay(alignment: .bottom) {
-                                    if index == viewModel.providerIndex {
-                                        Circle().fill(.white).frame(width: 5, height: 5).offset(y: -2)
+                GeometryReader { geometry in
+                    let rowOffset = providerRowOffset(viewportWidth: geometry.size.width)
+                    HStack(alignment: .center, spacing: 8) {
+                        ForEach(Array(viewModel.providerTicks.enumerated()), id: \.element.id) { index, tick in
+                            Button(action: { viewModel.onSelectProvider?(tick.id) }) {
+                                StatusBarBrandBadge(asset: tick.asset, size: 24)
+                                    .padding(4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(index == viewModel.providerIndex ? Color.white.opacity(0.15) : Color.white.opacity(0.04))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .strokeBorder(index == viewModel.providerIndex ? Color.white.opacity(0.25) : .clear, lineWidth: 1)
+                                    )
+                                    .overlay(alignment: .bottom) {
+                                        // 用透明度淡入淡出，而不是条件式增删，确保选中指示点跟滚动动画同步。
+                                        Circle().fill(.white)
+                                            .frame(width: 5, height: 5)
+                                            .offset(y: -2)
+                                            .opacity(index == viewModel.providerIndex ? 1 : 0)
                                     }
-                                }
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
-                    Spacer(minLength: 0)
+                    .frame(height: 32)
+                    .offset(x: rowOffset)
+                    .animation(ConnectionLogoRowMotion.selectionAnimation, value: viewModel.providerIndex)
                 }
+                .frame(height: 32)
+                .clipped()
                 .padding(.top, 16)
             }
         }
         .frame(width: 200)
         .onHover { hovering in viewModel.onProviderHover?(hovering) }
+        .onDisappear { viewModel.onProviderHover?(false) }
+    }
+
+    private func providerRowOffset(viewportWidth: CGFloat) -> CGFloat {
+        let count = viewModel.providerTicks.count
+        return ConnectionLogoRowMotion.offset(
+            viewportWidth: viewportWidth,
+            itemWidth: 32,
+            spacing: 8,
+            edgeMargin: 0,
+            itemCount: count,
+            selectedIndex: viewModel.providerIndex
+        )
     }
 
     private var footer: some View {

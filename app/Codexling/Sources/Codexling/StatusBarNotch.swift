@@ -92,9 +92,22 @@ struct StatusBarAgentTick: Identifiable, Equatable, Sendable {
     let asset: BrandAssetID
     var taskTitle: String
     var taskDetail: String
+    var workspaceName: String?
+    var gitBranch: String?
+    var model: String?
+    var updatedAt: Date?
 
     var statusText: String {
         state.statusBarText ?? (state == .unavailable ? "不可用" : "空闲")
+    }
+
+    /// 与主页面任务卡片一致的元信息（工作区 / 分支 / 模型）。
+    var metadataItems: [(icon: String, value: String)] {
+        [
+            workspaceName.map { ("folder", $0) },
+            gitBranch.map { ("arrow.triangle.branch", $0) },
+            model.map { ("cpu", $0) }
+        ].compactMap { $0 }
     }
 }
 

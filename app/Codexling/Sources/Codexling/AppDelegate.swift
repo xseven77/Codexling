@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let usageService = CodexUsageService()
     private var actions: UsageActions?
     private var autoRefreshTimer: Timer?
+    private var accountCarouselTimer: Timer?
     private var codexPetSelectionMonitor: CodexPetSelectionMonitor?
     private var isRefreshing = false
 
@@ -24,6 +25,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.applyAppearance()
         settingsStore.onAutoRefreshIntervalChanged = { [weak self] _ in
             self?.startAutoRefreshTimer()
+        }
+        settingsStore.onAccountCarouselIntervalChanged = { [weak self] _ in
+            self?.startAccountCarouselTimer()
+            self?.statusController?.refreshProviderCarouselTimer()
+        }
+        multiAgentSettingsStore.onSelectedConnectionChanged = { [weak self] in
+            self?.startAccountCarouselTimer()
+            self?.statusController?.refreshStatusTitle()
+        }
+        multiAgentSettingsStore.onAccountCarouselPauseChanged = { [weak self] _ in
+            self?.startAccountCarouselTimer()
         }
         settingsStore.onThemeChanged = { [weak self] _ in
             self?.statusController?.refreshThemeAppearance()
@@ -58,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refresh: { [weak self] in
                 guard let self else { return }
                 if self.hasAnyConnection {
-                    self.autoRefreshUsage()
+                    self.manualRefreshUsage()
                 } else {
                     self.loginAndFetchUsage()
                 }
@@ -96,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         startAutoRefreshTimer()
+        startAccountCarouselTimer()
         activityStore.start()
         do {
             try agentEventSocketService.start { [weak self] event in
@@ -342,6 +355,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoRefreshUsage()
+            }
+        }
+    }
+
+    /// 唯一的账号轮播调度源。one-shot timer 会在手动或自动选择后重新完整计时，
+    /// 避免 SwiftUI 为布局测量创建视图副本时产生重复轮播任务。
+    private func startAccountCarouselTimer() {
+        accountCarouselTimer?.invalidate()
+        accountCarouselTimer = nil
+
+        guard let interval = settingsStore.accountCarouselInterval.timeInterval,
+              !multiAgentSettingsStore.isAccountCarouselPaused
+        else { return }
+
+        accountCarouselTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.multiAgentSettingsStore.selectNextConnection(
+                    includesCurrentCodex: self.snapshotStore.isLoggedIn
+                )
             }
         }
     }

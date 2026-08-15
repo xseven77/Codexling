@@ -13,6 +13,7 @@ struct DetachedUsageWindowView: View {
     let onContentLayoutChanged: (DetachedWindowContentMode) -> Void
     let onOpenSettings: () -> Void
     var onDashboardMeasuredHeight: (CGFloat, String) -> Void = { _, _ in }
+    var onConnectionSwitcherHoverChange: (Bool) -> Void = { _ in }
 
     private var dashboardContentMode: DetachedWindowContentMode {
         .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
@@ -42,7 +43,8 @@ struct DetachedUsageWindowView: View {
             layout: .window,
             showsDetachedButton: false,
             onOpenSettings: onOpenSettings,
-            onMeasuredContentHeightChange: onDashboardMeasuredHeight
+            onMeasuredContentHeightChange: onDashboardMeasuredHeight,
+            onConnectionSwitcherHoverChange: onConnectionSwitcherHoverChange
         )
         .modifier(DetachedUsageWindowRootFrame(fillsContentView: fillsDashboardContentView))
         .preferredColorScheme(settings.resolvedColorScheme)

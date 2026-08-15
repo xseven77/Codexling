@@ -79,6 +79,31 @@ enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
     }
 }
 
+/// 主界面账号 logo 行的自动轮播间隔。关闭时只响应手动选择。
+enum AccountCarouselInterval: Int, CaseIterable, Identifiable {
+    case off = 0
+    case seconds5 = 5
+    case seconds10 = 10
+    case seconds30 = 30
+    case minutes1 = 60
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "关闭"
+        case .seconds5: "5 秒"
+        case .seconds10: "10 秒"
+        case .seconds30: "30 秒"
+        case .minutes1: "1 分钟"
+        }
+    }
+
+    var timeInterval: TimeInterval? {
+        rawValue > 0 ? TimeInterval(rawValue) : nil
+    }
+}
+
 enum StatusBarPetBackgroundColor: String, CaseIterable, Identifiable {
     case neutral
     case automatic
@@ -156,20 +181,6 @@ enum DashboardOrientation: String, CaseIterable, Identifiable {
         switch self {
         case .horizontal: "rectangle.split.2x1"
         case .vertical: "rectangle.split.1x2"
-        }
-    }
-}
-
-enum TaskHoverDisplayMode: String, CaseIterable, Identifiable {
-    case primary
-    case current
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .primary: "主显示器"
-        case .current: "当前高亮显示器"
         }
     }
 }
@@ -286,14 +297,13 @@ final class AppSettingsStore {
     private enum Keys {
         static let theme = "codexling.theme"
         static let autoRefreshInterval = "codexling.autoRefreshInterval"
+        static let accountCarouselInterval = "codexling.accountCarouselInterval"
         static let petsEnabled = "codexling.petsEnabled"
         static let selectedPetID = "codexling.selectedPetID"
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarIndicatorColorMode = "codexling.statusBarIndicatorColorMode"
         static let statusBarWaveEnabled = "codexling.statusBarWaveEnabled"
         static let statusBarWaveColorMode = "codexling.statusBarWaveColorMode"
-        static let autoOpenTaskHoverEnabled = "codexling.autoOpenTaskHoverEnabled"
-        static let taskHoverDisplayMode = "codexling.taskHoverDisplayMode"
         static let statusBarOpacityPercent = "codexling.statusBarOpacityPercent"
         static let statusBarCornerPercent = "codexling.statusBarCornerPercent"
         static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
@@ -320,6 +330,14 @@ final class AppSettingsStore {
             guard autoRefreshInterval != oldValue else { return }
             defaults.set(autoRefreshInterval.rawValue, forKey: Keys.autoRefreshInterval)
             onAutoRefreshIntervalChanged?(autoRefreshInterval)
+        }
+    }
+
+    var accountCarouselInterval: AccountCarouselInterval {
+        didSet {
+            guard accountCarouselInterval != oldValue else { return }
+            defaults.set(accountCarouselInterval.rawValue, forKey: Keys.accountCarouselInterval)
+            onAccountCarouselIntervalChanged?(accountCarouselInterval)
         }
     }
 
@@ -379,22 +397,6 @@ final class AppSettingsStore {
         }
     }
 
-    var autoOpenTaskHoverEnabled: Bool {
-        didSet {
-            guard autoOpenTaskHoverEnabled != oldValue else { return }
-            defaults.set(autoOpenTaskHoverEnabled, forKey: Keys.autoOpenTaskHoverEnabled)
-            onPetSettingsChanged?()
-        }
-    }
-
-    var taskHoverDisplayMode: TaskHoverDisplayMode {
-        didSet {
-            guard taskHoverDisplayMode != oldValue else { return }
-            defaults.set(taskHoverDisplayMode.rawValue, forKey: Keys.taskHoverDisplayMode)
-            onPetSettingsChanged?()
-        }
-    }
-
     var statusBarOpacityPercent: Double {
         didSet {
             guard statusBarOpacityPercent != oldValue else { return }
@@ -450,6 +452,7 @@ final class AppSettingsStore {
     }
 
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
+    var onAccountCarouselIntervalChanged: ((AccountCarouselInterval) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
     var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
@@ -482,6 +485,9 @@ final class AppSettingsStore {
             autoRefreshInterval = .minutes1
         }
 
+        let carouselRaw = defaults.object(forKey: Keys.accountCarouselInterval) as? Int
+        accountCarouselInterval = carouselRaw.flatMap(AccountCarouselInterval.init(rawValue:)) ?? .off
+
         petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
         selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
         let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
@@ -495,10 +501,6 @@ final class AppSettingsStore {
                 ? .activityState
                 : StatusCapsuleColorMode(rawValue: rawValue)
         } ?? .activityState
-        autoOpenTaskHoverEnabled =
-            defaults.object(forKey: Keys.autoOpenTaskHoverEnabled) as? Bool ?? true
-        taskHoverDisplayMode = defaults.string(forKey: Keys.taskHoverDisplayMode)
-            .flatMap(TaskHoverDisplayMode.init(rawValue:)) ?? .primary
         let savedOpacityPercent =
             defaults.object(forKey: Keys.statusBarOpacityPercent) as? Double ?? 20
         statusBarOpacityPercent = min(max(savedOpacityPercent, 0), 50)
@@ -523,6 +525,9 @@ final class AppSettingsStore {
         // Remove the retired popover preference so older installations cannot
         // retain an unreachable mode.
         defaults.removeObject(forKey: "codexling.statusBarClickBehavior")
+        // 任务浮窗行为已固定（不自动展开、跟随当前高亮显示器），清理旧设置项。
+        defaults.removeObject(forKey: "codexling.autoOpenTaskHoverEnabled")
+        defaults.removeObject(forKey: "codexling.taskHoverDisplayMode")
         reloadPets(notify: false)
         syncPetSelectionFromCodex()
         suppressCodexPetSelectionWrite = false
@@ -534,14 +539,13 @@ final class AppSettingsStore {
         let keys = [
             Keys.theme,
             Keys.autoRefreshInterval,
+            Keys.accountCarouselInterval,
             Keys.petsEnabled,
             Keys.selectedPetID,
             Keys.petBackgroundColor,
             Keys.statusBarIndicatorColorMode,
             Keys.statusBarWaveEnabled,
             Keys.statusBarWaveColorMode,
-            Keys.autoOpenTaskHoverEnabled,
-            Keys.taskHoverDisplayMode,
             Keys.statusBarOpacityPercent,
             Keys.statusBarCornerPercent,
             Keys.windowAlwaysOnTop,

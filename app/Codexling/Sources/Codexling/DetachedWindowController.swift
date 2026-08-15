@@ -9,11 +9,11 @@ enum WindowEventScope {
 
 @MainActor
 enum WindowDraggingPolicy {
-    static func apply(to window: NSWindow) {
+    static func apply(to window: NSWindow, isEnabled: Bool = true) {
         // Keep AppKit's native titlebar hierarchy untouched. Full-size
         // content windows remain draggable from non-interactive background,
         // while NSButton/SwiftUI controls consume their own mouse events.
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = isEnabled
     }
 }
 
@@ -213,6 +213,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var dashboardMeasurementIdentity: String?
     private var settingsMeasuredContentHeight: CGFloat?
     private var titleControlsView: TitleControlsView!
+    private var isConnectionSwitcherHovering = false
 
     init(
         store: UsageSnapshotStore,
@@ -260,6 +261,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                     if height > 1 {
                         self.commitDashboardMeasuredHeight(height, identity: identity)
                     }
+                },
+                onConnectionSwitcherHoverChange: { [weak self] hovering in
+                    self?.setConnectionSwitcherHovering(hovering)
                 }
             )
         )
@@ -459,6 +463,9 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
             dashboardMeasurementIdentity = nil
         }
         contentMode = mode
+        if case .settings = mode {
+            isConnectionSwitcherHovering = false
+        }
         updateTitleControlsAppearance()
         applyWindowInteraction(for: mode)
         applyBackgroundDragging(for: mode)
@@ -759,7 +766,20 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyBackgroundDragging(for mode: DetachedWindowContentMode) {
-        WindowDraggingPolicy.apply(to: window)
+        let isEnabled: Bool
+        switch mode {
+        case .dashboard:
+            isEnabled = !isConnectionSwitcherHovering
+        case .settings:
+            isEnabled = true
+        }
+        WindowDraggingPolicy.apply(to: window, isEnabled: isEnabled)
+    }
+
+    private func setConnectionSwitcherHovering(_ hovering: Bool) {
+        guard case .dashboard = contentMode else { return }
+        isConnectionSwitcherHovering = hovering
+        applyBackgroundDragging(for: contentMode)
     }
 
     private func applyContentSizeLimits(for mode: DetachedWindowContentMode) {

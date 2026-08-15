@@ -157,6 +157,9 @@ struct SettingsView: View {
             .onChange(of: settings.autoRefreshInterval) { _, interval in
                 showToast("自动刷新：\(interval.title)")
             }
+            .onChange(of: settings.accountCarouselInterval) { _, interval in
+                showToast("账号自动轮播：\(interval.title)")
+            }
             .onChange(of: settings.dashboardOrientation) { _, orientation in
                 showToast("主界面布局：\(orientation.title)")
             }
@@ -168,9 +171,6 @@ struct SettingsView: View {
             }
             .onChange(of: settings.statusBarWaveColorMode) { _, mode in
                 showToast("活动流光颜色：\(mode.title)")
-            }
-            .onChange(of: settings.autoOpenTaskHoverEnabled) { _, enabled in
-                showToast("任务浮窗自动展开已\(enabled ? "开启" : "关闭")")
             }
             .onChange(of: updater.phase) { oldPhase, phase in
                 handleUpdaterPhaseChange(from: oldPhase, to: phase)
@@ -240,14 +240,11 @@ struct SettingsView: View {
                     .padding(.bottom, SettingsLayoutMetrics.windowBottomInset)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .background {
-                        ZStack {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: SettingsMeasuredContentHeightKey.self,
-                                    value: geometry.size.height
-                                )
-                            }
-                            ScrollIndicatorHider()
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: SettingsMeasuredContentHeightKey.self,
+                                value: geometry.size.height
+                            )
                         }
                     }
             }
@@ -262,7 +259,12 @@ struct SettingsView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .background(Color.codexBackground.opacity(0.50))
+            .background {
+                ZStack {
+                    Color.codexBackground.opacity(0.50)
+                    ScrollIndicatorHider()
+                }
+            }
         }
         .overlay(alignment: .top) {
             if showsStickySettingsTitle {
@@ -937,6 +939,8 @@ struct SettingsView: View {
                 CodexDivider()
                 orientationSection
                 CodexDivider()
+                accountCarouselSection
+                CodexDivider()
                 refreshSection
             }
             .settingsGroupSurface()
@@ -999,6 +1003,19 @@ struct SettingsView: View {
         }
     }
 
+    private var accountCarouselSection: some View {
+        SettingsInlineRow(
+            title: "账号自动轮播",
+            subtitle: "按设定间隔自动切换账号；鼠标停在 logo 行时暂停"
+        ) {
+            SettingsMenuPicker(
+                selection: $settings.accountCarouselInterval,
+                options: AccountCarouselInterval.allCases,
+                title: \.title
+            )
+        }
+    }
+
     private var petSection: some View {
         VStack(alignment: .leading, spacing: SettingsLayoutMetrics.sectionSpacing) {
             SettingsSection(
@@ -1046,29 +1063,6 @@ struct SettingsView: View {
                         options: StatusCapsuleColorMode.activityFlowCases,
                         title: \.title,
                         swatchColor: \.swatchColor
-                    )
-                }
-                CodexDivider()
-
-                SettingsInlineRow(
-                    title: "自动展开任务浮窗",
-                    subtitle: "Codex 开始工作时自动显示；关闭后仍可悬停胶囊查看"
-                ) {
-                    SettingsSwitch(
-                        isOn: $settings.autoOpenTaskHoverEnabled,
-                        accessibilityLabel: "自动展开任务浮窗"
-                    )
-                }
-                CodexDivider()
-
-                SettingsInlineRow(
-                    title: "任务浮窗显示位置",
-                    subtitle: "选择任务浮窗自动出现的显示器"
-                ) {
-                    SettingsMenuPicker(
-                        selection: $settings.taskHoverDisplayMode,
-                        options: TaskHoverDisplayMode.allCases,
-                        title: \.title
                     )
                 }
                 CodexDivider()
@@ -1265,6 +1259,8 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            .scrollIndicators(.hidden)
+            .background(ScrollIndicatorHider())
             .frame(width: 330)
             .frame(maxHeight: 520)
         }
@@ -1466,24 +1462,75 @@ private enum PendingAccountRemoval: Identifiable {
     }
 }
 
-private struct ScrollIndicatorHider: NSViewRepresentable {
+struct ScrollIndicatorHider: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        hideIndicators(from: view)
-        return view
+        ScrollIndicatorHiderView()
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        hideIndicators(from: nsView)
+        (nsView as? ScrollIndicatorHiderView)?.scheduleUpdate()
+    }
+}
+
+private final class ScrollIndicatorHiderView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 
-    private func hideIndicators(from view: NSView) {
-        DispatchQueue.main.async {
-            guard let scrollView = view.enclosingScrollView else { return }
-            scrollView.hasVerticalScroller = false
-            scrollView.hasHorizontalScroller = false
-            scrollView.autohidesScrollers = true
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        scheduleUpdate()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleUpdate()
+    }
+
+    override func layout() {
+        super.layout()
+        hideIndicators()
+    }
+
+    func scheduleUpdate() {
+        for delay in [0.0, 0.05, 0.25] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.hideIndicators()
+            }
         }
+    }
+
+    private func hideIndicators() {
+        guard let rootView = window?.contentView else { return }
+        let markerRect = convert(bounds, to: nil)
+        var candidates: [NSScrollView] = []
+        collectScrollViews(in: rootView, into: &candidates)
+        guard let scrollView = candidates
+            .filter({ $0.convert($0.bounds, to: nil).intersects(markerRect) })
+            .min(by: { scrollViewArea($0) < scrollViewArea($1) })
+        else { return }
+
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.verticalScroller?.isHidden = true
+        scrollView.horizontalScroller?.isHidden = true
+        scrollView.verticalScroller?.alphaValue = 0
+        scrollView.horizontalScroller?.alphaValue = 0
+        scrollView.autohidesScrollers = true
+    }
+
+    private func collectScrollViews(in view: NSView, into result: inout [NSScrollView]) {
+        if let scrollView = view as? NSScrollView {
+            result.append(scrollView)
+        }
+        for subview in view.subviews {
+            collectScrollViews(in: subview, into: &result)
+        }
+    }
+
+    private func scrollViewArea(_ scrollView: NSScrollView) -> CGFloat {
+        let rect = scrollView.convert(scrollView.bounds, to: nil)
+        return rect.width * rect.height
     }
 }
 

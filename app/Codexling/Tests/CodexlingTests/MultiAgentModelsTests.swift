@@ -113,6 +113,15 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
     }
 
+    func testConnectionRegistryWithoutOrderFieldRemainsDecodable() throws {
+        let data = try XCTUnwrap(
+            #"{"schemaVersion":2,"codexAccounts":[],"deepSeekConnections":[]}"#.data(using: .utf8)
+        )
+        let snapshot = try JSONDecoder().decode(ConnectionRegistrySnapshot.self, from: data)
+
+        XCTAssertTrue(snapshot.connectionOrder.isEmpty)
+    }
+
     @MainActor
     func testUnifiedRefreshUpdatesEveryDeepSeekConnection() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -240,6 +249,116 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(store.selectedConnectionKey, selectedKey)
         XCTAssertEqual(makeStore().selectedConnectionKey, selectedKey)
         XCTAssertEqual(makeStore().selectedDeepSeekConnection?.id, selectedConnection.id)
+    }
+
+    @MainActor
+    func testConnectionOrderPersistsAndDrivesCarousel() throws {
+        let defaultsKey = "dashboard.selectedConnection"
+        let previousSelection = UserDefaults.standard.object(forKey: defaultsKey)
+        defer {
+            if let previousSelection {
+                UserDefaults.standard.set(previousSelection, forKey: defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: defaultsKey)
+            }
+        }
+        UserDefaults.standard.set(MultiAgentSettingsStore.currentCodexConnectionKey, forKey: defaultsKey)
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-connection-order-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let firstID = ConnectionID(rawValue: UUID())
+        let secondID = ConnectionID(rawValue: UUID())
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(deepSeekConnections: [
+            DeepSeekAPIConnection(
+                id: firstID,
+                label: "First",
+                credentialHandle: "first",
+                keySuffix: "1111",
+                authenticationState: .connected,
+                createdAt: Date()
+            ),
+            DeepSeekAPIConnection(
+                id: secondID,
+                label: "Second",
+                credentialHandle: "second",
+                keySuffix: "2222",
+                authenticationState: .connected,
+                createdAt: Date()
+            ),
+        ]))
+
+        func makeStore() -> MultiAgentSettingsStore {
+            MultiAgentSettingsStore(
+                hookManager: AgentHookManager(
+                    homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+                    applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                ),
+                registryStorage: registry,
+                codexRuntimeManager: CodexAccountRuntimeManager(
+                    runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+                ),
+                credentialStore: TestDeepSeekCredentialStore(values: [:]),
+                deepSeekBalanceService: TestDeepSeekBalanceService(),
+                startsAutomaticRefresh: false
+            )
+        }
+
+        let store = makeStore()
+        let secondKey = store.connectionKey(for: store.deepSeekConnections[1])
+        store.moveConnection(key: secondKey, to: 0, among: store.orderedConnectionKeys)
+
+        XCTAssertEqual(store.orderedConnectionKeys.first, secondKey)
+        XCTAssertEqual(makeStore().orderedConnectionKeys.first, secondKey)
+
+        store.selectConnection(key: secondKey)
+        store.selectNextConnection(includesCurrentCodex: true)
+        XCTAssertEqual(store.selectedConnectionKey, MultiAgentSettingsStore.currentCodexConnectionKey)
+    }
+
+    @MainActor
+    func testAccountCarouselRemainsPausedUntilEveryHoveredSurfaceExits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-carousel-pause-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let store = MultiAgentSettingsStore(
+            hookManager: AgentHookManager(
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+                applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+            ),
+            registryStorage: ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json")),
+            codexRuntimeManager: CodexAccountRuntimeManager(
+                runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+            ),
+            credentialStore: TestDeepSeekCredentialStore(values: [:]),
+            deepSeekBalanceService: TestDeepSeekBalanceService(),
+            startsAutomaticRefresh: false
+        )
+        var pauseChanges: [Bool] = []
+        store.onAccountCarouselPauseChanged = { pauseChanges.append($0) }
+
+        store.setAccountCarouselPaused(true, source: .dashboard)
+        store.setAccountCarouselPaused(true, source: .dashboardInfo)
+        store.setAccountCarouselPaused(true, source: .notch(screenNumber: 1))
+        store.setAccountCarouselPaused(false, source: .dashboard)
+
+        XCTAssertTrue(store.isAccountCarouselPaused)
+        XCTAssertEqual(pauseChanges, [true])
+
+        store.setAccountCarouselPaused(false, source: .notch(screenNumber: 1))
+
+        XCTAssertTrue(store.isAccountCarouselPaused)
+        XCTAssertEqual(pauseChanges, [true])
+
+        store.setAccountCarouselPaused(false, source: .dashboardInfo)
+
+        XCTAssertFalse(store.isAccountCarouselPaused)
+        XCTAssertEqual(pauseChanges, [true, false])
     }
 
     func testManualRefreshToastSummarizesSuccessPartialFailureAndFailure() {
