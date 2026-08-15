@@ -1,5 +1,3 @@
-import LocalAuthentication
-import Security
 import XCTest
 @testable import Codexling
 
@@ -100,11 +98,19 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(ProviderBalanceIndicator.resolve(total: nil, authenticationState: .invalid), .depleted)
     }
 
-    func testDeepSeekCredentialQueriesNeverAllowAuthenticationUI() throws {
-        let query = DeepSeekCredentialStore.nonInteractiveQuery(handle: "test-handle")
-        let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
+    func testDeepSeekCredentialFilesArePrivateAndRoundTripWithoutAuthenticationUI() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-deepseek-credentials-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeepSeekCredentialStore(credentialsDir: root)
 
-        XCTAssertTrue(context.interactionNotAllowed)
+        try store.save(apiKey: "sk-test", handle: "test-handle")
+
+        XCTAssertEqual(try store.read(handle: "test-handle"), "sk-test")
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: root.appendingPathComponent("test-handle.json").path
+        )
+        XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
     }
 
     @MainActor
@@ -166,6 +172,74 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(store.deepSeekConnections.map(\.authenticationState), [.connected, .connected])
         XCTAssertEqual(store.deepSeekConnections.map { $0.balance?.total }, [11, 22])
         XCTAssertEqual(Set(refreshedConnectionIDs), Set([firstID, secondID]))
+    }
+
+    @MainActor
+    func testLastSelectedProviderConnectionPersistsAndReloads() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-selected-connection-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let defaultsKey = "dashboard.selectedConnection"
+        let previousSelection = UserDefaults.standard.object(forKey: defaultsKey)
+        defer {
+            if let previousSelection {
+                UserDefaults.standard.set(previousSelection, forKey: defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: defaultsKey)
+            }
+        }
+        UserDefaults.standard.set(MultiAgentSettingsStore.currentCodexConnectionKey, forKey: defaultsKey)
+
+        let firstID = ConnectionID(rawValue: UUID())
+        let secondID = ConnectionID(rawValue: UUID())
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(
+            deepSeekConnections: [
+                DeepSeekAPIConnection(
+                    id: firstID,
+                    label: "First",
+                    credentialHandle: "first",
+                    keySuffix: "1111",
+                    authenticationState: .connected,
+                    createdAt: Date()
+                ),
+                DeepSeekAPIConnection(
+                    id: secondID,
+                    label: "Second",
+                    credentialHandle: "second",
+                    keySuffix: "2222",
+                    authenticationState: .connected,
+                    createdAt: Date()
+                ),
+            ]
+        ))
+
+        func makeStore() -> MultiAgentSettingsStore {
+            MultiAgentSettingsStore(
+                hookManager: AgentHookManager(
+                    homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+                    applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                ),
+                registryStorage: registry,
+                codexRuntimeManager: CodexAccountRuntimeManager(
+                    runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+                ),
+                credentialStore: TestDeepSeekCredentialStore(values: [:]),
+                deepSeekBalanceService: TestDeepSeekBalanceService(),
+                startsAutomaticRefresh: false
+            )
+        }
+
+        let store = makeStore()
+        let selectedConnection = store.deepSeekConnections[1]
+        let selectedKey = store.connectionKey(for: selectedConnection)
+        store.selectDeepSeekConnection(selectedConnection)
+
+        XCTAssertEqual(store.selectedConnectionKey, selectedKey)
+        XCTAssertEqual(makeStore().selectedConnectionKey, selectedKey)
+        XCTAssertEqual(makeStore().selectedDeepSeekConnection?.id, selectedConnection.id)
     }
 
     func testManualRefreshToastSummarizesSuccessPartialFailureAndFailure() {

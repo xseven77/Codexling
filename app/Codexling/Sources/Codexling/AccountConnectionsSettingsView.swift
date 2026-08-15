@@ -333,9 +333,8 @@ private struct CancelCodexOAuthButton: View {
 
 // MARK: - Plain TextField (NSTextField wrapper)
 
-/// 用原生 NSTextField 包装的文本输入框。Overlay/modal 中
-/// SwiftUI 的 TextField 快捷键可能失效；通过 NSTextField 子类
-/// 的 performKeyEquivalent 手动接管 Cmd+C/V/X/A。
+/// 用原生 NSTextField 包装的文本输入框。Overlay/modal 中没有标准
+/// Edit 菜单时，编辑快捷键需要直接路由给 NSTextField 的 Field Editor。
 private struct PlainTextField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
@@ -345,13 +344,14 @@ private struct PlainTextField: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSTextField {
-        let field = KeyShortcutTextField()
+        let field = NSTextField()
         field.placeholderString = placeholder
         field.isBezeled = true
         field.bezelStyle = .roundedBezel
         field.delegate = context.coordinator
         field.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         field.lineBreakMode = .byTruncatingTail
+        context.coordinator.attach(to: field)
         return field
     }
 
@@ -361,43 +361,79 @@ private struct PlainTextField: NSViewRepresentable {
         }
     }
 
-    /// 重写 performKeyEquivalent 接管快捷键，天然在 MainActor 无警告。
-    private final class KeyShortcutTextField: NSTextField {
-        override func performKeyEquivalent(with event: NSEvent) -> Bool {
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                  let chars = event.charactersIgnoringModifiers?.lowercased()
-            else { return super.performKeyEquivalent(with: event) }
-
-            switch chars {
-            case "c":
-                currentEditor()?.copy(nil)
-                return true
-            case "v":
-                currentEditor()?.paste(nil)
-                return true
-            case "x":
-                currentEditor()?.cut(nil)
-                return true
-            case "a":
-                currentEditor()?.selectAll(nil)
-                return true
-            default:
-                break
-            }
-            return super.performKeyEquivalent(with: event)
-        }
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.detach()
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         let parent: PlainTextField
+        weak var field: NSTextField?
+        private var shortcutMonitor: Any?
 
         init(_ parent: PlainTextField) {
             self.parent = parent
+        }
+
+        func attach(to field: NSTextField) {
+            self.field = field
+            shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                nonisolated(unsafe) let mainThreadEvent = event
+                nonisolated(unsafe) let mainThreadCoordinator = self
+                let handled = MainActor.assumeIsolated {
+                    guard let mainThreadCoordinator,
+                          let field = mainThreadCoordinator.field,
+                          mainThreadEvent.window === field.window,
+                          field.currentEditor() != nil,
+                          TextFieldShortcutRouter.handle(event: mainThreadEvent, for: field)
+                    else { return false }
+                    return true
+                }
+                return handled ? nil : event
+            }
+        }
+
+        func detach() {
+            if let shortcutMonitor {
+                NSEvent.removeMonitor(shortcutMonitor)
+                self.shortcutMonitor = nil
+            }
+            field = nil
         }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             parent.text = field.stringValue
         }
+    }
+}
+
+@MainActor
+enum TextFieldShortcutRouter {
+    static func handle(event: NSEvent, for field: NSTextField) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              let editor = field.currentEditor(),
+              let characters = event.charactersIgnoringModifiers?.lowercased()
+        else { return false }
+
+        switch characters {
+        case "c":
+            editor.copy(nil)
+        case "v":
+            editor.paste(nil)
+        case "x":
+            editor.cut(nil)
+        case "a":
+            editor.selectAll(nil)
+        case "z" where flags.contains(.shift):
+            editor.undoManager?.redo()
+        case "z":
+            editor.undoManager?.undo()
+        default:
+            return false
+        }
+        return true
     }
 }

@@ -1,11 +1,6 @@
 import AppKit
 import SwiftUI
 
-extension Notification.Name {
-    /// DashboardConnectionSwitcher hover 变化时发送，userInfo["hovering"]: Bool
-    static let connectionSwitcherHoverChanged = Notification.Name("ConnectionSwitcherHoverChanged")
-}
-
 struct CompanionDashboardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: UsageSnapshotStore
@@ -697,64 +692,56 @@ private struct DashboardConnectionSwitcher: View {
     let onAdd: () -> Void
     var compact = false
 
-    @State private var draggingItemKey: String? = nil
-    @State private var dragOffset: CGSize = .zero
-    @State private var isDragActive = false
+    /// 固定展示顺序：当前 Codex、附加 Codex 账号、DeepSeek 连接。
+    private var connectionItems: [ConnectionSwitcherItem] {
+        var items: [ConnectionSwitcherItem] = []
 
-    /// 拖拽排序后的统一连接项列表。
-    private var orderedItems: [ConnectionSwitcherItem] {
-        store.orderedConnectionKeys.compactMap { key -> ConnectionSwitcherItem? in
-            if key == MultiAgentSettingsStore.currentCodexConnectionKey {
-                guard showsCurrentCodex else { return nil }
-                return ConnectionSwitcherItem(
-                    key: key,
-                    asset: .codex,
-                    title: "Codex",
-                    subtitle: snapshot.companionAccountName,
-                    color: Color.codexGreen,
-                    selected: store.selectedConnectionKey == key,
-                    credential: .account(currentCodexQuotaColor),
-                    action: { store.selectCurrentCodexConnection() }
-                )
-            }
-            if key.hasPrefix("codex."),
-               let account = store.codexAccounts.first(where: { store.connectionKey(for: $0) == key }) {
-                return ConnectionSwitcherItem(
-                    key: key,
-                    asset: .codex,
-                    title: "Codex",
-                    subtitle: account.label,
-                    color: Color.codexGreen,
-                    selected: store.isSelected(account),
-                    credential: .account(codexQuotaColor(for: account)),
-                    action: { store.selectCodexConnection(account) }
-                )
-            }
-            if key.hasPrefix("deepseek."),
-               let conn = store.deepSeekConnections.first(where: { store.connectionKey(for: $0) == key }) {
-                return ConnectionSwitcherItem(
-                    key: key,
-                    asset: .deepSeek,
-                    title: "DeepSeek",
-                    subtitle: conn.label,
-                    color: .deepSeekBrand,
-                    selected: store.isSelected(conn),
-                    credential: .apiKey(balanceColor(for: conn)),
-                    action: { store.selectDeepSeekConnection(conn) }
-                )
-            }
-            return nil
+        if showsCurrentCodex {
+            items.append(ConnectionSwitcherItem(
+                key: MultiAgentSettingsStore.currentCodexConnectionKey,
+                asset: .codex,
+                title: "Codex",
+                subtitle: snapshot.companionAccountName,
+                color: Color.codexGreen,
+                selected: store.selectedConnectionKey == MultiAgentSettingsStore.currentCodexConnectionKey,
+                credential: .account(currentCodexQuotaColor),
+                action: { store.selectCurrentCodexConnection() }
+            ))
         }
-    }
 
-    /// Compact 模式下每个 icon slot 宽度（42pt icon + 7pt spacing）。
-    private var slotWidth: CGFloat { 49 }
+        items.append(contentsOf: store.codexAccounts.map { account in
+            ConnectionSwitcherItem(
+                key: store.connectionKey(for: account),
+                asset: .codex,
+                title: "Codex",
+                subtitle: account.label,
+                color: Color.codexGreen,
+                selected: store.isSelected(account),
+                credential: .account(codexQuotaColor(for: account)),
+                action: { store.selectCodexConnection(account) }
+            )
+        })
+
+        items.append(contentsOf: store.deepSeekConnections.map { connection in
+            ConnectionSwitcherItem(
+                key: store.connectionKey(for: connection),
+                asset: .deepSeek,
+                title: "DeepSeek",
+                subtitle: connection.label,
+                color: .deepSeekBrand,
+                selected: store.isSelected(connection),
+                credential: .apiKey(balanceColor(for: connection)),
+                action: { store.selectDeepSeekConnection(connection) }
+            )
+        })
+
+        return items
+    }
 
     var body: some View {
         HStack(spacing: 7) {
             HStack(spacing: 7) {
-                ForEach(orderedItems) { item in
-                    let isDragging = draggingItemKey == item.key
+                ForEach(connectionItems) { item in
                     connectionButton(
                         asset: item.asset,
                         title: item.title,
@@ -764,57 +751,6 @@ private struct DashboardConnectionSwitcher: View {
                         credential: item.credential,
                         action: item.action
                     )
-                    .offset(x: isDragging ? dragOffset.width : 0,
-                            y: isDragging ? dragOffset.height : 0)
-                    .scaleEffect(isDragging ? 1.18 : 1.0)
-                    .shadow(color: isDragging ? .black.opacity(0.22) : .clear,
-                            radius: isDragging ? 10 : 0,
-                            y: isDragging ? 5 : 0)
-                    .zIndex(isDragging ? 10 : 0)
-                    .gesture(
-                        DragGesture(minimumDistance: 3, coordinateSpace: .named("switcher"))
-                            .onChanged { value in
-                                if draggingItemKey == nil {
-                                    draggingItemKey = item.key
-                                    isDragActive = true
-                                    NSCursor.closedHand.push()
-                                    NotificationCenter.default.post(
-                                        name: .connectionSwitcherHoverChanged,
-                                        object: nil,
-                                        userInfo: ["hovering": true]
-                                    )
-                                }
-                                dragOffset = value.translation
-                            }
-                            .onEnded { value in
-                                isDragActive = false
-                                NSCursor.closedHand.pop()
-                                let currentIdx = orderedItems.firstIndex(where: { $0.key == item.key }) ?? 0
-                                let stepWidth = compact ? slotWidth : (slotWidth * 2.8)
-                                let offsetSteps = Int(round(value.translation.width / stepWidth))
-                                let targetIdx = max(0, min(orderedItems.count - 1, currentIdx + offsetSteps))
-
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    draggingItemKey = nil
-                                    dragOffset = .zero
-                                    if targetIdx != currentIdx {
-                                        store.moveConnection(
-                                            fromOffsets: IndexSet(integer: currentIdx),
-                                            toOffset: targetIdx > currentIdx ? targetIdx + 1 : targetIdx
-                                        )
-                                    }
-                                }
-                            }
-                    )
-                }
-            }
-            .coordinateSpace(name: "switcher")
-            .onHover { hovering in
-                guard draggingItemKey == nil else { return }
-                if hovering {
-                    NSCursor.openHand.set()
-                } else {
-                    NSCursor.arrow.set()
                 }
             }
             Spacer(minLength: 0)
@@ -833,14 +769,6 @@ private struct DashboardConnectionSwitcher: View {
             }
             .help("添加 Codex 账号或 DeepSeek API Key")
         }
-        .onHover { hovering in
-            if isDragActive { return }
-            NotificationCenter.default.post(
-                name: .connectionSwitcherHoverChanged,
-                object: nil,
-                userInfo: ["hovering": hovering]
-            )
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("我的连接")
     }
@@ -854,29 +782,31 @@ private struct DashboardConnectionSwitcher: View {
         credential: CredentialBadge,
         action: @escaping () -> Void
     ) -> some View {
-        Group {
-            if compact {
-                connectionIcon(asset: asset, credential: credential)
-                    .frame(width: 42, height: 42)
-            } else {
-                HStack(spacing: 6) {
+        Button(action: action) {
+            Group {
+                if compact {
                     connectionIcon(asset: asset, credential: credential)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.system(size: 10, weight: .bold))
-                        Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
+                        .frame(width: 42, height: 42)
+                } else {
+                    HStack(spacing: 6) {
+                        connectionIcon(asset: asset, credential: credential)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(.system(size: 10, weight: .bold))
+                            Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
+                        }
                     }
+                    .padding(.horizontal, 10)
+                    .frame(height: 42)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 42)
             }
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
+        .buttonStyle(.plain)
         .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .onTapGesture(perform: action)
         .accessibilityLabel("\(title)，\(subtitle)")
         .accessibilityValue(selected ? "已选择" : "未选择")
     }
@@ -924,7 +854,7 @@ private struct DashboardConnectionSwitcher: View {
     }
 }
 
-// MARK: - Drag-and-Drop Support
+// MARK: - Connection Switcher Items
 
 private struct ConnectionSwitcherItem: Identifiable {
     let key: String

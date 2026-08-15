@@ -6,8 +6,6 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
     var schemaVersion = currentSchemaVersion
     var codexAccounts: [CodexAccountConnection] = []
     var deepSeekConnections: [DeepSeekAPIConnection] = []
-    /// 用户拖拽排序后的连接 key 顺序。缺失的连接自动追加；已移除的连接自动清理。
-    var connectionOrder: [String] = []
 }
 
 struct ConnectionRegistryStorage {

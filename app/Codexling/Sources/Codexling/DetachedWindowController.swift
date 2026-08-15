@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+enum WindowEventScope {
+    static func matches(eventWindow: NSWindow?, targetWindow: NSWindow) -> Bool {
+        eventWindow === targetWindow
+    }
+}
+
+@MainActor
+enum WindowDraggingPolicy {
+    static func apply(to window: NSWindow) {
+        // Keep AppKit's native titlebar hierarchy untouched. Full-size
+        // content windows remain draggable from non-interactive background,
+        // while NSButton/SwiftUI controls consume their own mouse events.
+        window.isMovableByWindowBackground = true
+    }
+}
+
 enum DetachedWindowContentMode: Equatable {
     case dashboard(isLoggedIn: Bool, orientation: DashboardOrientation)
     case settings
@@ -197,7 +213,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     private var dashboardMeasurementIdentity: String?
     private var settingsMeasuredContentHeight: CGFloat?
     private var titleControlsView: TitleControlsView!
-    private var connectionSwitcherHoverObserver: Any?
 
     init(
         store: UsageSnapshotStore,
@@ -267,8 +282,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         )
         window.delegate = self
         window.isReleasedWhenClosed = false
-        installConnectionSwitcherHoverObserver()
-        installRightColumnTitlebarBlocker()
         // The status-bar capsule is a direct action. Avoid AppKit's default
         // document-window reveal animation so the result follows mouse-up.
         window.animationBehavior = .none
@@ -655,14 +668,6 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         endUserMoveTracking()
-        if let observer = connectionSwitcherHoverObserver {
-            NotificationCenter.default.removeObserver(observer)
-            connectionSwitcherHoverObserver = nil
-        }
-        if let blocker = rightColumnTitlebarBlocker {
-            NSEvent.removeMonitor(blocker)
-            rightColumnTitlebarBlocker = nil
-        }
         onClose?()
     }
 
@@ -695,7 +700,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
         cancelPendingDashboardHeightCommit()
         guard userMoveMouseUpMonitor == nil else { return }
         userMoveMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
-            self?.endUserMoveTracking()
+            guard let self,
+                  WindowEventScope.matches(eventWindow: event.window, targetWindow: self.window)
+            else { return event }
+            self.endUserMoveTracking()
             return event
         }
     }
@@ -751,68 +759,7 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyBackgroundDragging(for mode: DetachedWindowContentMode) {
-        switch mode {
-        case .dashboard:
-            window.isMovableByWindowBackground = true
-        case .settings:
-            window.isMovableByWindowBackground = false
-        }
-    }
-
-    /// 监听连接切换器的 hover 状态：鼠标在切换器上时禁用窗口背景拖拽，
-    /// 防止拖拽排序 logo 时误触发窗口移动。
-    /// 退出 hover 时加短延迟，避免拖拽过程中鼠标短暂离开区域导致窗口跳动。
-    private func installConnectionSwitcherHoverObserver() {
-        connectionSwitcherHoverObserver = NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleConnectionSwitcherHover(_:)),
-            name: .connectionSwitcherHoverChanged,
-            object: nil
-        )
-    }
-
-    @MainActor
-    @objc private func handleConnectionSwitcherHover(_ notification: Notification) {
-        guard case .dashboard = contentMode,
-              let hovering = notification.userInfo?["hovering"] as? Bool
-        else { return }
-
-        window.isMovableByWindowBackground = !hovering
-    }
-
-    // MARK: - Right column titlebar blocker
-
-    /// 只拦截右侧内容区顶部 22pt 的标题栏拖拽，不碰左侧 Pet 区和窗口按钮。
-    private var rightColumnTitlebarBlocker: Any?
-
-    private func installRightColumnTitlebarBlocker() {
-        rightColumnTitlebarBlocker = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
-        ) { [weak self] event in
-            guard let self,
-                  case .dashboard(isLoggedIn: _, orientation: _) = self.contentMode,
-                  let contentView = self.window.contentView
-            else { return event }
-
-            let point = contentView.convert(event.locationInWindow, from: nil)
-            let sidebarWidth = DetachedWindowMetrics.sidebarWidth
-
-            // 置顶 / 方向切换按钮必须保持可点：命中标题栏控件区域时直接放行。
-            // 竖版布局下按钮贴窗口右缘（x > sidebarWidth 且顶部 22pt），
-            // 否则会被下面的拦截逻辑吞掉，表现为「点不了」。
-            if let titleControlsView {
-                let localPoint = titleControlsView.convert(event.locationInWindow, from: nil)
-                if titleControlsView.bounds.contains(localPoint) {
-                    return event
-                }
-            }
-
-            // 只处理右侧区域（x > sidebarWidth）的标题栏高度（y <= 22）
-            guard point.x > sidebarWidth, point.y <= 22 else { return event }
-
-            // 吞掉事件，阻止标题栏拖拽
-            return nil
-        }
+        WindowDraggingPolicy.apply(to: window)
     }
 
     private func applyContentSizeLimits(for mode: DetachedWindowContentMode) {
@@ -894,7 +841,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
-        window.isMovableByWindowBackground = false
+        WindowDraggingPolicy.apply(to: window)
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.delegate = self

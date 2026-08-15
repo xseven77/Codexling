@@ -563,6 +563,105 @@ final class CodexlingTests: XCTestCase {
         ))
     }
 
+    @MainActor
+    func testNativeWindowDraggingDoesNotInjectTitlebarHitTestOverlays() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 420),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let frameView = try XCTUnwrap(window.contentView?.superview)
+        let originalSubviews = frameView.subviews
+
+        WindowDraggingPolicy.apply(to: window)
+
+        XCTAssertTrue(window.isMovableByWindowBackground)
+        XCTAssertEqual(frameView.subviews, originalSubviews)
+    }
+
+    @MainActor
+    func testTrafficLightsAndCustomTitleControlsRemainClickableWithNativeDragging() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        WindowDraggingPolicy.apply(to: window)
+        let frameView = try XCTUnwrap(window.contentView?.superview)
+        frameView.layoutSubtreeIfNeeded()
+        let closeButton = try XCTUnwrap(window.standardWindowButton(.closeButton))
+        let closeCenter = frameView.convert(
+            NSPoint(x: closeButton.bounds.midX, y: closeButton.bounds.midY),
+            from: closeButton
+        )
+        XCTAssertTrue(frameView.hitTest(closeCenter) === closeButton)
+
+        let controls = TitleControlsView(onToggleOrientation: {}, onTogglePin: {})
+        controls.frame = NSRect(x: 200, y: 388, width: 66, height: 28)
+        frameView.addSubview(controls, positioned: .above, relativeTo: nil)
+        controls.update(
+            orientation: .horizontal,
+            isPinned: false,
+            appearance: try XCTUnwrap(NSAppearance(named: .aqua))
+        )
+        let titleButtons = controls.subviews.compactMap { $0 as? NSButton }
+        XCTAssertEqual(titleButtons.count, 2)
+        XCTAssertTrue(titleButtons.allSatisfy { !$0.mouseDownCanMoveWindow })
+    }
+
+    @MainActor
+    func testClosingAndRecreatingWindowPreservesDraggingAndTrafficLightHitTesting() throws {
+        func makeWindow() throws -> NSWindow {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 610, height: 420),
+                styleMask: [.titled, .closable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            WindowDraggingPolicy.apply(to: window)
+            return window
+        }
+
+        let first = try makeWindow()
+        first.close()
+        let reopened = try makeWindow()
+        let frameView = try XCTUnwrap(reopened.contentView?.superview)
+        frameView.layoutSubtreeIfNeeded()
+        let closeButton = try XCTUnwrap(reopened.standardWindowButton(.closeButton))
+        let closeCenter = frameView.convert(
+            NSPoint(x: closeButton.bounds.midX, y: closeButton.bounds.midY),
+            from: closeButton
+        )
+
+        XCTAssertTrue(reopened.isMovableByWindowBackground)
+        XCTAssertTrue(frameView.hitTest(closeCenter) === closeButton)
+    }
+
+    @MainActor
+    func testWindowEventScopeKeepsMainAndSettingsWindowsIndependent() {
+        let mainWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 420),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let settingsWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 520),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+
+        XCTAssertTrue(WindowEventScope.matches(eventWindow: mainWindow, targetWindow: mainWindow))
+        XCTAssertTrue(WindowEventScope.matches(eventWindow: settingsWindow, targetWindow: settingsWindow))
+        XCTAssertFalse(WindowEventScope.matches(eventWindow: settingsWindow, targetWindow: mainWindow))
+        XCTAssertFalse(WindowEventScope.matches(eventWindow: mainWindow, targetWindow: settingsWindow))
+        XCTAssertFalse(WindowEventScope.matches(eventWindow: nil, targetWindow: mainWindow))
+    }
+
     func testQuotaHealthColorThresholdsDriveRootGradient() {
         let window = UsageWindow(
             label: "周额度",
