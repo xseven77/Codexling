@@ -17,6 +17,13 @@ Prefer `color.svg`, then `icon.svg`, for UI icons. Preserve the original aspect
 ratio and clear space. Do not recolor trademark artwork unless its own brand guide
 allows it.
 
+### SVG sizing
+
+SVG `width`/`height` must be explicit pixel values (e.g. `width="64" height="64"`,
+or `width="91" height="24"` for wordmarks) — never `1em`. AppKit's `NSImage` rasterizes
+at the declared size, so `1em` collapses to ~1px and the logo renders as a smeared sliver.
+See `BRAND_INVENTORY.md` for the per-brand file inventory and previews.
+
 ## Sources and licenses
 
 - Most AI brands come from [Lobe Icons](https://github.com/lobehub/lobe-icons),
