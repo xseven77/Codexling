@@ -28,9 +28,14 @@ See `BRAND_INVENTORY.md` for the per-brand file inventory and previews.
 
 - Most AI brands come from [Lobe Icons](https://github.com/lobehub/lobe-icons),
   commit `f07e9be35aef452ce735f95ea8204a14ecc513f7`, MIT license.
+- Codex additionally vendors the Lobe Icons static PNG export from
+  `@lobehub/icons-static-png@1.91.0`; the app prefers it because macOS CoreSVG
+  drops part of the upper-left lobe when rasterizing the compound SVG path.
 - Hermes Agent artwork comes from the
   [official Hermes repository](https://github.com/hermes-agent-org/hermes),
   commit `036cbdfa0a3158454a0a2a7a7388cf70353326b4`, MIT license.
+  The app-specific `hermes-agent/app-icon.png` is user-provided custom artwork
+  and is preferred by Codexling's connection UI.
 - Reasonix artwork comes from the
   [official DeepSeek-Reasonix repository](https://github.com/esengine/DeepSeek-Reasonix),
   commit `e83b8dbe0e79b04284b4cc181d24127821c4513d`, MIT license.

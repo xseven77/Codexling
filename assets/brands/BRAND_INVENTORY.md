@@ -22,7 +22,7 @@
 | 14 | `github-copilot` GitHub Copilot | Agent | <img src="catalog/github-copilot/icon.svg" width="24"> | <img src="catalog/github-copilot/logo.svg" width="88"> | <img src="catalog/github-copilot/color.svg" width="24"> | — |
 | 15 | `google-gemini` Google Gemini | Provider | <img src="catalog/google-gemini/icon.svg" width="24"> | <img src="catalog/google-gemini/logo.svg" width="88"> | <img src="catalog/google-gemini/color.svg" width="24"> | — |
 | 16 | `groq` Groq | Provider | <img src="catalog/groq/icon.svg" width="24"> | <img src="catalog/groq/logo.svg" width="88"> | — | — |
-| 17 | `hermes-agent` Hermes Agent | Agent | <img src="catalog/hermes-agent/icon.svg" width="24"> | <img src="catalog/hermes-agent/logo.png" width="88"> | — | — |
+| 17 | `hermes-agent` Hermes Agent | Agent | <img src="catalog/hermes-agent/icon.svg" width="24"> | <img src="catalog/hermes-agent/logo.png" width="88"> | — | <img src="catalog/hermes-agent/app-icon.png" width="24"> |
 | 18 | `hugging-face` Hugging Face | Provider | <img src="catalog/hugging-face/icon.svg" width="24"> | <img src="catalog/hugging-face/logo.svg" width="88"> | <img src="catalog/hugging-face/color.svg" width="24"> | — |
 | 19 | `kimi-code` Kimi Code | Agent | <img src="catalog/kimi-code/icon.svg" width="24"> | <img src="catalog/kimi-code/logo.svg" width="88"> | <img src="catalog/kimi-code/color.svg" width="24"> | — |
 | 20 | `kiro` Kiro | Agent | <img src="catalog/kiro/icon.svg" width="24"> | <img src="catalog/kiro/logo.svg" width="88"> | <img src="catalog/kiro/color.svg" width="24"> | — |

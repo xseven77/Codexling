@@ -21,9 +21,16 @@ enum BrandAssetCatalog {
         guard let root = Bundle.main.resourceURL?
             .appendingPathComponent("BrandAssets/catalog", isDirectory: true)
             .appendingPathComponent(id.rawValue, isDirectory: true) else { return nil }
-        let candidates = prefersColor
-            ? ["color.svg", "icon.svg", "app-icon.png"]
-            : ["icon.svg", "color.svg", "app-icon.png"]
+        // Codex uses a raster export to avoid a CoreSVG rendering defect.
+        // Hermes uses its custom app artwork instead of the legacy line icon.
+        let candidates: [String]
+        if (id == .codex || id == .hermesAgent), prefersColor {
+            candidates = ["app-icon.png", "color.svg", "icon.svg"]
+        } else {
+            candidates = prefersColor
+                ? ["color.svg", "icon.svg", "app-icon.png"]
+                : ["icon.svg", "color.svg", "app-icon.png"]
+        }
         for file in candidates {
             let url = root.appendingPathComponent(file)
             if let image = NSImage(contentsOf: url) { return image }
@@ -60,9 +67,13 @@ struct BrandIconView: View {
     }
 
     private var contentInset: CGFloat {
-        // Codex's color SVG already includes its own white tile and optical
-        // padding. Keeping the generic inset makes the terminal chevron blur
-        // into that tile at compact sizes and look like a clipped corner.
-        asset == .codex ? size * 0.10 : size * 0.16
+        // Both raster-first icons already include a white tile and optical
+        // padding, so the generic inset would make their artwork too small.
+        switch asset {
+        case .codex, .hermesAgent:
+            size * 0.10
+        case .deepSeek:
+            size * 0.16
+        }
     }
 }
