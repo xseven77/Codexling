@@ -42,22 +42,20 @@ enum StandalonePetLayout {
     static let basePetHeight: CGFloat = 120
     static let edgeGap: CGFloat = 14
     /// 缩放区间（设置里的 slider 与这里保持一致）。
-    static let scaleRange: ClosedRange<Double> = 0.8...1.25
+    static let scaleRange: ClosedRange<Double> = 0.8...1.8
 
     /// 任务栈几何（固定，不随 scale 变化）。
-    static let taskRowHeight: CGFloat = 50
+    static let taskRowHeight: CGFloat = 60
     static let taskRowSpacing: CGFloat = 12
     static let taskStackPadding: CGFloat = 12
     static let maxVisibleTaskRows = 4
-    static let stackToPetSpacing: CGFloat = 10
+    static let stackToPetSpacing: CGFloat = 6
     /// Pet 与窗口边缘、任务栈与窗口边缘的统一留白（固定）。
     static let outerPadding: CGFloat = 10
     /// 收起态顶部给角标预留的高度（固定）。
-    static let badgeClearance: CGFloat = 34
-    /// 展开态任务栈的固定尺寸。
-    static let expandedVerticalWidth: CGFloat = 316
-    static let expandedHorizontalStackWidth: CGFloat = 316
-    static let expandedHorizontalHeight: CGFloat = 260
+    static let badgeClearance: CGFloat = 12
+    /// 任务弹窗的固定宽度。
+    static let taskPanelWidth: CGFloat = 316
 
     static func petDisplayHeight(scale: Double) -> CGFloat {
         basePetHeight * scale
@@ -75,7 +73,7 @@ enum StandalonePetLayout {
         )
     }
 
-    /// 任务栈内容高度：空态用固定高度，否则按「最多 4 条」的行数计算，超出的内部滚动。
+    /// 任务弹窗内容高度：空态用固定高度，否则按「最多 4 条」的行数计算，超出的内部滚动。
     static func stackHeight(taskCount: Int) -> CGFloat {
         if taskCount <= 0 { return 84 }
         let rows = min(taskCount, maxVisibleTaskRows)
@@ -84,20 +82,9 @@ enum StandalonePetLayout {
             + taskStackPadding * 2
     }
 
-    /// 展开态窗口：任务栈尺寸固定，只有 Pet 随 scale 缩放。
-    static func expandedSize(edge: StandalonePetEdge, scale: Double, taskCount: Int) -> NSSize {
-        switch edge {
-        case .top, .bottom:
-            return NSSize(
-                width: expandedVerticalWidth,
-                height: outerPadding * 2 + petDisplayHeight(scale: scale) + stackToPetSpacing + stackHeight(taskCount: taskCount)
-            )
-        case .left, .right:
-            return NSSize(
-                width: outerPadding * 2 + petDisplayWidth(scale: scale) + stackToPetSpacing + expandedHorizontalStackWidth,
-                height: expandedHorizontalHeight
-            )
-        }
+    /// 任务弹窗尺寸（独立窗口，只有任务栈，不随 scale 变化）。
+    static func taskPanelSize(taskCount: Int) -> NSSize {
+        NSSize(width: taskPanelWidth, height: stackHeight(taskCount: taskCount))
     }
 }
 
@@ -110,8 +97,9 @@ final class StandalonePetViewModel {
     var freeOrigin: NSPoint?
     var scale: Double = 1.0
     var isExpanded = false
+    var taskCount = 0
 
-    /// 自由拖拽时固定按「靠下」布局展开（任务栈在 Pet 上方），吸附时跟随所选边。
+    /// 自由拖拽时固定按「靠下」布局展开（任务弹窗在 Pet 上方），吸附时跟随所选边。
     var effectiveEdge: StandalonePetEdge {
         freeOrigin != nil ? .bottom : edge
     }
@@ -126,21 +114,10 @@ final class StandalonePetViewModel {
     @ObservationIgnored var onTaskCountChanged: ((Int) -> Void)?
 
     func toggleExpanded() {
-        let expanding = !isExpanded
-        withAnimation(.easeOut(duration: 0.2)) {
+        withAnimation(.easeOut(duration: 0.18)) {
             isExpanded.toggle()
         }
-        if expanding {
-            // 展开：窗口立即放大，气泡淡入。
-            onLayoutChange?()
-        } else {
-            // 收起：等气泡淡出完成后再缩小窗口，避免缩窗裁剪导致的残影。
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-                self?.onLayoutChange?()
-            }
-        }
+        onLayoutChange?()
     }
 
     func setEdge(_ newEdge: StandalonePetEdge) {
@@ -156,6 +133,8 @@ final class StandalonePetViewModel {
     }
 
     func taskCountDidChange(_ count: Int) {
+        guard taskCount != count else { return }
+        taskCount = count
         onTaskCountChanged?(count)
     }
 
@@ -179,7 +158,7 @@ final class StandalonePetViewModel {
 enum StandalonePetOpenRouter {
     static func canOpen(_ task: CodexTaskActivity) -> Bool {
         switch task.agentDisplayName {
-        case "Codex": true
+        case "Codex", "Hermes", "Deepseek Harness": true
         default: false
         }
     }
@@ -198,6 +177,10 @@ enum StandalonePetOpenRouter {
             let opened = openCodexApplication()
             NSLog("[StandalonePet] 回退打开 ChatGPT.app: %@", opened ? "成功" : "失败")
             return opened
+        case "Hermes":
+            return openHermes(task)
+        case "Deepseek Harness":
+            return openDeepseekHarness(task)
         default:
             return false
         }
@@ -220,19 +203,61 @@ enum StandalonePetOpenRouter {
         NSLog("[StandalonePet] 打开应用: %@", appURL.path)
         return NSWorkspace.shared.open(appURL)
     }
+
+    /// Hermes：启动 Electron 桌面应用（`hermes desktop`）。会话级深链不受支持，先打开 Agent。
+    private static func openHermes(_ task: CodexTaskActivity) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent(".local/bin/hermes").path,
+            "/usr/local/bin/hermes",
+            "/opt/homebrew/bin/hermes",
+        ]
+        guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            NSLog("[StandalonePet] 未找到 hermes 可执行文件")
+            return false
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["desktop"]
+        do {
+            try process.run()
+            NSLog("[StandalonePet] 已启动 Hermes 桌面应用")
+            return true
+        } catch {
+            NSLog("[StandalonePet] 启动 Hermes 桌面应用失败: %@", error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Deepseek Harness：打开本地 Web UI 的会话页（`http://127.0.0.1:3080/sessions/<id>`）。
+    private static func openDeepseekHarness(_ task: CodexTaskActivity) -> Bool {
+        let sessionID = task.id.replacingOccurrences(of: "dsh:", with: "")
+        let base = "http://127.0.0.1:3080"
+        if let url = URL(string: "\(base)/sessions/\(sessionID)"),
+           NSWorkspace.shared.open(url) {
+            NSLog("[StandalonePet] 已打开 DSH 会话页: %@", url.absoluteString)
+            return true
+        }
+        if let root = URL(string: base) {
+            NSLog("[StandalonePet] 回退打开 DSH 首页")
+            return NSWorkspace.shared.open(root)
+        }
+        return false
+    }
 }
 
-/// 独立 Pet 窗口：一个 borderless、置顶、跨 Space 的悬浮 NSPanel，
-/// 承载 Pet 动画与任务状态门户。支持四边吸附与自由拖拽，均可持久化。
+/// 独立 Pet 窗口：两个透明置顶的 NSPanel —— 一个是固定尺寸的 Pet，另一个是
+/// 独立定位的任务弹窗。任务弹窗的开关/移动都不会改变 Pet 窗口的位置。
 @MainActor
 final class StandalonePetWindowController {
-    private let panel: NSPanel
+    private let petPanel: NSPanel
+    private let taskPanel: NSPanel
     private let model: StandalonePetViewModel
-    private let hostingController: NSHostingController<StandalonePetView>
     private let settings: AppSettingsStore
     private let activityStore: CodexActivityStore
     private var mouseDownScreenLocation: NSPoint?
-    private var windowOriginAtDragStart: NSPoint?
+    private var petOriginAtDragStart: NSPoint?
+    private var taskOriginAtDragStart: NSPoint?
 
     init(
         activityStore: CodexActivityStore,
@@ -245,8 +270,82 @@ final class StandalonePetWindowController {
         model.edge = settings.standalonePetEdge
         model.freeOrigin = settings.standalonePetFreeOrigin
         model.scale = settings.standalonePetScale
-        panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: StandalonePetLayout.collapsedSize(scale: model.scale)),
+
+        petPanel = Self.makePanel(size: StandalonePetLayout.collapsedSize(scale: model.scale))
+        taskPanel = Self.makePanel(size: StandalonePetLayout.taskPanelSize(taskCount: 0))
+
+        let petView = StandalonePetView(
+            frameStore: frameStore,
+            model: model
+        )
+        let petHosting = NSHostingController(rootView: petView)
+        petHosting.view.wantsLayer = true
+        petHosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        petPanel.contentViewController = petHosting
+
+        let taskView = StandaloneTaskPanelView(
+            activityStore: activityStore,
+            model: model
+        )
+        let taskHosting = NSHostingController(rootView: taskView)
+        taskHosting.view.wantsLayer = true
+        taskHosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        taskPanel.contentViewController = taskHosting
+
+        model.onLayoutChange = { [weak self] in
+            self?.applyLayout()
+        }
+        model.onEdgeChange = { [weak self] edge in
+            self?.settings.standalonePetEdge = edge
+            self?.settings.standalonePetFreeOrigin = nil
+        }
+        model.onHide = { [weak self] in
+            self?.settings.standalonePetEnabled = false
+        }
+        model.onBeginDrag = { [weak self] in
+            self?.mouseDownScreenLocation = NSEvent.mouseLocation
+            self?.petOriginAtDragStart = self?.petPanel.frame.origin
+            self?.taskOriginAtDragStart = self?.taskPanel.frame.origin
+        }
+        model.onDragChange = { [weak self] in
+            self?.applyDrag()
+        }
+        model.onEndDrag = { [weak self] in
+            self?.finishDrag()
+        }
+        model.onOpenTask = { task in
+            _ = StandalonePetOpenRouter.open(task)
+        }
+        model.onTaskCountChanged = { [weak self] _ in
+            self?.relayoutTaskPanel()
+        }
+
+        settings.onStandalonePetSettingsChanged = { [weak self] in
+            self?.settingsDidChange()
+        }
+    }
+
+    var isVisible: Bool { petPanel.isVisible }
+
+    func show() {
+        syncModelFromSettings()
+        syncTaskCount()
+        relayoutPet()
+        petPanel.orderFrontRegardless()
+        if model.isExpanded {
+            relayoutTaskPanel()
+            taskPanel.orderFrontRegardless()
+        }
+    }
+
+    func hide() {
+        petPanel.orderOut(nil)
+        taskPanel.orderOut(nil)
+    }
+
+    private static func makePanel(size: NSSize) -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -260,64 +359,15 @@ final class StandalonePetWindowController {
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces]
         panel.animationBehavior = .none
-
-        let view = StandalonePetView(
-            activityStore: activityStore,
-            frameStore: frameStore,
-            model: model
-        )
-        hostingController = NSHostingController(rootView: view)
-        hostingController.view.wantsLayer = true
-        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
-        panel.contentViewController = hostingController
-
-        model.onLayoutChange = { [weak self] in
-            // 窗口尺寸立即到位，由 SwiftUI transition 负责气泡丝滑滑出，避免窗口动画与内容动画双重错位。
-            self?.relayout(animated: false)
-        }
-        model.onEdgeChange = { [weak self] edge in
-            self?.settings.standalonePetEdge = edge
-            self?.settings.standalonePetFreeOrigin = nil
-        }
-        model.onHide = { [weak self] in
-            self?.settings.standalonePetEnabled = false
-        }
-        model.onBeginDrag = { [weak self] in
-            self?.mouseDownScreenLocation = NSEvent.mouseLocation
-            self?.windowOriginAtDragStart = self?.panel.frame.origin
-        }
-        model.onDragChange = { [weak self] in
-            self?.applyDrag()
-        }
-        model.onEndDrag = { [weak self] in
-            self?.finishDrag()
-        }
-        model.onOpenTask = { task in
-            _ = StandalonePetOpenRouter.open(task)
-        }
-        model.onTaskCountChanged = { [weak self] _ in
-            self?.relayout(animated: false)
-        }
-
-        settings.onStandalonePetSettingsChanged = { [weak self] in
-            self?.settingsDidChange()
-        }
-    }
-
-    var isVisible: Bool { panel.isVisible }
-
-    func show() {
-        syncModelFromSettings()
-        relayout(animated: false)
-        panel.orderFrontRegardless()
-    }
-
-    func hide() {
-        panel.orderOut(nil)
+        return panel
     }
 
     private var taskCount: Int {
         activityStore.snapshot.activeTasks.count
+    }
+
+    private var visibleFrame: NSRect {
+        (petPanel.screen ?? NSScreen.main)?.visibleFrame ?? .zero
     }
 
     private func syncModelFromSettings() {
@@ -326,38 +376,53 @@ final class StandalonePetWindowController {
         model.scale = settings.standalonePetScale
     }
 
+    private func syncTaskCount() {
+        model.taskCount = activityStore.snapshot.activeTasks.count
+    }
+
     private func settingsDidChange() {
         syncModelFromSettings()
-        relayout(animated: true)
+        syncTaskCount()
+        applyLayout()
+    }
+
+    private func applyLayout() {
+        syncTaskCount()
+        relayoutPet()
+        if model.isExpanded {
+            relayoutTaskPanel()
+            taskPanel.orderFrontRegardless()
+        } else {
+            taskPanel.orderOut(nil)
+        }
     }
 
     // MARK: - 布局
 
-    private func relayout(animated: Bool) {
-        let size: NSSize
-        if model.isExpanded {
-            size = StandalonePetLayout.expandedSize(
-                edge: model.effectiveEdge,
-                scale: model.scale,
-                taskCount: taskCount
-            )
-        } else {
-            size = StandalonePetLayout.collapsedSize(scale: model.scale)
-        }
-
-        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+    private func relayoutPet() {
+        let size = StandalonePetLayout.collapsedSize(scale: model.scale)
+        let visible = visibleFrame
         let frame: NSRect
         if let freeOrigin = model.freeOrigin {
-            frame = Self.freeFrame(
-                size: size,
-                collapsedSize: StandalonePetLayout.collapsedSize(scale: model.scale),
-                freeOrigin: freeOrigin,
-                in: visible
-            )
+            var origin = freeOrigin
+            origin.x = min(max(origin.x, visible.minX + StandalonePetLayout.edgeGap), visible.maxX - size.width - StandalonePetLayout.edgeGap)
+            origin.y = min(max(origin.y, visible.minY + StandalonePetLayout.edgeGap), visible.maxY - size.height - StandalonePetLayout.edgeGap)
+            frame = NSRect(origin: origin, size: size)
         } else {
             frame = Self.edgeFrame(size: size, edge: model.edge, in: visible)
         }
-        panel.setFrame(frame, display: true, animate: animated)
+        petPanel.setFrame(frame, display: true)
+    }
+
+    private func relayoutTaskPanel() {
+        let size = StandalonePetLayout.taskPanelSize(taskCount: taskCount)
+        let frame = Self.taskPanelFrame(
+            relativeTo: petPanel.frame,
+            edge: model.effectiveEdge,
+            size: size,
+            in: visibleFrame
+        )
+        taskPanel.setFrame(frame, display: true)
     }
 
     private static func edgeFrame(size: NSSize, edge: StandalonePetEdge, in visible: NSRect) -> NSRect {
@@ -393,124 +458,68 @@ final class StandalonePetWindowController {
         }
     }
 
-    /// 自由拖拽位置：以收起态 origin 为锚点，展开时水平居中、垂直方向底部固定向上生长。
-    private static func freeFrame(
+    /// 任务弹窗相对 Pet 定位：贴左→弹窗在右，贴右→弹窗在左，贴下→在上，贴上→在下。
+    /// 最后夹在屏幕可见区域内。
+    private static func taskPanelFrame(
+        relativeTo petFrame: NSRect,
+        edge: StandalonePetEdge,
         size: NSSize,
-        collapsedSize: NSSize,
-        freeOrigin: NSPoint,
         in visible: NSRect
     ) -> NSRect {
-        var origin = freeOrigin
-        origin.x -= (size.width - collapsedSize.width) / 2
-        // origin.y 保持不变：Pet 贴底，向上生长，不把 Pet 往下推。
-
-        let minX = visible.minX + StandalonePetLayout.edgeGap
-        let minY = visible.minY + StandalonePetLayout.edgeGap
-        let maxX = visible.maxX - size.width - StandalonePetLayout.edgeGap
-        let maxY = visible.maxY - size.height - StandalonePetLayout.edgeGap
-        origin.x = min(max(origin.x, minX), maxX)
-        origin.y = min(max(origin.y, minY), maxY)
-
+        let spacing = StandalonePetLayout.stackToPetSpacing
+        let gap = StandalonePetLayout.edgeGap
+        var origin: NSPoint
+        switch edge {
+        case .bottom:
+            origin = NSPoint(x: petFrame.midX - size.width / 2, y: petFrame.maxY + spacing)
+        case .top:
+            origin = NSPoint(x: petFrame.midX - size.width / 2, y: petFrame.minY - size.height - spacing)
+        case .left:
+            origin = NSPoint(x: petFrame.maxX + spacing, y: petFrame.midY - size.height / 2)
+        case .right:
+            origin = NSPoint(x: petFrame.minX - size.width - spacing, y: petFrame.midY - size.height / 2)
+        }
+        origin.x = min(max(origin.x, visible.minX + gap), visible.maxX - size.width - gap)
+        origin.y = min(max(origin.y, visible.minY + gap), visible.maxY - size.height - gap)
         return NSRect(origin: origin, size: size)
     }
 
     // MARK: - 拖拽
 
-    /// 用屏幕坐标系下的鼠标绝对位置计算位移（而非 SwiftUI 手势的相对 translation），
-    /// 避免窗口在拖动中移动导致 translation 基准漂移、拖起来“不跟手”。
     private func applyDrag() {
         guard let mouseDown = mouseDownScreenLocation,
-              let start = windowOriginAtDragStart else { return }
+              let petStart = petOriginAtDragStart else { return }
         let current = NSEvent.mouseLocation
         let deltaX = current.x - mouseDown.x
         let deltaY = current.y - mouseDown.y
-        panel.setFrameOrigin(NSPoint(x: start.x + deltaX, y: start.y + deltaY))
+        petPanel.setFrameOrigin(NSPoint(x: petStart.x + deltaX, y: petStart.y + deltaY))
+        if taskPanel.isVisible, let taskStart = taskOriginAtDragStart {
+            taskPanel.setFrameOrigin(NSPoint(x: taskStart.x + deltaX, y: taskStart.y + deltaY))
+        }
     }
 
     private func finishDrag() {
         defer {
             mouseDownScreenLocation = nil
-            windowOriginAtDragStart = nil
+            petOriginAtDragStart = nil
+            taskOriginAtDragStart = nil
         }
-        let collapsedSize = StandalonePetLayout.collapsedSize(scale: model.scale)
-        let currentSize = panel.frame.size
-        let origin = panel.frame.origin
-        let collapsedOrigin = NSPoint(
-            x: origin.x + (currentSize.width - collapsedSize.width) / 2,
-            y: origin.y
-        )
-        settings.standalonePetFreeOrigin = collapsedOrigin
+        settings.standalonePetFreeOrigin = petPanel.frame.origin
     }
 }
 
-/// 独立 Pet 的 SwiftUI 内容。收起显示 Pet + 任务数角标，展开时任务栈从 Pet 一侧丝滑滑出。
+/// 独立 Pet 窗口内容：只装 Pet + 角标，负责拖拽 / 点击切换 / 右键菜单。
 private struct StandalonePetView: View {
-    @Bindable var activityStore: CodexActivityStore
     @Bindable var frameStore: PetFrameStore
     @Bindable var model: StandalonePetViewModel
 
     @State private var isHoveringPet = false
     @State private var isDragging = false
 
-    private var tasks: [CodexTaskActivity] {
-        activityStore.snapshot.activeTasks
-    }
-
     var body: some View {
-        ZStack {
-            if model.isExpanded {
-                taskStack
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: stackAlignment)
-                    .padding(stackInsets)
-                    .transition(stackTransition)
-                    .zIndex(0)
-            }
-            petControl
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: petAlignment)
-                .padding(petInsets)
-                .zIndex(1)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onChange(of: tasks.count) { _, newCount in
-            model.taskCountDidChange(newCount)
-        }
-    }
-
-    // MARK: - 布局对齐（按 effectiveEdge）
-
-    private var petAlignment: Alignment {
-        switch model.effectiveEdge {
-        case .bottom: .bottom
-        case .top: .top
-        case .left: .leading
-        case .right: .trailing
-        }
-    }
-
-    private var stackAlignment: Alignment {
-        switch model.effectiveEdge {
-        case .bottom: .top
-        case .top: .bottom
-        case .left: .trailing
-        case .right: .leading
-        }
-    }
-
-    private var stackInsets: EdgeInsets {
-        let petHeight = StandalonePetLayout.petDisplayHeight(scale: model.scale)
-        let petWidth = StandalonePetLayout.petDisplayWidth(scale: model.scale)
-        let spacing = StandalonePetLayout.stackToPetSpacing
-        let outer = StandalonePetLayout.outerPadding
-        switch model.effectiveEdge {
-        case .bottom:
-            return EdgeInsets(top: outer, leading: 0, bottom: outer + petHeight + spacing, trailing: 0)
-        case .top:
-            return EdgeInsets(top: outer + petHeight + spacing, leading: 0, bottom: outer, trailing: 0)
-        case .left:
-            return EdgeInsets(top: 0, leading: outer + petWidth + spacing, bottom: 0, trailing: outer)
-        case .right:
-            return EdgeInsets(top: 0, leading: outer, bottom: 0, trailing: outer + petWidth + spacing)
-        }
+        petControl
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(petInsets)
     }
 
     private var petInsets: EdgeInsets {
@@ -527,22 +536,6 @@ private struct StandalonePetView: View {
         }
     }
 
-    private var stackTransition: AnyTransition {
-        // 气泡式出现：淡入 + 轻微放大，不做任何方向位移，避免把 Pet 推挤。
-        .opacity.combined(with: .scale(scale: 0.94, anchor: transitionAnchor))
-    }
-
-    private var transitionAnchor: UnitPoint {
-        switch model.effectiveEdge {
-        case .bottom: .bottom
-        case .top: .top
-        case .left: .leading
-        case .right: .trailing
-        }
-    }
-
-    // MARK: - Pet
-
     private var petControl: some View {
         ZStack(alignment: .topTrailing) {
             petImage
@@ -554,7 +547,7 @@ private struct StandalonePetView: View {
                 .gesture(petDragGesture)
                 .contextMenu { petContextMenu }
 
-            if !model.isExpanded && !tasks.isEmpty {
+            if !model.isExpanded && model.taskCount > 0 {
                 taskCountBadge
             }
         }
@@ -564,7 +557,7 @@ private struct StandalonePetView: View {
             alignment: .center
         )
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Codexling Pet · \(tasks.count) 个任务")
+        .accessibilityLabel("Codexling Pet · \(model.taskCount) 个任务")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -607,7 +600,7 @@ private struct StandalonePetView: View {
     }
 
     private var taskCountBadge: some View {
-        Text("\(tasks.count)")
+        Text("\(model.taskCount)")
             .font(.system(size: 12, weight: .bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 6)
@@ -633,8 +626,26 @@ private struct StandalonePetView: View {
             Label("隐藏独立 Pet", systemImage: "eye.slash")
         }
     }
+}
 
-    // MARK: - Task stack
+/// 任务弹窗内容：独立的流体玻璃任务栈，只负责展示任务列表，不包含 Pet。
+private struct StandaloneTaskPanelView: View {
+    @Bindable var activityStore: CodexActivityStore
+    @Bindable var model: StandalonePetViewModel
+
+    private var tasks: [CodexTaskActivity] {
+        activityStore.snapshot.activeTasks
+    }
+
+    var body: some View {
+        taskStack
+            .opacity(model.isExpanded ? 1 : 0)
+            .scaleEffect(model.isExpanded ? 1 : 0.94, anchor: .bottom)
+            .animation(.easeOut(duration: 0.18), value: model.isExpanded)
+            .onChange(of: tasks.count) { _, newCount in
+                model.taskCountDidChange(newCount)
+            }
+    }
 
     private var taskStack: some View {
         ScrollView {
@@ -656,13 +667,15 @@ private struct StandalonePetView: View {
 
     private var emptyState: some View {
         fluidGlass(
-            VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Spacer()
                 Image(systemName: "checkmark.circle")
-                    .font(.system(size: 18, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Color.codexMuted)
                 Text("暂无进行中的任务")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.codexMuted)
+                Spacer()
             }
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 60)
@@ -678,7 +691,7 @@ private struct StandalonePetView: View {
             } label: {
                 row
             }
-            .buttonStyle(CodexPressableCardStyle(cornerRadius: 14))
+            .buttonStyle(CodexPressableCardStyle(cornerRadius: 14, ink: .custom(task.state.statusColor)))
             .shadow(color: Color.black.opacity(0.06), radius: 3, x: 0, y: 1)
         } else {
             row
@@ -712,10 +725,13 @@ private struct StandalonePetView: View {
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
                 }
-                Text("\(task.state.taskLabel) · \(task.detail)")
-                    .font(.system(size: 8.5))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
+                ShimmerText(
+                    text: "\(task.state.taskLabel) · \(task.detail)",
+                    font: .system(size: 8.5),
+                    base: .codexMuted,
+                    highlight: task.state.statusColor
+                )
+                .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -726,12 +742,11 @@ private struct StandalonePetView: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 14)
 
         return fluidGlass(content, cornerRadius: 14)
     }
 
-    /// 流体玻璃质感：macOS 26 用 Liquid Glass，旧系统用磨砂兜底，并叠加顶部高光 + 描边。
     @ViewBuilder
     private func fluidGlass<Content: View>(_ content: Content, cornerRadius: CGFloat = 14) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -744,5 +759,83 @@ private struct StandalonePetView: View {
                 .background(.ultraThinMaterial, in: shape)
                 .overlay { shape.strokeBorder(Color.white.opacity(0.30), lineWidth: 0.6) }
         }
+    }
+}
+
+/// 文字流光：用 Canvas 直接绘制「底色文字 + 高光文字（clip 到移动亮带）」，
+/// 绕过 SwiftUI 叠层 / mask 在这个非激活面板里可能不渲染的问题。
+private struct ShimmerText: View {
+    let text: String
+    var font: Font = .system(size: 8.5)
+    var base: Color = .codexMuted
+    var highlight: Color = .white
+
+    @State private var offset: CGFloat = 0
+    @State private var measuredWidth: CGFloat = 0
+    private let timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        // 隐藏文字仅用于测量尺寸。
+        Text(text)
+            .font(font)
+            .lineLimit(1)
+            .foregroundStyle(Color.clear)
+            .overlay {
+                GeometryReader { geo in
+                    shimmerCanvas
+                        .onAppear { measuredWidth = geo.size.width }
+                }
+            }
+            .onReceive(timer) { _ in
+                advance()
+            }
+    }
+
+    private var band: CGFloat { max(24, measuredWidth * 0.5) }
+
+    private var shimmerCanvas: some View {
+        Canvas { context, size in
+            let bandWidth = max(24, size.width * 0.5)
+            let origin = CGPoint.zero
+
+            // 1. 底色文字
+            context.draw(
+                Text(text).font(font).foregroundStyle(base),
+                at: origin,
+                anchor: .topLeading
+            )
+
+            // 2. clip 到移动的亮带
+            context.clipToLayer { layer in
+                let bandRect = CGRect(
+                    x: offset,
+                    y: 0,
+                    width: bandWidth,
+                    height: size.height
+                )
+                layer.fill(
+                    Path(bandRect),
+                    with: .linearGradient(
+                        Gradient(colors: [.clear, .white, .white, .clear]),
+                        startPoint: CGPoint(x: offset, y: 0),
+                        endPoint: CGPoint(x: offset + bandWidth, y: 0)
+                    )
+                )
+            }
+
+            // 3. 高光文字（只显示在亮带内）
+            context.draw(
+                Text(text).font(font).foregroundStyle(highlight),
+                at: origin,
+                anchor: .topLeading
+            )
+        }
+    }
+
+    private func advance() {
+        guard measuredWidth > 0 else { return }
+        let travel = measuredWidth + 2 * band
+        offset += travel / 72.0
+        if offset > measuredWidth + band { offset = -band }
     }
 }

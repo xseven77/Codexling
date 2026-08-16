@@ -612,6 +612,7 @@ struct ChatGPTBillingCompactLink: View {
 enum CodexMaterialWaveInk: Equatable {
     case adaptiveMint
     case softLight
+    case custom(Color)
 
     func color(for colorScheme: ColorScheme) -> Color {
         switch self {
@@ -621,6 +622,8 @@ enum CodexMaterialWaveInk: Equatable {
                 : Color(red: 0.02, green: 0.55, blue: 0.34).opacity(0.18)
         case .softLight:
             Color.white.opacity(colorScheme == .dark ? 0.28 : 0.34)
+        case .custom(let color):
+            color.opacity(colorScheme == .dark ? 0.30 : 0.22)
         }
     }
 }
