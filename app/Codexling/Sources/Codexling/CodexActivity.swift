@@ -94,7 +94,7 @@ enum CodexActivityState: String, CaseIterable, Sendable {
     }
 }
 
-private extension String {
+extension String {
     var nilIfEmpty: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
@@ -143,6 +143,45 @@ struct CodexActivitySnapshot: Equatable, Sendable {
         return cleanTitle.count > 44
             ? String(cleanTitle.prefix(43)) + "…"
             : cleanTitle
+    }
+}
+
+extension CodexActivitySnapshot {
+    /// 把多个 Agent 的快照合并成一个：拼接 activeTasks / localAgentTasks，
+    /// 整体 state / threadTitle 取优先级最高的那个。
+    static func merged(_ snapshots: [CodexActivitySnapshot]) -> CodexActivitySnapshot {
+        let sources = snapshots.filter { $0.state != .unavailable }
+        guard !sources.isEmpty else { return .unavailable }
+
+        func priority(_ state: CodexActivityState) -> Int {
+            switch state {
+            case .waitingForUser: 5
+            case .executing: 4
+            case .reviewing: 3
+            case .thinking: 2
+            case .interrupted: 1
+            default: 0
+            }
+        }
+
+        let selected = sources.max { lhs, rhs in
+            let lp = priority(lhs.state)
+            let rp = priority(rhs.state)
+            if lp == rp { return lhs.updatedAt < rhs.updatedAt }
+            return lp < rp
+        }!
+
+        let activeTasks = sources.flatMap(\.activeTasks)
+        let localAgentTasks = sources.flatMap { $0.activeTasks + $0.localAgentTasks }
+        return CodexActivitySnapshot(
+            state: selected.state,
+            detail: selected.detail,
+            threadTitle: selected.threadTitle,
+            activeTaskCount: activeTasks.count,
+            updatedAt: selected.updatedAt,
+            activeTasks: activeTasks,
+            localAgentTasks: localAgentTasks
+        )
     }
 }
 
@@ -712,15 +751,23 @@ final class CodexActivityStore {
     var snapshot = CodexActivitySnapshot.unavailable
     var onSnapshotChanged: ((CodexActivitySnapshot) -> Void)?
 
-    private let service: CodexActivityService
+    private let codexService: CodexActivityService
+    private let dshService: DSHActivityService
+    private let hermesService: HermesActivityService
     private var baseSnapshot = CodexActivitySnapshot.unavailable
     private var agentEventReducer = AgentEventActivityReducer()
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var snapshotStabilizer = CodexActivitySnapshotStabilizer()
 
-    init(service: CodexActivityService = CodexActivityService()) {
-        self.service = service
+    init(
+        codexService: CodexActivityService = CodexActivityService(),
+        dshService: DSHActivityService = DSHActivityService(),
+        hermesService: HermesActivityService = HermesActivityService()
+    ) {
+        self.codexService = codexService
+        self.dshService = dshService
+        self.hermesService = hermesService
     }
 
     func start() {
@@ -747,10 +794,16 @@ final class CodexActivityStore {
 
     private func refresh() {
         guard refreshTask == nil else { return }
-        let service = self.service
+        let codexService = self.codexService
+        let dshService = self.dshService
+        let hermesService = self.hermesService
         refreshTask = Task { [weak self] in
             let next = await Task.detached {
-                service.loadSnapshot()
+                CodexActivitySnapshot.merged([
+                    codexService.loadSnapshot(),
+                    dshService.loadSnapshot(),
+                    hermesService.loadSnapshot(),
+                ])
             }.value
             guard !Task.isCancelled, let self else { return }
             refreshTask = nil

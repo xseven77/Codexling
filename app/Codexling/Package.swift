@@ -12,8 +12,18 @@ let package = Package(
         .executable(name: "CodexlingAgentBridge", targets: ["CodexlingAgentBridge"])
     ],
     targets: [
+        .target(
+            name: "CZSTD",
+            path: "Sources/CZSTD",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedLibrary("zstd"),
+                .unsafeFlags(["-L", "/opt/homebrew/lib"])
+            ]
+        ),
         .executableTarget(
             name: "Codexling",
+            dependencies: ["CZSTD"],
             path: "Sources/Codexling",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
@@ -26,7 +36,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexlingTests",
-            dependencies: ["Codexling"],
+            dependencies: ["Codexling", "CZSTD"],
             path: "Tests/CodexlingTests"
         )
     ]

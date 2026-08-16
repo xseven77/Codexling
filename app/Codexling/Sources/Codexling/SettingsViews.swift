@@ -46,15 +46,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-private struct PendingAgentHookAction: Identifiable {
-    let agentID: AgentID
-    let agentName: String
-    let installs: Bool
-    var authorizationOnly = false
-
-    var id: String { "\(agentID.rawValue)-\(installs ? "install" : "uninstall")" }
-}
-
 struct SettingsView: View {
     @Bindable var store: UsageSnapshotStore
     @Bindable var settings: AppSettingsStore
@@ -67,7 +58,6 @@ struct SettingsView: View {
     @State private var showsPetPicker = false
     @State private var showsCodexRestartConfirmation = false
     @State private var isRestartingCodex = false
-    @State private var pendingHookAction: PendingAgentHookAction?
     @State private var pendingAccountRemoval: PendingAccountRemoval?
     @State private var showsConnectionSheet = false
     @State private var toast: SettingsToast?
@@ -135,9 +125,6 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("这会退出并重新打开 Codex，正在运行或等待确认的任务可能会被中断。")
-            }
-            .alert(item: $pendingHookAction) { pending in
-                hookActionAlert(pending)
             }
             .alert(item: $pendingAccountRemoval) { pending in
                 accountRemovalAlert(pending)
@@ -741,7 +728,7 @@ struct SettingsView: View {
     private var agentIntegrationsSection: some View {
         SettingsSection(
             title: "接入状态",
-            subtitle: "Codex 无需配置；其他 Agent 仅向本地 Bridge 上报脱敏生命周期事件。"
+            subtitle: "Codex / Deepseek Harness / Hermes 均通过会话读取接入，无需安装 Hook。"
         ) {
             VStack(spacing: 0) {
                 ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
@@ -765,141 +752,35 @@ struct SettingsView: View {
                 HStack(spacing: 7) {
                     Text(integration.name)
                         .font(.system(size: 13, weight: .semibold))
-                    Text(agentAvailabilityTitle(integration))
+                    Text("会话读取")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(agentAvailabilityColor(integration))
+                        .foregroundStyle(Color.codexGreen)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(agentAvailabilityColor(integration).opacity(0.09), in: Capsule())
+                        .background(Color.codexGreen.opacity(0.09), in: Capsule())
                 }
                 Text(integration.detail)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
                 Text(hookStatusLine(integration))
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(hookStatusColor(integration.hookState))
+                    .foregroundStyle(
+                        integration.cliInstalled || integration.desktopInstalled
+                            ? Color.codexGreen
+                            : Color.codexMuted
+                    )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            hookActionButton(integration)
         }
         .padding(.horizontal, 14)
-        .frame(minHeight: 76)
-    }
-
-    @ViewBuilder
-    private func hookActionButton(_ integration: AgentIntegrationStatus) -> some View {
-        if integration.id == .codex {
-            Label("无需配置", systemImage: "checkmark.circle.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.codexGreen)
-                .frame(width: 74, alignment: .trailing)
-        } else if multiAgentSettings.isMutating(integration.id) {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 66)
-        } else {
-            switch integration.hookState {
-            case .builtIn:
-                EmptyView()
-            case .installed:
-                Button("卸载") {
-                    pendingHookAction = PendingAgentHookAction(
-                        agentID: integration.id,
-                        agentName: integration.name,
-                        installs: false
-                    )
-                }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-            case .notInstalled, .authorizationRequired, .conflict, .failed:
-                Button(integration.hookState == .authorizationRequired ? "完成授权" : "安装") {
-                    pendingHookAction = PendingAgentHookAction(
-                        agentID: integration.id,
-                        agentName: integration.name,
-                        installs: true,
-                        authorizationOnly: integration.hookState == .authorizationRequired
-                    )
-                }
-                .buttonStyle(CodexlingPetInstallButtonStyle())
-            case .unavailable:
-                Button("重新探测") { multiAgentSettings.refresh() }
-                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-            }
-        }
-    }
-
-    private func hookConfirmationMessage(for pending: PendingAgentHookAction) -> String {
-        if pending.installs {
-            let eventCount = pending.agentID == .hermes ? 7 : 8
-            let authorization = pending.agentID == .hermes
-                ? "；同时仅授权这 7 条 Codexling Bridge 命令，不会开启 Hermes 的全局 Hook 自动批准"
-                : ""
-            if pending.authorizationOnly {
-                return "将重新校准 Codexling 的 Hermes Hook，并仅授权 7 条 Codexling Bridge 命令；不会开启 Hermes 的全局 Hook 自动批准。"
-            }
-            return "配置变更预览：新增 \(eventCount) 个 lifecycle command hook\(authorization)。命令只调用 Codexling 本地 Bridge；不读取 prompt、回复、tool 参数、命令、环境变量或 transcript。Agent/Codexling 未运行时 Hook 会 fail-open。"
-        }
-        return "只移除命令中包含 codexling-agent-bridge 的配置项；其他 Hook 与 Agent 配置保持不变。"
-    }
-
-    private func hookActionAlert(_ pending: PendingAgentHookAction) -> Alert {
-        if pending.installs {
-            let actionTitle = pending.authorizationOnly ? "完成 Hermes Hook 授权？" : "安装 \(pending.agentName) Hook？"
-            let actionLabel = pending.authorizationOnly ? "完成授权" : "安装"
-            return Alert(
-                title: Text(actionTitle),
-                message: Text(hookConfirmationMessage(for: pending)),
-                primaryButton: .default(Text(actionLabel)) {
-                    multiAgentSettings.installHook(for: pending.agentID)
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
-        }
-        return Alert(
-            title: Text("卸载 \(pending.agentName) Hook？"),
-            message: Text(hookConfirmationMessage(for: pending)),
-            primaryButton: .destructive(Text("卸载")) {
-                multiAgentSettings.uninstallHook(for: pending.agentID)
-            },
-            secondaryButton: .cancel(Text("取消"))
-        )
-    }
-
-    private func agentAvailabilityTitle(_ integration: AgentIntegrationStatus) -> String {
-        if integration.id == .codex { return "内置" }
-        if integration.cliInstalled && integration.desktopInstalled { return "CLI + Desktop" }
-        if integration.cliInstalled { return "CLI" }
-        if integration.desktopInstalled { return "Desktop" }
-        return "未发现"
-    }
-
-    private func agentAvailabilityColor(_ integration: AgentIntegrationStatus) -> Color {
-        if integration.id == .codex { return Color.codexGreen }
-        return integration.cliInstalled || integration.desktopInstalled ? Color.codexGreen : Color.codexMuted
+        .frame(minHeight: 68)
     }
 
     private func hookStatusLine(_ integration: AgentIntegrationStatus) -> String {
-        if integration.id == .codex {
-            return integration.cliInstalled || integration.desktopInstalled
-                ? "已接入"
-                : "已就绪 · Codex 启动后自动接入"
+        if integration.cliInstalled || integration.desktopInstalled {
+            return "已接入 · 会话读取"
         }
-        return switch integration.hookState {
-        case .builtIn: "已接入"
-        case .notInstalled: "未接入"
-        case .authorizationRequired: "已配置 · 等待授权"
-        case .installed: "已接入 · 仅本地脱敏事件"
-        case .unavailable(let message): message
-        case .conflict(let message), .failed(let message): message
-        }
-    }
-
-    private func hookStatusColor(_ state: AgentHookInstallationState) -> Color {
-        switch state {
-        case .builtIn, .installed: Color.codexGreen
-        case .conflict, .failed: Color.codexRed
-        case .notInstalled, .authorizationRequired, .unavailable: Color.codexMuted
-        }
+        return "已就绪 · 启动后自动接入"
     }
 
     private var updateSection: some View {

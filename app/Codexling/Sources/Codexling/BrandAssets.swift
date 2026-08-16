@@ -4,16 +4,13 @@ import SwiftUI
 enum BrandAssetID: String, Sendable {
     case codex
     case hermesAgent = "hermes-agent"
-    case claudeCode = "claude-code"
-    case reasonix
     case deepSeek = "deepseek"
 
     static func agent(_ id: AgentID) -> BrandAssetID {
         switch id {
         case .codex: .codex
         case .hermes: .hermesAgent
-        case .claudeCode: .claudeCode
-        case .reasonix: .reasonix
+        case .deepseekHarness: .deepSeek
         default: .codex
         }
     }

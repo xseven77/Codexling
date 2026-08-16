@@ -527,6 +527,10 @@ final class StatusBarController: NSObject {
         let notchEnabled = !targetScreens.isEmpty
         statusItem.isVisible = !notchEnabled
         statusItem.button?.isHidden = notchEnabled
+        if notchEnabled {
+            // 胶囊已隐藏，立即收起可能残留的任务浮窗，避免悬停弹窗继续出现。
+            hideHoverPanel()
+        }
 
         refreshStatusTitle()
     }
@@ -719,6 +723,8 @@ final class StatusBarController: NSObject {
     }
 
     private func scheduleHoverPanel() {
+        // 刘海开启时状态栏胶囊已隐藏，悬停不应再弹出任务浮窗。
+        guard statusItem.isVisible else { return }
         pendingHoverWorkItem?.cancel()
         cancelHoverPanelHide()
         let workItem = DispatchWorkItem { [weak self] in

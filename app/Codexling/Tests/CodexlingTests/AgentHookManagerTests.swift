@@ -3,91 +3,15 @@ import XCTest
 @testable import Codexling
 
 final class AgentHookManagerTests: XCTestCase {
-    func testCodexUsesBuiltInAdapterAndRejectsHookMutation() throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanup() }
+    func testIntegrationStatusesListsThreeSessionReadAgents() {
+        let manager = AgentHookManager(homeDirectory: FileManager.default.temporaryDirectory)
+        let statuses = manager.integrationStatuses()
 
-        let codex = try XCTUnwrap(fixture.manager.integrationStatuses().first { $0.id == .codex })
-        XCTAssertEqual(codex.hookState, .builtIn)
-        XCTAssertEqual(codex.detail, "App Server · 本地活动")
-        XCTAssertThrowsError(try fixture.manager.installHook(for: .codex)) {
-            XCTAssertEqual($0 as? AgentHookManagerError, .unsupportedAgent)
-        }
-        XCTAssertThrowsError(try fixture.manager.uninstallHook(for: .codex)) {
-            XCTAssertEqual($0 as? AgentHookManagerError, .unsupportedAgent)
-        }
-    }
-
-    func testReasonixUsesDirectHookEntriesAndRemovesOnlyCodexling() throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanup() }
-
-        try fixture.manager.installHook(for: .reasonix)
-        let config = fixture.home.appendingPathComponent(".reasonix/hooks/hooks.json")
-        let installed = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(installed.contains("\"PreToolUse\""))
-        XCTAssertTrue(installed.contains(AgentHookManager.commandMarker))
-        XCTAssertFalse(installed.contains("\"hooks\" : ["))
-
-        try fixture.manager.uninstallHook(for: .reasonix)
-        XCTAssertFalse(try String(contentsOf: config, encoding: .utf8).contains(AgentHookManager.commandMarker))
-    }
-
-    func testHermesMergesIntoExistingHooksBlockAndUninstallsCleanly() throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanup() }
-        let config = fixture.home.appendingPathComponent(".hermes/config.yaml")
-        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "model: test\nhooks:\n  pre_tool_call:\n    - command: \"existing-hook\"\n      timeout: 2\nui:\n  theme: dark\n"
-            .write(to: config, atomically: true, encoding: .utf8)
-
-        try fixture.manager.installHook(for: .hermes)
-        let installed = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(installed.contains("existing-hook"))
-        XCTAssertTrue(installed.contains(AgentHookManager.commandMarker))
-        XCTAssertEqual(installed.components(separatedBy: "hooks:").count - 1, 1)
-        XCTAssertTrue(fixture.manager.areHermesHooksAuthorized())
-
-        let allowlist = fixture.home.appendingPathComponent(".hermes/shell-hooks-allowlist.json")
-        let allowlistRoot = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: allowlist)) as? [String: Any]
+        XCTAssertEqual(statuses.map(\.name), ["Codex", "Deepseek Harness", "Hermes"])
+        XCTAssertEqual(
+            statuses.map(\.detail),
+            ["App Server · 本地活动", "Session JSONL · 会话读取", "Gateway JSON-RPC · 会话读取"]
         )
-        let approvals = try XCTUnwrap(allowlistRoot["approvals"] as? [[String: Any]])
-        XCTAssertEqual(approvals.filter {
-            ($0["command"] as? String)?.contains(AgentHookManager.commandMarker) == true
-        }.count, 7)
-
-        try fixture.manager.uninstallHook(for: .hermes)
-        let uninstalled = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(uninstalled.contains("existing-hook"))
-        XCTAssertTrue(uninstalled.contains("ui:"))
-        XCTAssertFalse(uninstalled.contains(AgentHookManager.commandMarker))
-        let updatedRoot = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: allowlist)) as? [String: Any]
-        )
-        let updatedApprovals = try XCTUnwrap(updatedRoot["approvals"] as? [[String: Any]])
-        XCTAssertFalse(updatedApprovals.contains {
-            ($0["command"] as? String)?.contains(AgentHookManager.commandMarker) == true
-        })
-    }
-
-    func testHermesConfiguredWithoutApprovalReportsAuthorizationRequired() throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanup() }
-        let hermes = fixture.home.appendingPathComponent(".local/bin/hermes")
-        try FileManager.default.createDirectory(at: hermes.deletingLastPathComponent(), withIntermediateDirectories: true)
-        XCTAssertTrue(FileManager.default.createFile(atPath: hermes.path, contents: Data("hermes".utf8)))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hermes.path)
-
-        try fixture.manager.installHook(for: .hermes)
-        try FileManager.default.removeItem(
-            at: fixture.home.appendingPathComponent(".hermes/shell-hooks-allowlist.json")
-        )
-
-        let status = try XCTUnwrap(
-            fixture.manager.integrationStatuses().first { $0.id == .hermes }
-        )
-        XCTAssertEqual(status.hookState, .authorizationRequired)
     }
 
     func testActivityArbitrationPrefersWaitingThenFailureThenActivity() {
@@ -111,19 +35,19 @@ final class AgentHookManagerTests: XCTestCase {
             timestamp: now
         ))
         reducer.ingest(NormalizedAgentEvent(
-            agentID: .claudeCode,
-            surfaceID: .claudeCodeDesktop,
-            sessionID: "claude-session",
+            agentID: .deepseekHarness,
+            surfaceID: .deepseekHarnessCLI,
+            sessionID: "dsh-session",
             event: .permissionRequested,
             timestamp: now.addingTimeInterval(1)
         ))
 
         let snapshot = reducer.mergedSnapshot(base: .unavailable, now: now.addingTimeInterval(2))
         XCTAssertEqual(snapshot.state, .waitingForUser)
-        XCTAssertEqual(snapshot.threadTitle, "Claude Code · Desktop")
+        XCTAssertEqual(snapshot.threadTitle, "Deepseek Harness · CLI")
         XCTAssertEqual(snapshot.activeTaskCount, 2)
-        XCTAssertEqual(Set(snapshot.activeTasks.map(\.title)), ["Hermes · CLI", "Claude Code · Desktop"])
-        XCTAssertEqual(Set(snapshot.localAgentTasks.map(\.title)), ["Hermes · CLI", "Claude Code · Desktop"])
+        XCTAssertEqual(Set(snapshot.activeTasks.map(\.title)), ["Hermes · CLI", "Deepseek Harness · CLI"])
+        XCTAssertEqual(Set(snapshot.localAgentTasks.map(\.title)), ["Hermes · CLI", "Deepseek Harness · CLI"])
     }
 
     func testHookEventReducerKeepsIdleAgentInPetLocalSummaryOnly() {
@@ -201,9 +125,9 @@ final class AgentHookManagerTests: XCTestCase {
         let now = Date()
         var reducer = AgentEventActivityReducer()
         let completed = NormalizedAgentEvent(
-            agentID: .reasonix,
-            surfaceID: .reasonixCLI,
-            sessionID: "reasonix-session",
+            agentID: .deepseekHarness,
+            surfaceID: .deepseekHarnessCLI,
+            sessionID: "dsh-session",
             event: .turnCompleted,
             timestamp: now
         )
@@ -305,35 +229,5 @@ final class AgentHookManagerTests: XCTestCase {
         XCTAssertEqual(loaded.deepSeekConnections[0].balance?.scope, .account)
         XCTAssertEqual(loaded.deepSeekConnections[0].balance?.total, Decimal(string: "42.80"))
         XCTAssertEqual(loaded.deepSeekConnections[0].createdAt, now)
-    }
-
-    private func makeFixture() throws -> Fixture {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codexling-hook-tests-\(UUID().uuidString)", isDirectory: true)
-        let home = root.appendingPathComponent("home", isDirectory: true)
-        let support = root.appendingPathComponent("support", isDirectory: true)
-        let helper = root.appendingPathComponent("CodexlingAgentBridge")
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        XCTAssertTrue(FileManager.default.createFile(atPath: helper.path, contents: Data("bridge".utf8)))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
-        return Fixture(
-            root: root,
-            home: home,
-            manager: AgentHookManager(
-                homeDirectory: home,
-                applicationSupportDirectory: support,
-                helperSourceURL: helper
-            )
-        )
-    }
-}
-
-private struct Fixture {
-    let root: URL
-    let home: URL
-    let manager: AgentHookManager
-
-    func cleanup() {
-        try? FileManager.default.removeItem(at: root)
     }
 }

@@ -1319,7 +1319,6 @@ private struct CompanionLocalAgentRow: Identifiable, Equatable {
     let asset: BrandAssetID
     let state: CodexActivityState
     let summary: String
-    let hookState: AgentHookInstallationState
 }
 
 /// Preview-aligned Pet-local Agent summary. It intentionally uses integration
@@ -1336,9 +1335,6 @@ private struct CompanionLocalAgentsControl: View {
 
     private var rows: [CompanionLocalAgentRow] {
         integrations
-            .filter { integration in
-                integration.hookState == .builtIn || integration.hookState == .installed
-            }
             .sorted { $0.priority < $1.priority }
             .compactMap { integration in
                 guard let task = latestTask(for: integration), isOngoing(task.state) else {
@@ -1349,8 +1345,7 @@ private struct CompanionLocalAgentsControl: View {
                     name: integration.name,
                     asset: .agent(integration.id),
                     state: task.state,
-                    summary: summary(for: task, integration: integration),
-                    hookState: integration.hookState
+                    summary: summary(for: task, integration: integration)
                 )
             }
     }
@@ -1428,8 +1423,7 @@ private struct CompanionLocalAgentsControl: View {
         integration: AgentIntegrationStatus
     ) -> String {
         guard let task else {
-            if integration.hookState == .builtIn { return "内置适配已就绪" }
-            return integration.hookState == .installed ? "Hooks 已就绪" : "等待 Hook 接入"
+            return "会话读取 · 已就绪"
         }
         if task.title == integration.name || task.title.hasPrefix("\(integration.name) ·") {
             return task.detail.replacingOccurrences(of: "\(integration.name) ", with: "")
@@ -2578,25 +2572,28 @@ private struct TaskStackView: View {
     private var taskCard: some View {
         let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         return VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                HStack(spacing: 7) {
-                    BrandIconView(
-                        asset: .agent(displayAgentID),
-                        size: 18,
-                        cornerRadius: 6
-                    )
-                    HStack(spacing: 5) {
-                        Circle().fill(displayState.statusColor).frame(width: 8, height: 8)
-                        Text(displayState.taskLabel)
-                            .foregroundStyle(displayState.statusColor)
-                            .fontWeight(.semibold)
+            // 空闲时没有具体任务，不显示任何 Agent 的 logo 与状态标签。
+            if displayedTask != nil {
+                HStack {
+                    HStack(spacing: 7) {
+                        BrandIconView(
+                            asset: .agent(displayAgentID),
+                            size: 18,
+                            cornerRadius: 6
+                        )
+                        HStack(spacing: 5) {
+                            Circle().fill(displayState.statusColor).frame(width: 8, height: 8)
+                            Text(displayState.taskLabel)
+                                .foregroundStyle(displayState.statusColor)
+                                .fontWeight(.semibold)
+                        }
                     }
+                    Spacer()
+                    Text("任务 \(selectedIndex + 1) / \(tasks.count)")
+                        .foregroundStyle(Color.codexMuted)
                 }
-                Spacer()
-                Text(tasks.isEmpty ? "\(snapshot.activeTaskCount) 个活跃任务" : "任务 \(selectedIndex + 1) / \(tasks.count)")
-                    .foregroundStyle(Color.codexMuted)
+                .font(.system(size: 11))
             }
-            .font(.system(size: 11))
 
             Text(displayTitle)
                 .font(.system(size: 15, weight: .semibold))
@@ -2674,7 +2671,12 @@ private struct TaskStackView: View {
         }
     }
     private var displayDetail: String {
-        displayedTask?.detail ?? (snapshot.detail.isEmpty ? snapshot.state.hoverTitle : snapshot.detail)
+        if let displayedTask { return displayedTask.detail }
+        // 空闲时不带任何具体 Agent 的信息（不写「某 Agent 空闲中」）。
+        if snapshot.state == .idle {
+            return "已接入的 Agent 开始工作后会显示在这里"
+        }
+        return snapshot.detail.isEmpty ? snapshot.state.hoverTitle : snapshot.detail
     }
     private var displayUpdatedAt: Date { displayedTask?.updatedAt ?? snapshot.updatedAt }
     private var displayMetadata: [(icon: String, value: String)] {
@@ -2975,6 +2977,7 @@ extension CodexActivityState {
 extension CodexActivitySnapshot {
     var dashboardTitle: String {
         if activeTaskCount > 0 { return "正在处理 \(activeTaskCount) 个任务" }
+        if state == .idle { return "Agent 当前空闲" }
         return state.hoverTitle
     }
 

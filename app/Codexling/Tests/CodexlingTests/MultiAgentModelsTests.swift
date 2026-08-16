@@ -7,21 +7,27 @@ final class MultiAgentModelsTests: XCTestCase {
             BuiltInAgentCatalog.developmentPriority,
             [
                 .init(agentID: .codex, surface: nil),
+                .init(agentID: .deepseekHarness, surface: .deepseekHarnessCLI),
                 .init(agentID: .hermes, surface: .hermesCLI),
-                .init(agentID: .claudeCode, surface: .claudeCodeCLI),
-                .init(agentID: .claudeCode, surface: .claudeCodeDesktop),
-                .init(agentID: .reasonix, surface: nil),
             ]
         )
     }
 
-    func testClaudeCodeDesktopIsASurfaceNotASecondIdentityDomain() throws {
-        let claude = try XCTUnwrap(
-            BuiltInAgentCatalog.prioritized.first(where: { $0.id == .claudeCode })
+    func testCodexHasTwoSurfacesWhileOthersAreCLIOnly() throws {
+        let codex = try XCTUnwrap(
+            BuiltInAgentCatalog.prioritized.first(where: { $0.id == .codex })
+        )
+        let dsh = try XCTUnwrap(
+            BuiltInAgentCatalog.prioritized.first(where: { $0.id == .deepseekHarness })
+        )
+        let hermes = try XCTUnwrap(
+            BuiltInAgentCatalog.prioritized.first(where: { $0.id == .hermes })
         )
 
-        XCTAssertTrue(claude.surfaces.contains(.claudeCodeCLI))
-        XCTAssertTrue(claude.surfaces.contains(.claudeCodeDesktop))
+        XCTAssertTrue(codex.surfaces.contains(.codexCLI))
+        XCTAssertTrue(codex.surfaces.contains(.codexDesktop))
+        XCTAssertEqual(dsh.surfaces, [.deepseekHarnessCLI])
+        XCTAssertEqual(hermes.surfaces, [.hermesCLI])
     }
 
     func testSameVendorSessionIDDoesNotCollideAcrossCodexAccounts() {
@@ -160,8 +166,7 @@ final class MultiAgentModelsTests: XCTestCase {
         let balanceService = TestDeepSeekBalanceService()
         let store = MultiAgentSettingsStore(
             hookManager: AgentHookManager(
-                homeDirectory: root.appendingPathComponent("home", isDirectory: true),
-                applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true)
             ),
             registryStorage: registry,
             codexRuntimeManager: CodexAccountRuntimeManager(
@@ -228,8 +233,7 @@ final class MultiAgentModelsTests: XCTestCase {
         func makeStore() -> MultiAgentSettingsStore {
             MultiAgentSettingsStore(
                 hookManager: AgentHookManager(
-                    homeDirectory: root.appendingPathComponent("home", isDirectory: true),
-                    applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                    homeDirectory: root.appendingPathComponent("home", isDirectory: true)
                 ),
                 registryStorage: registry,
                 codexRuntimeManager: CodexAccountRuntimeManager(
@@ -294,8 +298,7 @@ final class MultiAgentModelsTests: XCTestCase {
         func makeStore() -> MultiAgentSettingsStore {
             MultiAgentSettingsStore(
                 hookManager: AgentHookManager(
-                    homeDirectory: root.appendingPathComponent("home", isDirectory: true),
-                    applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                    homeDirectory: root.appendingPathComponent("home", isDirectory: true)
                 ),
                 registryStorage: registry,
                 codexRuntimeManager: CodexAccountRuntimeManager(
@@ -328,8 +331,7 @@ final class MultiAgentModelsTests: XCTestCase {
 
         let store = MultiAgentSettingsStore(
             hookManager: AgentHookManager(
-                homeDirectory: root.appendingPathComponent("home", isDirectory: true),
-                applicationSupportDirectory: root.appendingPathComponent("support", isDirectory: true)
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true)
             ),
             registryStorage: ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json")),
             codexRuntimeManager: CodexAccountRuntimeManager(

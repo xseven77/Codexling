@@ -202,10 +202,7 @@ struct AgentEventActivityReducer {
         case .codexCLI: "CLI"
         case .codexDesktop: "Desktop"
         case .hermesCLI: "CLI"
-        case .claudeCodeCLI: "CLI"
-        case .claudeCodeDesktop: "Desktop"
-        case .reasonixCLI: "CLI"
-        case .reasonixDesktop: "Desktop"
+        case .deepseekHarnessCLI: "CLI"
         }
         let state = codexState(from: entry.state)
         let title = "\(agentName) · \(surfaceName)"

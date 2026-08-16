@@ -30,7 +30,6 @@ final class MultiAgentSettingsStore {
     private let deepSeekBalanceService: any DeepSeekBalanceFetching
 
     private(set) var integrations: [AgentIntegrationStatus] = []
-    private(set) var mutatingAgentIDs: Set<AgentID> = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
     private(set) var connectionOrder: [String] = []
@@ -81,44 +80,6 @@ final class MultiAgentSettingsStore {
 
     func refresh() {
         integrations = hookManager.integrationStatuses()
-    }
-
-    func isMutating(_ agentID: AgentID) -> Bool {
-        mutatingAgentIDs.contains(agentID)
-    }
-
-    func installHook(for agentID: AgentID) {
-        guard agentID != .codex else {
-            lastMessage = "Codex 由 Codexling 内置适配，无需安装 Hook"
-            return
-        }
-        guard !mutatingAgentIDs.contains(agentID) else { return }
-        mutatingAgentIDs.insert(agentID)
-        defer { mutatingAgentIDs.remove(agentID) }
-        do {
-            try hookManager.installHook(for: agentID)
-            lastMessage = "\(displayName(for: agentID)) Hook 已安装"
-        } catch {
-            lastMessage = "安装失败：\(error.localizedDescription)"
-        }
-        refresh()
-    }
-
-    func uninstallHook(for agentID: AgentID) {
-        guard agentID != .codex else {
-            lastMessage = "Codex 内置适配无需卸载"
-            return
-        }
-        guard !mutatingAgentIDs.contains(agentID) else { return }
-        mutatingAgentIDs.insert(agentID)
-        defer { mutatingAgentIDs.remove(agentID) }
-        do {
-            try hookManager.uninstallHook(for: agentID)
-            lastMessage = "\(displayName(for: agentID)) Hook 已卸载"
-        } catch {
-            lastMessage = "卸载失败：\(error.localizedDescription)"
-        }
-        refresh()
     }
 
     func clearLastMessage() {

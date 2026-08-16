@@ -7,18 +7,14 @@ struct AgentID: RawRepresentable, Hashable, Codable, Sendable {
 
     static let codex = Self(rawValue: "agent.codex")
     static let hermes = Self(rawValue: "agent.hermes")
-    static let claudeCode = Self(rawValue: "agent.claude-code")
-    static let reasonix = Self(rawValue: "agent.reasonix")
+    static let deepseekHarness = Self(rawValue: "agent.deepseek-harness")
 }
 
 enum AgentSurfaceID: String, Hashable, Codable, Sendable {
     case codexCLI = "surface.codex-cli"
     case codexDesktop = "surface.codex-desktop"
     case hermesCLI = "surface.hermes-cli"
-    case claudeCodeCLI = "surface.claude-code-cli"
-    case claudeCodeDesktop = "surface.claude-code-desktop"
-    case reasonixCLI = "surface.reasonix-cli"
-    case reasonixDesktop = "surface.reasonix-desktop"
+    case deepseekHarnessCLI = "surface.deepseek-harness-cli"
 }
 
 struct AgentDescriptor: Hashable, Codable, Sendable {
@@ -37,22 +33,16 @@ enum BuiltInAgentCatalog {
             surfaces: [.codexCLI, .codexDesktop]
         ),
         AgentDescriptor(
+            id: .deepseekHarness,
+            displayName: "Deepseek Harness",
+            priority: 1,
+            surfaces: [.deepseekHarnessCLI]
+        ),
+        AgentDescriptor(
             id: .hermes,
             displayName: "Hermes",
-            priority: 1,
-            surfaces: [.hermesCLI]
-        ),
-        AgentDescriptor(
-            id: .claudeCode,
-            displayName: "Claude Code",
             priority: 2,
-            surfaces: [.claudeCodeCLI, .claudeCodeDesktop]
-        ),
-        AgentDescriptor(
-            id: .reasonix,
-            displayName: "Reasonix",
-            priority: 3,
-            surfaces: [.reasonixCLI, .reasonixDesktop]
+            surfaces: [.hermesCLI]
         )
     ]
 
@@ -65,10 +55,8 @@ enum BuiltInAgentCatalog {
     /// all currently supported Codex surfaces are handled together.
     static let developmentPriority: [DevelopmentTarget] = [
         DevelopmentTarget(agentID: .codex, surface: nil),
+        DevelopmentTarget(agentID: .deepseekHarness, surface: .deepseekHarnessCLI),
         DevelopmentTarget(agentID: .hermes, surface: .hermesCLI),
-        DevelopmentTarget(agentID: .claudeCode, surface: .claudeCodeCLI),
-        DevelopmentTarget(agentID: .claudeCode, surface: .claudeCodeDesktop),
-        DevelopmentTarget(agentID: .reasonix, surface: nil),
     ]
 }
 
