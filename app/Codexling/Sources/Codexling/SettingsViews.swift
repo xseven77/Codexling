@@ -963,6 +963,45 @@ struct SettingsView: View {
             }
 
             SettingsSection(
+                title: "独立 Pet"
+            ) {
+                VStack(spacing: 0) {
+                SettingsInlineRow(
+                    title: "独立 Pet 悬浮窗",
+                    subtitle: "在屏幕边缘显示独立的 Pet 悬浮窗口，作为任务状态门户"
+                ) {
+                    SettingsSwitch(
+                        isOn: $settings.standalonePetEnabled,
+                        accessibilityLabel: "独立 Pet 悬浮窗"
+                    )
+                }
+                CodexDivider()
+
+                SettingsInlineRow(
+                    title: "独立 Pet 尺寸",
+                    subtitle: "只调整 Pet 本体大小，任务窗口内容尺寸不变"
+                ) {
+                    HStack(spacing: 9) {
+                        Slider(
+                            value: $settings.standalonePetScale,
+                            in: StandalonePetLayout.scaleRange,
+                            step: 0.05
+                        )
+                        .frame(width: 108)
+                        .tint(Color.accentColor)
+                        .accessibilityLabel("独立 Pet 尺寸")
+
+                        Text("\(Int((settings.standalonePetScale * 100).rounded()))%")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.codexInk.opacity(0.82))
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+                }
+                .settingsGroupSurface()
+            }
+
+            SettingsSection(
                 title: "Pet 选择"
             ) {
                 VStack(spacing: 8) {

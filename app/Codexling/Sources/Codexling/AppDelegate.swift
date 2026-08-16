@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusBarController?
     private var windowController: DetachedWindowController?
     private var settingsWindowController: SettingsWindowController?
+    private var standalonePetWindowController: StandalonePetWindowController?
     private let snapshotStore = UsageSnapshotStore()
     private let settingsStore = AppSettingsStore()
     private let multiAgentSettingsStore = MultiAgentSettingsStore()
@@ -56,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onPetSettingsChanged = { [weak self] in
             self?.syncCompanionState()
             self?.statusController?.refreshStatusTitle()
+        }
+        settingsStore.onStandalonePetEnabledChanged = { [weak self] _ in
+            self?.applyStandalonePetVisibility()
         }
         activityStore.onSnapshotChanged = { [weak self] snapshot in
             self?.frameStore.update(
@@ -126,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         petSelectionMonitor.start()
         codexPetSelectionMonitor = petSelectionMonitor
         syncCompanionState()
+        applyStandalonePetVisibility()
         migrateLegacyTokenIfNeeded()
         openDetachedWindow()
         autoRefreshUsage()
@@ -296,6 +301,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pet: settingsStore.selectedPet,
             activityState: activityStore.snapshot.state
         )
+    }
+
+    private func applyStandalonePetVisibility() {
+        guard settingsStore.standalonePetEnabled else {
+            standalonePetWindowController?.hide()
+            return
+        }
+        if standalonePetWindowController == nil {
+            standalonePetWindowController = StandalonePetWindowController(
+                activityStore: activityStore,
+                frameStore: frameStore,
+                settings: settingsStore
+            )
+        }
+        standalonePetWindowController?.show()
     }
 
     private func openSettingsWindow() {

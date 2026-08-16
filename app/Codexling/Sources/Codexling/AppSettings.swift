@@ -299,6 +299,11 @@ final class AppSettingsStore {
         static let autoRefreshInterval = "codexling.autoRefreshInterval"
         static let accountCarouselInterval = "codexling.accountCarouselInterval"
         static let petsEnabled = "codexling.petsEnabled"
+        static let standalonePetEnabled = "codexling.standalonePetEnabled"
+        static let standalonePetEdge = "codexling.standalonePetEdge"
+        static let standalonePetScale = "codexling.standalonePetScale"
+        static let standalonePetFreeX = "codexling.standalonePetFreeX"
+        static let standalonePetFreeY = "codexling.standalonePetFreeY"
         static let selectedPetID = "codexling.selectedPetID"
         static let petBackgroundColor = "codexling.petBackgroundColor"
         static let statusBarIndicatorColorMode = "codexling.statusBarIndicatorColorMode"
@@ -346,6 +351,45 @@ final class AppSettingsStore {
             guard petsEnabled != oldValue else { return }
             defaults.set(petsEnabled, forKey: Keys.petsEnabled)
             onPetSettingsChanged?()
+        }
+    }
+
+    var standalonePetEnabled: Bool {
+        didSet {
+            guard standalonePetEnabled != oldValue else { return }
+            defaults.set(standalonePetEnabled, forKey: Keys.standalonePetEnabled)
+            onStandalonePetEnabledChanged?(standalonePetEnabled)
+        }
+    }
+
+    var standalonePetEdge: StandalonePetEdge {
+        didSet {
+            guard standalonePetEdge != oldValue else { return }
+            defaults.set(standalonePetEdge.rawValue, forKey: Keys.standalonePetEdge)
+            onStandalonePetSettingsChanged?()
+        }
+    }
+
+    var standalonePetScale: Double {
+        didSet {
+            guard standalonePetScale != oldValue else { return }
+            defaults.set(standalonePetScale, forKey: Keys.standalonePetScale)
+            onStandalonePetSettingsChanged?()
+        }
+    }
+
+    /// 自由拖拽位置（面板 origin，屏幕坐标）。nil 表示吸附到 `standalonePetEdge`。
+    var standalonePetFreeOrigin: NSPoint? {
+        didSet {
+            guard standalonePetFreeOrigin != oldValue else { return }
+            if let origin = standalonePetFreeOrigin {
+                defaults.set(origin.x, forKey: Keys.standalonePetFreeX)
+                defaults.set(origin.y, forKey: Keys.standalonePetFreeY)
+            } else {
+                defaults.removeObject(forKey: Keys.standalonePetFreeX)
+                defaults.removeObject(forKey: Keys.standalonePetFreeY)
+            }
+            onStandalonePetSettingsChanged?()
         }
     }
 
@@ -455,6 +499,8 @@ final class AppSettingsStore {
     var onAccountCarouselIntervalChanged: ((AccountCarouselInterval) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
+    var onStandalonePetEnabledChanged: ((Bool) -> Void)?
+    var onStandalonePetSettingsChanged: (() -> Void)?
     var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
     var onWindowAlwaysOnTopChanged: ((Bool) -> Void)?
     var onNotchDisplayTargetChanged: ((NotchDisplayTarget) -> Void)?
@@ -489,6 +535,17 @@ final class AppSettingsStore {
         accountCarouselInterval = carouselRaw.flatMap(AccountCarouselInterval.init(rawValue:)) ?? .off
 
         petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
+        standalonePetEnabled = defaults.object(forKey: Keys.standalonePetEnabled) as? Bool ?? true
+        standalonePetEdge = defaults.string(forKey: Keys.standalonePetEdge)
+            .flatMap(StandalonePetEdge.init(rawValue:)) ?? .bottom
+        let savedScale = defaults.object(forKey: Keys.standalonePetScale) as? Double ?? 1.0
+        standalonePetScale = min(max(savedScale, StandalonePetLayout.scaleRange.lowerBound), StandalonePetLayout.scaleRange.upperBound)
+        if let freeX = defaults.object(forKey: Keys.standalonePetFreeX) as? Double,
+           let freeY = defaults.object(forKey: Keys.standalonePetFreeY) as? Double {
+            standalonePetFreeOrigin = NSPoint(x: freeX, y: freeY)
+        } else {
+            standalonePetFreeOrigin = nil
+        }
         selectedPetID = defaults.string(forKey: Keys.selectedPetID) ?? "builtin:codex"
         let backgroundRaw = defaults.string(forKey: Keys.petBackgroundColor)
         petBackgroundColor = backgroundRaw.flatMap(StatusBarPetBackgroundColor.init(rawValue:)) ?? .neutral
