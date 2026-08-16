@@ -18,7 +18,7 @@ let package = Package(
             publicHeadersPath: "include",
             linkerSettings: [
                 .linkedLibrary("zstd"),
-                .unsafeFlags(["-L", "/opt/homebrew/lib"])
+                .unsafeFlags(["-L", "/opt/homebrew/lib", "-Xlinker", "-w"])
             ]
         ),
         .executableTarget(

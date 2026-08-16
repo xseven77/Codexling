@@ -542,7 +542,13 @@ private struct StandalonePetView: View {
                 .scaleEffect(isHoveringPet && !isDragging ? 1.05 : 1)
                 .onHover { hovering in
                     withAnimation(.easeOut(duration: 0.14)) { isHoveringPet = hovering }
-                    if hovering && !isDragging { NSCursor.pointingHand.set() } else if !isDragging { NSCursor.arrow.set() }
+                    if hovering {
+                        // 悬停进入时随机播放一个 Pet 动作。
+                        frameStore.playRandomIdleAction()
+                        if !isDragging { NSCursor.pointingHand.set() }
+                    } else if !isDragging {
+                        NSCursor.arrow.set()
+                    }
                 }
                 .gesture(petDragGesture)
                 .contextMenu { petContextMenu }
@@ -669,7 +675,7 @@ private struct StandaloneTaskPanelView: View {
         fluidGlass(
             HStack(spacing: 8) {
                 Spacer()
-                Image(systemName: "checkmark.circle")
+                Image(systemName: "moon.zzz.fill")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Color.codexMuted)
                 Text("暂无进行中的任务")
