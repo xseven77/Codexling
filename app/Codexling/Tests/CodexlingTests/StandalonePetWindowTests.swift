@@ -67,4 +67,36 @@ final class StandalonePetWindowTests: XCTestCase {
         model.freeOrigin = NSPoint(x: 0, y: 0)
         XCTAssertEqual(model.effectiveEdge, .bottom)
     }
+
+    func testCornerEdgesAreIncludedWithStableRawValues() {
+        let cases = StandalonePetEdge.allCases
+        XCTAssertEqual(cases.count, 8)
+        XCTAssertEqual(StandalonePetEdge(rawValue: "topRight"), .topRight)
+        XCTAssertEqual(StandalonePetEdge(rawValue: "bottomRight"), .bottomRight)
+        XCTAssertEqual(StandalonePetEdge(rawValue: "topLeft"), .topLeft)
+        XCTAssertEqual(StandalonePetEdge(rawValue: "bottomLeft"), .bottomLeft)
+        XCTAssertEqual(StandalonePetEdge.topRight.title, "右上")
+        XCTAssertEqual(StandalonePetEdge.bottomRight.title, "右下")
+        XCTAssertEqual(StandalonePetEdge.topLeft.title, "左上")
+        XCTAssertEqual(StandalonePetEdge.bottomLeft.title, "左下")
+    }
+
+    func testCornerEdgesRepositionPetIntoCorners() {
+        let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let size = NSSize(width: 100, height: 120)
+        let gap = StandalonePetLayout.edgeGap
+        // 通过布局函数验证四角定位：窗口应贴住对应角并留 edgeGap。
+        let topLeft = StandalonePetWindowController.edgeFrame(size: size, edge: .topLeft, in: visible)
+        XCTAssertEqual(topLeft.minX, visible.minX + gap)
+        XCTAssertEqual(topLeft.maxY, visible.maxY - gap)
+        let topRight = StandalonePetWindowController.edgeFrame(size: size, edge: .topRight, in: visible)
+        XCTAssertEqual(topRight.maxX, visible.maxX - gap)
+        XCTAssertEqual(topRight.maxY, visible.maxY - gap)
+        let bottomLeft = StandalonePetWindowController.edgeFrame(size: size, edge: .bottomLeft, in: visible)
+        XCTAssertEqual(bottomLeft.minX, visible.minX + gap)
+        XCTAssertEqual(bottomLeft.minY, visible.minY + gap)
+        let bottomRight = StandalonePetWindowController.edgeFrame(size: size, edge: .bottomRight, in: visible)
+        XCTAssertEqual(bottomRight.maxX, visible.maxX - gap)
+        XCTAssertEqual(bottomRight.minY, visible.minY + gap)
+    }
 }

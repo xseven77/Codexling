@@ -384,21 +384,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 唯一的账号轮播调度源。one-shot timer 会在手动或自动选择后重新完整计时，
     /// 避免 SwiftUI 为布局测量创建视图副本时产生重复轮播任务。
+    ///
+    /// 「供应商自动轮播」开关只决定推进时是否改变全局选中账号：
+    /// 开启 → 主窗口与刘海面板同步轮播选中项；关闭 → 仅推进刘海面板自身的
+    /// 显示轮播，主窗口选中保持不变。因此开关本身不会停掉刘海面板的轮播。
     private func startAccountCarouselTimer() {
         accountCarouselTimer?.invalidate()
         accountCarouselTimer = nil
 
-        guard settingsStore.mainWindowProviderCarouselEnabled,
-              let interval = settingsStore.accountCarouselInterval.timeInterval,
+        guard let interval = settingsStore.accountCarouselInterval.timeInterval,
               !multiAgentSettingsStore.isAccountCarouselPaused
         else { return }
 
         accountCarouselTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.multiAgentSettingsStore.selectNextConnection(
-                    includesCurrentCodex: self.snapshotStore.isLoggedIn
-                )
+                self.advanceAccountCarousel()
+            }
+        }
+    }
+
+    private func advanceAccountCarousel() {
+        if settingsStore.mainWindowProviderCarouselEnabled {
+            // 自动轮播开启：推进全局选中账号。选中变化会触发
+            // onSelectedConnectionChanged → startAccountCarouselTimer() 重新计时。
+            multiAgentSettingsStore.selectNextConnection(
+                includesCurrentCodex: snapshotStore.isLoggedIn
+            )
+        } else {
+            // 自动轮播关闭：主窗口选中保持不变，仅推进刘海面板自身的账号轮播。
+            let advanced = statusController?.advanceNotchProviderCarousel() ?? false
+            if advanced {
+                startAccountCarouselTimer()
             }
         }
     }

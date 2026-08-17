@@ -2,12 +2,16 @@ import AppKit
 import SwiftUI
 import Observation
 
-/// 独立 Pet 吸附的屏幕边缘。
+/// 独立 Pet 吸附的屏幕边缘（含四角）。
 enum StandalonePetEdge: String, CaseIterable, Identifiable, Sendable {
     case top
     case right
     case bottom
     case left
+    case topRight
+    case bottomRight
+    case topLeft
+    case bottomLeft
 
     var id: String { rawValue }
 
@@ -17,6 +21,10 @@ enum StandalonePetEdge: String, CaseIterable, Identifiable, Sendable {
         case .right: "靠右"
         case .bottom: "靠下"
         case .left: "靠左"
+        case .topRight: "右上"
+        case .bottomRight: "右下"
+        case .topLeft: "左上"
+        case .bottomLeft: "左下"
         }
     }
 
@@ -26,12 +34,16 @@ enum StandalonePetEdge: String, CaseIterable, Identifiable, Sendable {
         case .right: "arrow.right.to.line"
         case .bottom: "arrow.down.to.line"
         case .left: "arrow.left.to.line"
+        case .topRight: "arrow.up.right"
+        case .bottomRight: "arrow.down.right"
+        case .topLeft: "arrow.up.left"
+        case .bottomLeft: "arrow.down.left"
         }
     }
 
     var isVertical: Bool {
         switch self {
-        case .top, .bottom: true
+        case .top, .bottom, .topLeft, .topRight, .bottomLeft, .bottomRight: true
         case .left, .right: false
         }
     }
@@ -420,67 +432,88 @@ final class StandalonePetWindowController {
         let size = StandalonePetLayout.taskPanelSize(taskCount: taskCount)
         let frame = Self.taskPanelFrame(
             relativeTo: petPanel.frame,
-            edge: model.effectiveEdge,
             size: size,
             in: visibleFrame
         )
         taskPanel.setFrame(frame, display: true)
     }
 
-    private static func edgeFrame(size: NSSize, edge: StandalonePetEdge, in visible: NSRect) -> NSRect {
+    /// 吸附定位：贴边居中，四角贴住对应角。internal 供测试验证四角布局。
+    static func edgeFrame(size: NSSize, edge: StandalonePetEdge, in visible: NSRect) -> NSRect {
+        let gap = StandalonePetLayout.edgeGap
         switch edge {
         case .bottom:
             return NSRect(
                 x: round(visible.midX - size.width / 2),
-                y: visible.minY + StandalonePetLayout.edgeGap,
+                y: visible.minY + gap,
                 width: size.width,
                 height: size.height
             )
         case .top:
             return NSRect(
                 x: round(visible.midX - size.width / 2),
-                y: visible.maxY - size.height - StandalonePetLayout.edgeGap,
+                y: visible.maxY - size.height - gap,
                 width: size.width,
                 height: size.height
             )
         case .left:
             return NSRect(
-                x: visible.minX + StandalonePetLayout.edgeGap,
+                x: visible.minX + gap,
                 y: round(visible.midY - size.height / 2),
                 width: size.width,
                 height: size.height
             )
         case .right:
             return NSRect(
-                x: visible.maxX - size.width - StandalonePetLayout.edgeGap,
+                x: visible.maxX - size.width - gap,
                 y: round(visible.midY - size.height / 2),
+                width: size.width,
+                height: size.height
+            )
+        case .topLeft:
+            return NSRect(
+                x: visible.minX + gap,
+                y: visible.maxY - size.height - gap,
+                width: size.width,
+                height: size.height
+            )
+        case .topRight:
+            return NSRect(
+                x: visible.maxX - size.width - gap,
+                y: visible.maxY - size.height - gap,
+                width: size.width,
+                height: size.height
+            )
+        case .bottomLeft:
+            return NSRect(
+                x: visible.minX + gap,
+                y: visible.minY + gap,
+                width: size.width,
+                height: size.height
+            )
+        case .bottomRight:
+            return NSRect(
+                x: visible.maxX - size.width - gap,
+                y: visible.minY + gap,
                 width: size.width,
                 height: size.height
             )
         }
     }
 
-    /// 任务弹窗相对 Pet 定位：贴左→弹窗在右，贴右→弹窗在左，贴下→在上，贴上→在下。
-    /// 最后夹在屏幕可见区域内。
+    /// 任务弹窗相对 Pet 定位：无论吸附在哪条边 / 哪个角，都保持与拖拽时一致的
+    /// 原始布局——水平居中于 Pet 上方展开，最后夹在屏幕可见区域内。
     private static func taskPanelFrame(
         relativeTo petFrame: NSRect,
-        edge: StandalonePetEdge,
         size: NSSize,
         in visible: NSRect
     ) -> NSRect {
         let spacing = StandalonePetLayout.stackToPetSpacing
         let gap = StandalonePetLayout.edgeGap
-        var origin: NSPoint
-        switch edge {
-        case .bottom:
-            origin = NSPoint(x: petFrame.midX - size.width / 2, y: petFrame.maxY + spacing)
-        case .top:
-            origin = NSPoint(x: petFrame.midX - size.width / 2, y: petFrame.minY - size.height - spacing)
-        case .left:
-            origin = NSPoint(x: petFrame.maxX + spacing, y: petFrame.midY - size.height / 2)
-        case .right:
-            origin = NSPoint(x: petFrame.minX - size.width - spacing, y: petFrame.midY - size.height / 2)
-        }
+        var origin = NSPoint(
+            x: petFrame.midX - size.width / 2,
+            y: petFrame.maxY + spacing
+        )
         origin.x = min(max(origin.x, visible.minX + gap), visible.maxX - size.width - gap)
         origin.y = min(max(origin.y, visible.minY + gap), visible.maxY - size.height - gap)
         return NSRect(origin: origin, size: size)
@@ -535,6 +568,14 @@ private struct StandalonePetView: View {
             return EdgeInsets(top: 0, leading: outer, bottom: 0, trailing: 0)
         case .right:
             return EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: outer)
+        case .topLeft:
+            return EdgeInsets(top: outer, leading: outer, bottom: 0, trailing: 0)
+        case .topRight:
+            return EdgeInsets(top: outer, leading: 0, bottom: 0, trailing: outer)
+        case .bottomLeft:
+            return EdgeInsets(top: 0, leading: outer, bottom: outer, trailing: 0)
+        case .bottomRight:
+            return EdgeInsets(top: 0, leading: 0, bottom: outer, trailing: outer)
         }
     }
 

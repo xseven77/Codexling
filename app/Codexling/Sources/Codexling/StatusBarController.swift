@@ -227,6 +227,10 @@ final class StatusBarController: NSObject {
     private var taskHoverPresentation = TaskHoverPresentationState()
     private var isKeepingTaskHoverVisible = false
     private var lastStatusItemOpenTimestamp: TimeInterval = -.infinity
+    /// 最近一次把刘海面板供应商索引同步到全局选中账号的选中键。
+    /// 只有选中账号真正变化时才回写索引；否则刘海面板自身的显示轮播
+    /// （「供应商自动轮播」关闭时）不会被数据刷新拉回选中项。
+    private var lastSyncedProviderSelectionKey: String?
 
     init(
         store: UsageSnapshotStore,
@@ -382,11 +386,7 @@ final class StatusBarController: NSObject {
         let agentTicks = currentAgentTicks()
         let providerTicks = currentProviderTicks()
         ticker.clampAgent(to: agentTicks.count)
-        if let selectedIndex = providerTicks.firstIndex(where: { $0.id == multiAgentSettings.selectedConnectionKey }) {
-            ticker.providerIndex = selectedIndex
-        } else {
-            ticker.clampProvider(to: providerTicks.count)
-        }
+        syncProviderIndexToSelectionIfNeeded(providerTicks: providerTicks)
         let activeAgentCount = agentTicks.count
         let waitingCount = agentTicks.filter { $0.state == .waitingForUser }.count
 
@@ -650,6 +650,35 @@ final class StatusBarController: NSObject {
 
     func refreshProviderCarouselTimer() {
         refreshStatusTitle()
+    }
+
+    /// 只有全局选中账号发生变化时，才把刘海面板的供应商显示索引同步回选中项
+    /// （例如用户点击 logo，或「供应商自动轮播」开启时定时推进选中）。
+    /// 「供应商自动轮播」关闭后，刘海面板的显示索引由自身轮播独立推进，
+    /// 不能在被数据刷新时因选中项未变化而拉回。
+    private func syncProviderIndexToSelectionIfNeeded(providerTicks: [StatusBarProviderTick]) {
+        let selectedKey = multiAgentSettings.selectedConnectionKey
+        guard selectedKey != lastSyncedProviderSelectionKey else {
+            ticker.clampProvider(to: providerTicks.count)
+            return
+        }
+        lastSyncedProviderSelectionKey = selectedKey
+        if let selectedIndex = providerTicks.firstIndex(where: { $0.id == selectedKey }) {
+            ticker.providerIndex = selectedIndex
+        } else {
+            ticker.clampProvider(to: providerTicks.count)
+        }
+    }
+
+    /// 推进刘海面板自身的供应商账号轮播（仅显示轮播，不改变全局选中账号）。
+    /// 连接数不足 2 个时返回 false，调用方无需重新计时。
+    @discardableResult
+    func advanceNotchProviderCarousel() -> Bool {
+        let count = currentProviderTicks().count
+        guard count > 1 else { return false }
+        ticker.advanceProvider(count: count)
+        refreshStatusTitle()
+        return true
     }
 
     private func advanceAgentTick() {

@@ -889,7 +889,7 @@ struct SettingsView: View {
     private var accountCarouselSection: some View {
         SettingsInlineRow(
             title: "账号自动轮播",
-            subtitle: "按设定间隔自动切换账号；鼠标停在 logo 行时暂停"
+            subtitle: "按设定间隔自动轮播供应商账号；鼠标进入账号信息区域时暂停"
         ) {
             SettingsMenuPicker(
                 selection: $settings.accountCarouselInterval,
@@ -902,7 +902,7 @@ struct SettingsView: View {
     private var mainWindowProviderCarouselSection: some View {
         SettingsInlineRow(
             title: "供应商自动轮播",
-            subtitle: "仅作用于主窗口主界面；开启后与刘海窗口轮播保持一致，关闭则停止自动轮播"
+            subtitle: "仅作用于主窗口；关闭后主窗口停止自动轮播，刘海面板轮播不受影响"
         ) {
             SettingsSwitch(
                 isOn: $settings.mainWindowProviderCarouselEnabled,
