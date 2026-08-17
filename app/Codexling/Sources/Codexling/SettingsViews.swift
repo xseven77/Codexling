@@ -822,6 +822,8 @@ struct SettingsView: View {
                 CodexDivider()
                 accountCarouselSection
                 CodexDivider()
+                mainWindowProviderCarouselSection
+                CodexDivider()
                 refreshSection
             }
             .settingsGroupSurface()
@@ -893,6 +895,18 @@ struct SettingsView: View {
                 selection: $settings.accountCarouselInterval,
                 options: AccountCarouselInterval.allCases,
                 title: \.title
+            )
+        }
+    }
+
+    private var mainWindowProviderCarouselSection: some View {
+        SettingsInlineRow(
+            title: "供应商自动轮播",
+            subtitle: "仅作用于主窗口主界面；开启后与刘海窗口轮播保持一致，关闭则停止自动轮播"
+        ) {
+            SettingsSwitch(
+                isOn: $settings.mainWindowProviderCarouselEnabled,
+                accessibilityLabel: "供应商自动轮播"
             )
         }
     }

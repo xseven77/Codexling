@@ -508,7 +508,21 @@ final class StatusBarController: NSObject {
         return panel
     }
 
+    /// 屏幕参数变化后校验刘海目标显示器：若当前指定的显示器已断开，自动回退到内建显示器。
+    private func reconcileNotchDisplayTargetAfterScreenChange() {
+        guard case .specificScreen(let number) = settings.notchDisplayTarget else { return }
+        guard !NSScreen.screens.contains(where: { $0.screenNumber == number }) else { return }
+
+        if let builtin = NSScreen.screens.first(where: \.isBuiltin) {
+            settings.notchDisplayTarget = .specificScreen(builtin.screenNumber)
+        } else {
+            settings.notchDisplayTarget = .allDisplays
+        }
+    }
+
     private func applyMode() {
+        reconcileNotchDisplayTargetAfterScreenChange()
+
         let targetNumbers = Set(targetScreens.map(\.screenNumber))
 
         // 刘海面板：目标屏幕（悬停屏幕顶部中央）。

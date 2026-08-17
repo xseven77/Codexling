@@ -298,6 +298,7 @@ final class AppSettingsStore {
         static let theme = "codexling.theme"
         static let autoRefreshInterval = "codexling.autoRefreshInterval"
         static let accountCarouselInterval = "codexling.accountCarouselInterval"
+        static let mainWindowProviderCarouselEnabled = "codexling.mainWindowProviderCarouselEnabled"
         static let petsEnabled = "codexling.petsEnabled"
         static let standalonePetEnabled = "codexling.standalonePetEnabled"
         static let standalonePetEdge = "codexling.standalonePetEdge"
@@ -343,6 +344,15 @@ final class AppSettingsStore {
             guard accountCarouselInterval != oldValue else { return }
             defaults.set(accountCarouselInterval.rawValue, forKey: Keys.accountCarouselInterval)
             onAccountCarouselIntervalChanged?(accountCarouselInterval)
+        }
+    }
+
+    /// 主窗口主界面的「供应商轮播」是否自动轮播。仅作用于主窗口，不影响刘海窗口。
+    var mainWindowProviderCarouselEnabled: Bool {
+        didSet {
+            guard mainWindowProviderCarouselEnabled != oldValue else { return }
+            defaults.set(mainWindowProviderCarouselEnabled, forKey: Keys.mainWindowProviderCarouselEnabled)
+            onMainWindowProviderCarouselEnabledChanged?(mainWindowProviderCarouselEnabled)
         }
     }
 
@@ -497,6 +507,7 @@ final class AppSettingsStore {
 
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
     var onAccountCarouselIntervalChanged: ((AccountCarouselInterval) -> Void)?
+    var onMainWindowProviderCarouselEnabledChanged: ((Bool) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
     var onStandalonePetEnabledChanged: ((Bool) -> Void)?
@@ -533,6 +544,7 @@ final class AppSettingsStore {
 
         let carouselRaw = defaults.object(forKey: Keys.accountCarouselInterval) as? Int
         accountCarouselInterval = carouselRaw.flatMap(AccountCarouselInterval.init(rawValue:)) ?? .off
+        mainWindowProviderCarouselEnabled = defaults.object(forKey: Keys.mainWindowProviderCarouselEnabled) as? Bool ?? true
 
         petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
         standalonePetEnabled = defaults.object(forKey: Keys.standalonePetEnabled) as? Bool ?? true

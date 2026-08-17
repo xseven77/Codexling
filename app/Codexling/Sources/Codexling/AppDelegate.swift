@@ -31,6 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.startAccountCarouselTimer()
             self?.statusController?.refreshProviderCarouselTimer()
         }
+        settingsStore.onMainWindowProviderCarouselEnabledChanged = { [weak self] _ in
+            self?.startAccountCarouselTimer()
+        }
         multiAgentSettingsStore.onSelectedConnectionChanged = { [weak self] in
             self?.startAccountCarouselTimer()
             self?.statusController?.refreshStatusTitle()
@@ -385,7 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accountCarouselTimer?.invalidate()
         accountCarouselTimer = nil
 
-        guard let interval = settingsStore.accountCarouselInterval.timeInterval,
+        guard settingsStore.mainWindowProviderCarouselEnabled,
+              let interval = settingsStore.accountCarouselInterval.timeInterval,
               !multiAgentSettingsStore.isAccountCarouselPaused
         else { return }
 

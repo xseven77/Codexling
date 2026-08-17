@@ -158,7 +158,7 @@ final class StandalonePetViewModel {
 enum StandalonePetOpenRouter {
     static func canOpen(_ task: CodexTaskActivity) -> Bool {
         switch task.agentDisplayName {
-        case "Codex", "Hermes", "Deepseek Harness": true
+        case "Codex": true
         default: false
         }
     }
@@ -205,6 +205,7 @@ enum StandalonePetOpenRouter {
     }
 
     /// Hermes：启动 Electron 桌面应用（`hermes desktop`）。会话级深链不受支持，先打开 Agent。
+    /// 暂未启用（canOpen 对 Hermes 返回 false）；待官方会话能力齐全后恢复。
     private static func openHermes(_ task: CodexTaskActivity) -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
@@ -230,6 +231,7 @@ enum StandalonePetOpenRouter {
     }
 
     /// Deepseek Harness：打开本地 Web UI 的会话页（`http://127.0.0.1:3080/sessions/<id>`）。
+    /// 暂未启用（canOpen 对 Deepseek Harness 返回 false）；待官方会话能力齐全后恢复。
     private static func openDeepseekHarness(_ task: CodexTaskActivity) -> Bool {
         let sessionID = task.id.replacingOccurrences(of: "dsh:", with: "")
         let base = "http://127.0.0.1:3080"
@@ -722,22 +724,22 @@ private struct StandaloneTaskPanelView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(task.title)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Color.codexInk)
-                        .lineLimit(1)
+                    ShimmerText(
+                        text: task.title,
+                        font: .system(size: 10.5, weight: .semibold),
+                        base: .codexInk,
+                        highlight: task.state.statusColor
+                    )
+                    .lineLimit(1)
                     Text(task.agentDisplayName)
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
                 }
-                ShimmerText(
-                    text: "\(task.state.taskLabel) · \(task.detail)",
-                    font: .system(size: 8.5),
-                    base: .codexMuted,
-                    highlight: task.state.statusColor
-                )
-                .lineLimit(1)
+                Text("\(task.state.taskLabel) · \(task.detail)")
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
