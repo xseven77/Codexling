@@ -589,7 +589,8 @@ final class StatusBarController: NSObject {
                 id: "codex.\(account.id.rawValue.uuidString.lowercased())",
                 label: account.label,
                 accountName: account.label,
-                usage: account.usage
+                usage: account.usage,
+                isConnected: account.authenticationState == .connected
             ) {
                 ticksByKey[tick.id] = tick
             }
@@ -630,7 +631,8 @@ final class StatusBarController: NSObject {
             accountName: accountName.isEmpty ? "Codex" : accountName,
             asset: .codex,
             quotaText: quotaText,
-            detailText: detailText
+            detailText: detailText,
+            quotaHealth: QuotaHealthLevel.from(window: snapshot.primaryWindow, isLoggedIn: store.isLoggedIn)
         )
     }
 

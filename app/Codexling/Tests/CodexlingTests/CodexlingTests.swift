@@ -61,6 +61,28 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(StatusBarPetBackgroundColor.neutral.resolved(for: .red), .neutral)
     }
 
+    func testActivityShimmerMotionAdvancesAndWrapsDeterministically() {
+        let start = ActivityShimmerMotion.offset(
+            canvasWidth: 100,
+            bandWidth: 40,
+            at: 0
+        )
+        let halfway = ActivityShimmerMotion.offset(
+            canvasWidth: 100,
+            bandWidth: 40,
+            at: ActivityShimmerMotion.duration / 2
+        )
+        let wrapped = ActivityShimmerMotion.offset(
+            canvasWidth: 100,
+            bandWidth: 40,
+            at: ActivityShimmerMotion.duration
+        )
+
+        XCTAssertEqual(start, -40, accuracy: 0.0001)
+        XCTAssertGreaterThan(halfway, start)
+        XCTAssertEqual(wrapped, start, accuracy: 0.0001)
+    }
+
     func testStatusCapsuleReminderColorOnlyDefinesForeground() {
         XCTAssertNotEqual(
             StatusBarPetBackgroundColor.green.foregroundColor(for: .light),

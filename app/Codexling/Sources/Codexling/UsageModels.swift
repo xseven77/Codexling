@@ -405,7 +405,7 @@ enum UsageDateFormat {
     }
 }
 
-enum QuotaHealthLevel: Equatable {
+enum QuotaHealthLevel: Equatable, Sendable {
     case gray
     case green
     case yellow

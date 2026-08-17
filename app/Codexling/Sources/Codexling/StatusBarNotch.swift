@@ -121,6 +121,8 @@ struct StatusBarProviderTick: Identifiable, Equatable, Sendable {
     let quotaText: String
     /// 展开面板副值，如 "周 76%" 或 "API Key"
     let detailText: String
+    /// 与主界面额度状态共用的红 / 黄 / 绿颜色等级。
+    let quotaHealth: QuotaHealthLevel
 }
 
 /// 双维度独立轮播索引：左区 Agent 与右区 Provider 各自独立计时切换。
@@ -167,7 +169,8 @@ enum StatusBarProviderTickFactory {
         id: String,
         label: String,
         accountName: String,
-        usage: CodexUsageSnapshot?
+        usage: CodexUsageSnapshot?,
+        isConnected: Bool = true
     ) -> StatusBarProviderTick? {
         guard let usage, usage.hasShortWindow || usage.hasWeeklyWindow else { return nil }
         var quotaText: String
@@ -188,7 +191,8 @@ enum StatusBarProviderTickFactory {
             accountName: accountName.isEmpty ? "Codex" : accountName,
             asset: .codex,
             quotaText: quotaText,
-            detailText: detailText
+            detailText: detailText,
+            quotaHealth: QuotaHealthLevel.from(window: usage.primaryWindow, isLoggedIn: isConnected)
         )
     }
 
@@ -197,13 +201,22 @@ enum StatusBarProviderTickFactory {
         guard let balance = connection.balance else { return nil }
         let value = NSDecimalNumber(decimal: balance.total).stringValue
         let text = balance.currency == "CNY" ? "¥\(value)" : "\(balance.currency) \(value)"
+        let quotaHealth: QuotaHealthLevel = switch ProviderBalanceIndicator.resolve(
+            total: balance.total,
+            authenticationState: connection.authenticationState
+        ) {
+        case .healthy: .green
+        case .low: .yellow
+        case .depleted: .red
+        }
         return StatusBarProviderTick(
             id: "deepseek.\(connection.id.rawValue.uuidString.lowercased())",
             providerName: "DeepSeek",
             accountName: connection.label,
             asset: .deepSeek,
             quotaText: text,
-            detailText: "API Key"
+            detailText: "API Key",
+            quotaHealth: quotaHealth
         )
     }
 }

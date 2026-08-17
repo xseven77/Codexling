@@ -75,8 +75,8 @@ final class NotchCapsuleViewModel {
     var onProviderHover: ((Bool) -> Void)?
 }
 
-/// 自定义命中视图：透明区域返回 nil 让鼠标事件穿透到下层，
-/// 只对收起胶囊 / 展开面板区域拦截点击。
+/// 自定义命中视图：限制 SwiftUI 宿主内部的响应区域。
+/// 跨窗口的点击穿透由 NSPanel.ignoresMouseEvents 控制。
 final class NotchHitTestView: NSView {
     /// 命中判定（点坐标为视图 bounds 坐标，原点在左下角）。
     var shouldHit: (NSPoint) -> Bool = { _ in true }
@@ -94,6 +94,8 @@ final class NotchCapsulePanelController {
     private static let windowSize = NSSize(width: 700, height: 330)
 
     private let panel: NSPanel
+    /// 收起态专用的透明点击层，尺寸严格等于可见胶囊，避免固定大窗口制造点击死区。
+    private let collapsedHitPanel: NSPanel
     private let viewModel = NotchCapsuleViewModel()
     private let hosting: NSHostingController<NotchCapsuleView>
     private let hitTestView = NotchHitTestView()
@@ -101,6 +103,7 @@ final class NotchCapsulePanelController {
     private var localMonitor: Any?
     private var screen: NSScreen?
     private var collapseWorkItem: DispatchWorkItem?
+    private var interactionWorkItem: DispatchWorkItem?
 
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
@@ -117,7 +120,13 @@ final class NotchCapsulePanelController {
             backing: .buffered,
             defer: false
         )
-        // 用自定义命中视图包裹 SwiftUI 内容：透明区域穿透鼠标，胶囊/面板区域拦截点击。
+        collapsedHitPanel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        // 用自定义命中视图包裹 SwiftUI 内容；窗口级穿透不能依赖 NSView.hitTest。
         panel.contentView = hitTestView
         hosting.view.frame = NSRect(origin: .zero, size: Self.windowSize)
         hosting.view.autoresizingMask = [.width, .height]
@@ -135,9 +144,27 @@ final class NotchCapsulePanelController {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]
         panel.isMovableByWindowBackground = false
-        // 收起态完全忽略鼠标（点击穿透到下层），展开后才接收鼠标事件。
+        // 固定 700×330 主窗口在收起态必须整体穿透；小点击层只覆盖可见胶囊。
         panel.ignoresMouseEvents = true
         updateHitTestPolicy()
+
+        collapsedHitPanel.isFloatingPanel = true
+        collapsedHitPanel.becomesKeyOnlyIfNeeded = true
+        collapsedHitPanel.level = .mainMenu + 4
+        collapsedHitPanel.isOpaque = false
+        collapsedHitPanel.backgroundColor = .clear
+        collapsedHitPanel.hasShadow = false
+        collapsedHitPanel.titleVisibility = .hidden
+        collapsedHitPanel.titlebarAppearsTransparent = true
+        collapsedHitPanel.hidesOnDeactivate = false
+        collapsedHitPanel.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]
+        collapsedHitPanel.isMovableByWindowBackground = false
+        collapsedHitPanel.ignoresMouseEvents = false
+        let collapsedHitView = NSView(frame: .zero)
+        collapsedHitView.wantsLayer = true
+        // 极低 alpha 保证 Window Server 保留命中层；它叠在黑色胶囊上，不产生可见变化。
+        collapsedHitView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
+        collapsedHitPanel.contentView = collapsedHitView
 
         // self 完全初始化后再注入回调，转发到公开属性。
         viewModel.onSelectAgent = { [weak self] index in self?.onSelectAgent?(index) }
@@ -181,20 +208,24 @@ final class NotchCapsulePanelController {
         viewModel.closedHeight = safeTop
         viewModel.screenName = self.screen?.displayName ?? "显示器"
         viewModel.isExpanded = false
+        cancelInteractionTransition()
         panel.ignoresMouseEvents = true
         updateHitTestPolicy()
         positionPanel()
         panel.orderFrontRegardless()
+        collapsedHitPanel.orderFrontRegardless()
         installMonitors()
     }
 
     func hide() {
         removeMonitors()
         cancelCollapse()
+        cancelInteractionTransition()
         onAgentHover?(false)
         onProviderHover?(false)
         viewModel.isExpanded = false
         panel.ignoresMouseEvents = true
+        collapsedHitPanel.orderOut(nil)
         panel.orderOut(nil)
     }
 
@@ -204,17 +235,23 @@ final class NotchCapsulePanelController {
 
     private func setExpanded(_ expanded: Bool) {
         guard expanded != viewModel.isExpanded else { return }
+        cancelInteractionTransition()
         if !expanded {
             onAgentHover?(false)
             onProviderHover?(false)
+        } else {
+            // 先移除小点击层并让完整面板接管，再开始展开动画。
+            collapsedHitPanel.orderOut(nil)
+            panel.ignoresMouseEvents = false
         }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
             viewModel.isExpanded = expanded
         }
-        // 参考 ping-island：窗口保持固定尺寸，形变动画完全交给 SwiftUI 内容在固定窗口内完成。
-        // 收起态忽略鼠标事件（点击穿透），展开态才接收鼠标事件。
-        panel.ignoresMouseEvents = !expanded
         updateHitTestPolicy()
+        if !expanded {
+            // 收拢动画期间完整面板仍拦截可见区域；动画结束后切换为胶囊大小的点击层。
+            scheduleCollapsedInteraction()
+        }
     }
 
     private func closePanel() {
@@ -222,7 +259,7 @@ final class NotchCapsulePanelController {
         setExpanded(false)
     }
 
-    /// 更新命中区域：展开态拦截整个面板；收起态只拦截顶部收起胶囊，其余透明区域穿透。
+    /// 更新主窗口内部命中区域；收起态的跨窗口穿透由独立小点击层负责。
     private func updateHitTestPolicy() {
         let closedWidth = viewModel.closedWidth
         let closedHeight = viewModel.closedHeight
@@ -242,13 +279,31 @@ final class NotchCapsulePanelController {
 
     private func positionPanel() {
         guard let screen else { return }
-        // 窗口固定为展开尺寸，始终贴屏幕顶部；收起态靠 ignoresMouseEvents 让点击穿透。
+        // 主窗口固定为展开尺寸，保证展开/收拢形变动画不跳帧。
         let size = Self.windowSize
         let origin = NSPoint(
             x: screen.frame.midX - size.width / 2,
             y: screen.frame.maxY - size.height
         )
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        collapsedHitPanel.setFrame(closedScreenRect(), display: true)
+    }
+
+    private func scheduleCollapsedInteraction() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.panel.isVisible, !self.viewModel.isExpanded else { return }
+            self.interactionWorkItem = nil
+            self.panel.ignoresMouseEvents = true
+            self.collapsedHitPanel.setFrame(self.closedScreenRect(), display: true)
+            self.collapsedHitPanel.orderFrontRegardless()
+        }
+        interactionWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func cancelInteractionTransition() {
+        interactionWorkItem?.cancel()
+        interactionWorkItem = nil
     }
 
     // MARK: - 鼠标 / 键盘监控
@@ -410,10 +465,14 @@ private struct NotchCapsuleView: View {
                 if let agent {
                     StatusBarBrandBadge(asset: agent.asset, size: 14)
                     Circle().fill(Color(nsColor: agent.state.statusNSColor)).frame(width: 6, height: 6)
-                    Text(agent.statusText)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    ActivityShimmerText(
+                        text: agent.statusText,
+                        font: .system(size: 12, weight: .semibold),
+                        base: .white.opacity(0.72),
+                        highlight: Color(nsColor: agent.state.statusNSColor),
+                        isAnimated: agent.state.showsActivityWave
+                    )
+                    .lineLimit(1)
                 } else {
                     Circle().fill(Color.gray.opacity(0.8)).frame(width: 6, height: 6)
                     Text("空闲")
@@ -431,7 +490,7 @@ private struct NotchCapsuleView: View {
                 if let provider {
                     Text(provider.quotaText)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .foregroundStyle(provider.quotaHealth.color)
                         .lineLimit(1)
                     StatusBarBrandBadge(asset: provider.asset, size: 14)
                 } else {
@@ -515,11 +574,15 @@ private struct NotchCapsuleView: View {
                         .foregroundStyle(Color(nsColor: agent.state.statusNSColor))
                         .lineLimit(1)
                 }
-                Text(agent.taskTitle.isEmpty ? "当前没有运行任务" : agent.taskTitle)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .padding(.top, 12)
+                ActivityShimmerText(
+                    text: agent.taskTitle.isEmpty ? "当前没有运行任务" : agent.taskTitle,
+                    font: .system(size: 17, weight: .bold),
+                    base: .white.opacity(0.72),
+                    highlight: Color(nsColor: agent.state.statusNSColor),
+                    isAnimated: !agent.taskTitle.isEmpty && agent.state.showsActivityWave
+                )
+                .lineLimit(1)
+                .padding(.top, 12)
                 if !agent.taskDetail.isEmpty {
                     Text(agent.taskDetail)
                         .font(.system(size: 12))
@@ -624,7 +687,7 @@ private struct NotchCapsuleView: View {
                     .padding(.top, 12)
                 Text(provider.quotaText)
                     .font(.system(size: 18, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(provider.quotaHealth.color)
                     .lineLimit(1)
                     .padding(.top, 8)
                 if !provider.detailText.isEmpty {
