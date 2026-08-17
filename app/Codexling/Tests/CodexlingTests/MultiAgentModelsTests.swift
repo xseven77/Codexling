@@ -189,6 +189,76 @@ final class MultiAgentModelsTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshingConnectionIDsTrackPerAccountLoading() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-per-account-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let firstID = ConnectionID(rawValue: UUID())
+        let secondID = ConnectionID(rawValue: UUID())
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(
+            codexAccounts: [],
+            deepSeekConnections: [
+                DeepSeekAPIConnection(
+                    id: firstID,
+                    label: "Fast",
+                    credentialHandle: "first",
+                    keySuffix: "1111",
+                    authenticationState: .checking,
+                    createdAt: Date()
+                ),
+                DeepSeekAPIConnection(
+                    id: secondID,
+                    label: "Slow",
+                    credentialHandle: "second",
+                    keySuffix: "2222",
+                    authenticationState: .checking,
+                    createdAt: Date()
+                ),
+            ]
+        ))
+        let store = MultiAgentSettingsStore(
+            hookManager: AgentHookManager(
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true)
+            ),
+            registryStorage: registry,
+            codexRuntimeManager: CodexAccountRuntimeManager(
+                runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+            ),
+            credentialStore: TestDeepSeekCredentialStore(values: [
+                "first": "first-key",
+                "second": "second-key",
+            ]),
+            deepSeekBalanceService: TestDelayedDeepSeekBalanceService(delays: [
+                "first-key": 200_000_000,  // 0.2s
+                "second-key": 400_000_000, // 0.4s
+            ]),
+            startsAutomaticRefresh: false
+        )
+
+        let refreshTask = Task { await store.refreshAllConnections() }
+
+        // 两个账号都在加载中。
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(store.refreshingConnectionIDs, Set([firstID, secondID]))
+        XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[0]))
+        XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[1]))
+
+        // 快的账号已加载完，慢的账号仍在加载（分开加载、逐个移除）。
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(store.refreshingConnectionIDs, Set([secondID]))
+        XCTAssertFalse(store.isRefreshingConnection(store.deepSeekConnections[0]))
+        XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[1]))
+        XCTAssertNotNil(store.deepSeekConnections[0].balance, "加载完成的账号应直接展示数据")
+
+        let outcome = await refreshTask.value
+        XCTAssertEqual(outcome.successCount, 2)
+        XCTAssertTrue(store.refreshingConnectionIDs.isEmpty, "全部加载完后清空加载状态")
+    }
+
+    @MainActor
     func testLastSelectedProviderConnectionPersistsAndReloads() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexling-selected-connection-\(UUID().uuidString)", isDirectory: true)
@@ -396,6 +466,31 @@ private final class TestDeepSeekCredentialStore: DeepSeekCredentialStoring, @unc
     }
 
     func delete(handle: String) throws {}
+}
+
+private actor TestDelayedDeepSeekBalanceService: DeepSeekBalanceFetching {
+    private let delays: [String: UInt64]
+
+    init(delays: [String: UInt64]) {
+        self.delays = delays
+    }
+
+    func fetch(apiKey: String, connectionID: ConnectionID) async throws -> ProviderBalanceSnapshot {
+        if let delay = delays[apiKey] {
+            try await Task.sleep(nanoseconds: delay)
+        }
+        let total: Decimal = apiKey == "first-key" ? 11 : 22
+        return ProviderBalanceSnapshot(
+            connectionID: connectionID,
+            providerID: .deepSeek,
+            scope: .account,
+            currency: "CNY",
+            total: total,
+            granted: 0,
+            toppedUp: total,
+            fetchedAt: Date()
+        )
+    }
 }
 
 private actor TestDeepSeekBalanceService: DeepSeekBalanceFetching {

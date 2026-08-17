@@ -179,6 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func manualRefreshUsage() {
+        // 手动刷新：先重置自动刷新倒计时，等本次刷新全部加载结束后再重新计时。
+        autoRefreshTimer?.invalidate()
+        autoRefreshTimer = nil
         performUnifiedRefresh(showsToast: true)
     }
 
@@ -210,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.statusController?.refreshStatusTitle()
             outcome.merge(await self.refreshUsage(allowOAuthLogin: false))
             self.snapshotStore.setUnifiedRefreshing(false)
+            // 本次刷新（手动或自动）全部结束后，重新开始自动刷新倒计时。
+            self.startAutoRefreshTimer()
             if showsToast {
                 self.snapshotStore.showManualRefreshToast(for: outcome)
             }
@@ -369,13 +374,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// 自动刷新调度：one-shot timer，每次刷新全部结束后重新计时，
+    /// 保证倒计时从「上次刷新完成」开始算，而不是固定时钟。
+    /// 手动刷新会先重置倒计时（见 `manualRefreshUsage`），
+    /// 等手动刷新全部加载完后再由 `performUnifiedRefresh` 的收尾重新启动。
     private func startAutoRefreshTimer() {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
 
         guard let interval = settingsStore.autoRefreshInterval.timeInterval else { return }
 
-        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoRefreshUsage()
             }

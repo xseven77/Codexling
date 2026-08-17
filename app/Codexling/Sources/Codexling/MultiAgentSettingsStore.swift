@@ -35,6 +35,8 @@ final class MultiAgentSettingsStore {
     private(set) var connectionOrder: [String] = []
     private(set) var isMutatingConnections = false
     private(set) var isRefreshingConnections = false
+    /// 正在单独请求中的连接 id（按账号分开加载：完成一个移除一个）。
+    private(set) var refreshingConnectionIDs: Set<ConnectionID> = []
     private(set) var isCodexOAuthInProgress = false
     private(set) var lastMessage: String?
     private(set) var isAccountCarouselPaused = false
@@ -157,9 +159,11 @@ final class MultiAgentSettingsStore {
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
 
+        refreshingConnectionIDs.formUnion(codexAccounts.map(\.id))
         var outcome = RefreshOutcome()
         for connection in codexAccounts {
             outcome.merge(await refreshCodexAccountWithoutLock(connection))
+            refreshingConnectionIDs.remove(connection.id)
         }
         return outcome
     }
@@ -179,17 +183,25 @@ final class MultiAgentSettingsStore {
 
         let codexAccounts = self.codexAccounts
         let deepSeekConnections = self.deepSeekConnections
+        // 先登记全部账号为「加载中」，各自完成后逐个移除，
+        // 让界面可以按账号单独展示加载 / 完成状态。
+        refreshingConnectionIDs.formUnion(codexAccounts.map(\.id))
+        refreshingConnectionIDs.formUnion(deepSeekConnections.map(\.id))
 
         var tasks: [Task<RefreshOutcome, Never>] = []
         for connection in codexAccounts {
             tasks.append(Task { @MainActor [weak self] in
-                await self?.refreshCodexAccountWithoutLock(connection) ?? RefreshOutcome()
+                let outcome = await self?.refreshCodexAccountWithoutLock(connection) ?? RefreshOutcome()
+                self?.refreshingConnectionIDs.remove(connection.id)
+                return outcome
             })
         }
         for connection in deepSeekConnections {
             tasks.append(Task { @MainActor [weak self] in
-                await self?.refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false)
+                let outcome = await self?.refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false)
                     ?? RefreshOutcome()
+                self?.refreshingConnectionIDs.remove(connection.id)
+                return outcome
             })
         }
 
@@ -443,7 +455,9 @@ final class MultiAgentSettingsStore {
         guard !isRefreshingConnections, !isMutatingConnections else { return }
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
+        refreshingConnectionIDs.insert(connection.id)
         _ = await refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: true)
+        refreshingConnectionIDs.remove(connection.id)
     }
 
     private func refreshDeepSeekConnectionWithoutLock(
@@ -559,6 +573,16 @@ final class MultiAgentSettingsStore {
     func selectConnection(key: String) {
         guard connectionExists(key) else { return }
         selectedConnectionKey = key
+    }
+
+    // MARK: - 单账号加载状态
+
+    func isRefreshingConnection(_ connection: DeepSeekAPIConnection) -> Bool {
+        refreshingConnectionIDs.contains(connection.id)
+    }
+
+    func isRefreshingConnection(_ connection: CodexAccountConnection) -> Bool {
+        refreshingConnectionIDs.contains(connection.id)
     }
 
     private func connectionExists(_ key: String) -> Bool {

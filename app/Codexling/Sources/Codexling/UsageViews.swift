@@ -922,6 +922,30 @@ struct CodexMaterialWaveButtonBody<Label: View>: View {
     }
 }
 
+/// 按钮内的加载指示：旋转的刷新图标。
+///
+/// macOS 的 `ProgressView` 在部分按钮样式下会忽略 `.tint`，导致深色按钮上
+/// 出现不可见的深色 loading。这里用显式 `.foregroundStyle` 的自绘旋转图标，
+/// 颜色始终与按钮背景反相（深色按钮 → 浅色 loading，浅色按钮 → 深色 loading）。
+struct CodexButtonLoading: View {
+    /// 加载指示颜色，默认取 primary 按钮的前景色（= 背景反色）。
+    var tint: Color = .codexOnPrimary
+    var size: CGFloat = 13
+    @State private var isSpinning = false
+
+    var body: some View {
+        Image(systemName: "arrow.triangle.2.circlepath")
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(tint)
+            .rotationEffect(.degrees(isSpinning ? 360 : 0))
+            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: isSpinning)
+            .onAppear { isSpinning = true }
+            .frame(width: size + 9, height: size + 9)
+            .accessibilityLabel("加载中")
+            .accessibilityHidden(false)
+    }
+}
+
 struct LiquidGlassBackdrop: View {
     let health: QuotaHealthLevel
     var topChromeHeight: CGFloat = 0

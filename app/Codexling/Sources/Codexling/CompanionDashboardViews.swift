@@ -589,7 +589,8 @@ struct CompanionDashboardView: View {
         if let connection = multiAgentSettings.selectedDeepSeekConnection {
             DeepSeekDashboardCard(
                 connection: connection,
-                isRefreshing: store.isUnifiedRefreshing
+                isRefreshingConnection: multiAgentSettings.isRefreshingConnection(connection),
+                isRefreshingAny: store.isUnifiedRefreshing
             ) {
                 actions.refresh()
             }
@@ -606,7 +607,8 @@ struct CompanionDashboardView: View {
         if let connection = multiAgentSettings.selectedDeepSeekConnection {
             DeepSeekDashboardCard(
                 connection: connection,
-                isRefreshing: store.isUnifiedRefreshing
+                isRefreshingConnection: multiAgentSettings.isRefreshingConnection(connection),
+                isRefreshingAny: store.isUnifiedRefreshing
             ) {
                 actions.refresh()
             }
@@ -1054,7 +1056,10 @@ private struct ConnectionSwitcherItem: Identifiable {
 
 private struct DeepSeekDashboardCard: View {
     let connection: DeepSeekAPIConnection
-    let isRefreshing: Bool
+    /// 当前这个账号是否正在加载（单独请求，单独显示 loading）。
+    let isRefreshingConnection: Bool
+    /// 是否还有任意账号 / 主 Codex 在加载（全部加载完前按钮不可点击）。
+    let isRefreshingAny: Bool
     let onRefresh: () -> Void
 
     var body: some View {
@@ -1100,8 +1105,18 @@ private struct DeepSeekDashboardCard: View {
                 }
                 Button(action: onRefresh) {
                     Group {
-                        if isRefreshing {
-                            ProgressView().controlSize(.small).tint(Color.codexOnPrimary)
+                        if isRefreshingConnection {
+                            // 本账号仍在加载：反色 loading。
+                            CodexButtonLoading()
+                        } else if isRefreshingAny {
+                            // 本账号已加载完，但还有其它账号在加载：
+                            // 数据已直接展示，按钮显示「加载完成」但仍不可点击。
+                            HStack(spacing: 5) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("加载完成")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
                         } else {
                             Text("查询余额")
                                 .font(.system(size: 13, weight: .semibold))
@@ -1111,9 +1126,11 @@ private struct DeepSeekDashboardCard: View {
                     .frame(height: 44, alignment: .center)
                     .foregroundStyle(Color.codexOnPrimary)
                     .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    // 等其它账号时弱化按钮，提示当前不可再次点击。
+                    .opacity(isRefreshingAny && !isRefreshingConnection ? 0.55 : 1)
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
-                .disabled(isRefreshing)
+                .disabled(isRefreshingAny)
                 .padding(.top, 16)
             }
             .padding(20)
@@ -1330,6 +1347,9 @@ private struct CompanionLocalAgentsControl: View {
     let integrations: [AgentIntegrationStatus]
     var panelHorizontalOffset: CGFloat = 0
     var opensUpward = false
+    /// 点击弹窗中的 agent 任务条时回调选中的任务 id（nil 表示该 agent 当前
+    /// 没有可打开的任务卡片，仅收起弹窗）。
+    var onSelectTask: (String?) -> Void = { _ in }
     @State private var isExpanded = false
     @State private var interceptedCloseRippleTrigger = 0
 
@@ -1397,10 +1417,23 @@ private struct CompanionLocalAgentsControl: View {
                 rows: rows,
                 horizontalOffset: panelHorizontalOffset,
                 opensUpward: opensUpward,
-                colorScheme: colorScheme
+                colorScheme: colorScheme,
+                onSelectTask: { row in
+                    handleSelect(row)
+                }
             )
         }
         .zIndex(isExpanded ? 30 : 1)
+    }
+
+    /// 点击某个 agent 任务条：打开该 agent 的任务卡片并收起下拉弹窗。
+    private func handleSelect(_ row: CompanionLocalAgentRow) {
+        let taskID = activity.activeTasks
+            .filter { $0.agentDisplayName == row.name }
+            .max(by: { $0.updatedAt < $1.updatedAt })?
+            .id
+        onSelectTask(taskID)
+        withAnimation(.easeOut(duration: 0.18)) { isExpanded = false }
     }
 
     private func latestTask(for integration: AgentIntegrationStatus) -> CodexTaskActivity? {
@@ -1434,6 +1467,16 @@ private struct CompanionLocalAgentsControl: View {
 
 private struct CompanionLocalTasksPanelContent: View {
     let rows: [CompanionLocalAgentRow]
+    /// 点击某个 agent 任务条时回调（由宿主决定打开哪张任务卡片）。
+    let onSelect: (CompanionLocalAgentRow) -> Void
+
+    init(
+        rows: [CompanionLocalAgentRow],
+        onSelect: @escaping (CompanionLocalAgentRow) -> Void = { _ in }
+    ) {
+        self.rows = rows
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1454,7 +1497,9 @@ private struct CompanionLocalTasksPanelContent: View {
 
             VStack(spacing: 12) {
                 ForEach(rows) { row in
-                    localAgentRow(row)
+                    CompanionLocalAgentTaskRowButton(row: row) {
+                        onSelect(row)
+                    }
                 }
                 if rows.isEmpty {
                     HStack(spacing: 9) {
@@ -1487,32 +1532,56 @@ private struct CompanionLocalTasksPanelContent: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 6)
     }
+}
 
-    private func localAgentRow(_ row: CompanionLocalAgentRow) -> some View {
-        HStack(spacing: 10) {
-            ZStack(alignment: .bottomTrailing) {
-                BrandIconView(asset: row.asset, size: 34, cornerRadius: 10)
-                Circle()
-                    .fill(row.state.statusColor)
-                    .frame(width: 8, height: 8)
-                    .overlay(Circle().stroke(Color.codexCard, lineWidth: 1.3))
-                    .offset(x: 2, y: 2)
+/// 下拉弹窗里的单个 agent 任务条：点击后打开对应 agent 的任务卡片。
+private struct CompanionLocalAgentTaskRowButton: View {
+    let row: CompanionLocalAgentRow
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack(alignment: .bottomTrailing) {
+                    BrandIconView(asset: row.asset, size: 34, cornerRadius: 10)
+                    Circle()
+                        .fill(row.state.statusColor)
+                        .frame(width: 8, height: 8)
+                        .overlay(Circle().stroke(Color.codexCard, lineWidth: 1.3))
+                        .offset(x: 2, y: 2)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(row.summary)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                HStack(spacing: 4) {
+                    Text(row.state.activityLabel)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(row.state.statusColor)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Color.codexMuted.opacity(0.8))
+                }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.name)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(row.summary)
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            Text(row.state.activityLabel)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(row.state.statusColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                isHovered ? Color.codexMist.opacity(0.55) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.name)，\(row.summary)，\(row.state.activityLabel)")
+        .accessibilityLabel("\(row.name)，\(row.summary)，\(row.state.activityLabel)，点击打开任务卡片")
     }
 }
 
@@ -1523,11 +1592,13 @@ private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
     let horizontalOffset: CGFloat
     let opensUpward: Bool
     let colorScheme: ColorScheme
+    let onSelectTask: (CompanionLocalAgentRow) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             isPresented: $isPresented,
-            interceptedCloseRippleTrigger: $interceptedCloseRippleTrigger
+            interceptedCloseRippleTrigger: $interceptedCloseRippleTrigger,
+            onSelectTask: onSelectTask
         )
     }
 
@@ -1542,6 +1613,7 @@ private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.isPresented = $isPresented
         context.coordinator.interceptedCloseRippleTrigger = $interceptedCloseRippleTrigger
+        context.coordinator.onSelectTask = onSelectTask
         context.coordinator.update(
             rows: rows,
             horizontalOffset: horizontalOffset,
@@ -1559,19 +1631,25 @@ private struct CompanionLocalAgentsPanelPresenter: NSViewRepresentable {
         weak var anchorView: NSView?
         var isPresented: Binding<Bool>
         var interceptedCloseRippleTrigger: Binding<Int>
+        var onSelectTask: (CompanionLocalAgentRow) -> Void
         private let controller = CompanionLocalAgentsPanelController()
 
         init(
             isPresented: Binding<Bool>,
-            interceptedCloseRippleTrigger: Binding<Int>
+            interceptedCloseRippleTrigger: Binding<Int>,
+            onSelectTask: @escaping (CompanionLocalAgentRow) -> Void
         ) {
             self.isPresented = isPresented
             self.interceptedCloseRippleTrigger = interceptedCloseRippleTrigger
+            self.onSelectTask = onSelectTask
             controller.onInterceptedAnchorClick = { [weak self] in
                 self?.interceptedCloseRippleTrigger.wrappedValue += 1
             }
             controller.onDismiss = { [weak self] in
                 self?.isPresented.wrappedValue = false
+            }
+            controller.onSelectTask = { [weak self] row in
+                self?.onSelectTask(row)
             }
         }
 
@@ -1691,6 +1769,8 @@ private final class CompanionLocalAgentsPanelController {
     private var isDismissing = false
     var onInterceptedAnchorClick: (() -> Void)?
     var onDismiss: (() -> Void)?
+    /// 点击任务条时回调（由宿主把对应 agent 的任务卡片带到前台并收起弹窗）。
+    var onSelectTask: ((CompanionLocalAgentRow) -> Void)?
 
     init() {
         let rootView = CompanionLocalTasksPanelContent(rows: [])
@@ -1726,8 +1806,10 @@ private final class CompanionLocalAgentsPanelController {
 
     func update(rows: [CompanionLocalAgentRow], colorScheme: ColorScheme) {
         hostingView.rootView = AnyView(
-            CompanionLocalTasksPanelContent(rows: rows)
-                .preferredColorScheme(colorScheme)
+            CompanionLocalTasksPanelContent(rows: rows) { [weak self] row in
+                self?.onSelectTask?(row)
+            }
+            .preferredColorScheme(colorScheme)
         )
         hostingView.layoutSubtreeIfNeeded()
         let fittingHeight = max(164, hostingView.fittingSize.height)
@@ -2325,7 +2407,10 @@ private struct CompanionSidebar: View {
                 activity: activity,
                 integrations: integrations,
                 panelHorizontalOffset: 48,
-                opensUpward: true
+                opensUpward: true,
+                onSelectTask: { taskID in
+                    if let taskID { selectedTaskID = taskID }
+                }
             )
             .padding(.top, 7)
 
@@ -2439,7 +2524,10 @@ private struct GlobalAgentTaskSection: View {
 
                 CompanionLocalAgentsControl(
                     activity: activity,
-                    integrations: integrations
+                    integrations: integrations,
+                    onSelectTask: { taskID in
+                        if let taskID { selectedTaskID = taskID }
+                    }
                 )
             }
 
@@ -2861,9 +2949,7 @@ private struct SyncFooterView: View {
             .padding(.leading, isCompact ? 1 : 2)
             Button(action: onRefresh) {
                 if context.isRefreshing {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(Color.codexOnPrimary)
+                    CodexButtonLoading(size: 11)
                         .frame(width: isCompact ? 40 : 48)
                 } else {
                     Text(isCompact ? "刷新" : "立即刷新")

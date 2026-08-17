@@ -239,7 +239,7 @@ struct AccountConnectionsModalView: View {
                 } label: {
                     HStack(spacing: 6) {
                         if store.isMutatingConnections {
-                            ProgressView().controlSize(.small)
+                            CodexButtonLoading(tint: .white, size: 10)
                         } else {
                             Text("验证并添加")
                         }
