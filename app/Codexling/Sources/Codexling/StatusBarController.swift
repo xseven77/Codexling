@@ -493,6 +493,7 @@ final class StatusBarController: NSObject {
         let panel = NotchCapsulePanelController()
         panel.onClick = { [weak self] in self?.openFromNotchPanel() }
         panel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
+        panel.onQuit = actions.quit
         panel.onSelectAgent = { [weak self] index in
             self?.ticker.agentIndex = index
             self?.refreshStatusTitle()

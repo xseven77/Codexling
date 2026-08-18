@@ -80,6 +80,7 @@ final class NotchCapsuleViewModel {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -120,6 +121,7 @@ final class NotchCapsulePanelController {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -183,6 +185,7 @@ final class NotchCapsulePanelController {
         viewModel.onSelectProvider = { [weak self] connectionID in self?.onSelectProvider?(connectionID) }
         viewModel.onRefreshProvider = { [weak self] in self?.onRefreshProvider?() }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
+        viewModel.onQuit = { [weak self] in self?.onQuit?() }
         viewModel.onOpenAgentTask = { [weak self] tick in self?.onOpenAgentTask?(tick) }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
@@ -439,6 +442,7 @@ final class NotchCapsulePanelController {
 
 private struct NotchCapsuleView: View {
     let viewModel: NotchCapsuleViewModel
+    @State private var showQuitConfirmation = false
 
     private var agent: StatusBarAgentTick? {
         viewModel.agentTicks.indices.contains(viewModel.agentIndex)
@@ -464,6 +468,11 @@ private struct NotchCapsuleView: View {
             } else {
                 collapsedContent
                     .transition(.opacity)
+            }
+            if viewModel.isExpanded, showQuitConfirmation {
+                quitConfirmation
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+                    .zIndex(1)
             }
         }
         .frame(width: panelWidth, height: panelHeight)
@@ -853,6 +862,19 @@ private struct NotchCapsuleView: View {
     private var footer: some View {
         HStack {
             HStack(spacing: 12) {
+                Button {
+                    showQuitConfirmation = true
+                } label: {
+                    Image(systemName: "power")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭软件")
+                .help("关闭软件")
+
                 Text("\(viewModel.activeAgentCount) 个本地任务")
                 if viewModel.waitingCount > 0 {
                     HStack(spacing: 5) {
@@ -885,6 +907,58 @@ private struct NotchCapsuleView: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(.white.opacity(0.45))
+    }
+
+    /// 刘海内嵌确认卡片：不使用系统 alert，因此不会给整个屏幕添加背景 mask。
+    private var quitConfirmation: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "power")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.82))
+            Text("确认关闭软件？")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+            Text("Codexling 将完全退出，菜单栏图标也会消失。")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.52))
+                .multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                Button("取消") {
+                    showQuitConfirmation = false
+                }
+                .buttonStyle(NotchConfirmationButtonStyle(isDestructive: false))
+
+                Button("关闭软件") {
+                    viewModel.onQuit?()
+                }
+                .buttonStyle(NotchConfirmationButtonStyle(isDestructive: true))
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .background(Color.black.opacity(0.98), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
+    }
+}
+
+private struct NotchConfirmationButtonStyle: ButtonStyle {
+    let isDestructive: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isDestructive ? Color.white : Color.white.opacity(0.72))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                (isDestructive ? Color.red.opacity(0.76) : Color.white.opacity(0.10)),
+                in: Capsule()
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
 
