@@ -2843,6 +2843,7 @@ private struct TaskStackView: View {
     @Binding var selectedTaskID: String?
     @State private var ripples: [CodexMaterialWaveToken] = []
     @State private var isHovering = false
+    @State private var carouselDriver: AgentCarouselDriver?
     /// 卡片展示下标：本地状态直接驱动内容与计数，确保轮播时卡片真正切换。
     @State private var displayIndex = 0
 
@@ -2896,6 +2897,11 @@ private struct TaskStackView: View {
             withAnimation(.easeOut(duration: 0.15)) {
                 isHovering = hovering
             }
+            if hovering {
+                carouselDriver?.pause()
+            } else {
+                carouselDriver?.resume()
+            }
         }
         // 外部（侧栏/本地 Agent 控件）选中变化时，跟随其任务 id。
         .onChange(of: selectedTaskID) { _, newID in
@@ -2904,24 +2910,28 @@ private struct TaskStackView: View {
                   idx != displayIndex else { return }
             displayIndex = idx
         }
-        // 自动轮播：与刘海 agent 任务轮播一致，悬停时暂停，恢复时继续。
+        // 自动轮播：与刘海 agent 轮播一致的共享驱动（AgentCarouselDriver）。
+        // 视图出现/任务列表变化时创建并启动，视图消失时停止。
         .task(id: tasks.map(\.id)) {
-            guard tasks.count > 1 else { return }
+            if carouselDriver == nil {
+                carouselDriver = AgentCarouselDriver {
+                    advanceTask()
+                }
+            }
             // 当前展示的任务已消失时，规整回到显示范围内。
             if !tasks.indices.contains(displayIndex) {
                 displayIndex = 0
             }
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled, !isHovering, tasks.count > 1 else { continue }
-                withAnimation(.easeInOut(duration: 0.32)) {
-                    advanceTask()
-                }
+            carouselDriver?.isEnabled = tasks.count > 1
+            if isHovering {
+                carouselDriver?.pause()
+            } else {
+                carouselDriver?.start()
             }
+        }
+        .onDisappear {
+            carouselDriver?.stop()
+            carouselDriver = nil
         }
     }
 
@@ -3063,9 +3073,12 @@ private struct TaskStackView: View {
     /// 自动轮播推进：切到下一个任务，并同步选中 id 供侧栏等外部控件一致显示。
     private func advanceTask() {
         guard tasks.count > 1 else { return }
-        displayIndex = (displayIndex + 1) % tasks.count
-        if tasks.indices.contains(displayIndex) {
-            selectedTaskID = tasks[displayIndex].id
+        let next = (displayIndex + 1) % tasks.count
+        withAnimation(.easeInOut(duration: 0.32)) {
+            displayIndex = next
+        }
+        if tasks.indices.contains(next) {
+            selectedTaskID = tasks[next].id
         }
     }
 }

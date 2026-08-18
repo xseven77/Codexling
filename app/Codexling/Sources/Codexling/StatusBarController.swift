@@ -216,9 +216,10 @@ final class StatusBarController: NSObject {
     private let highlightOverlay = ScreenHighlightOverlay()
     private var notchPanels: [UInt32: NotchCapsulePanelController] = [:]
     private var ticker = StatusBarTicker()
-    private var agentTickTimer: Timer?
-    /// 鼠标悬停在展开面板的 agent 区域时暂停 agent 轮播。
-    private var isAgentAreaHovering = false
+    /// 共享驱动：负责统一的 agent 轮播计时与悬停暂停/续播语义。
+    private lazy var agentCarouselDriver = AgentCarouselDriver { [weak self] in
+        self?.advanceAgentTick()
+    }
     private var pendingHoverWorkItem: DispatchWorkItem?
     private var pendingHoverHideWorkItem: DispatchWorkItem?
     private var hoverSafeTriangle: HoverSafeTriangle?
@@ -508,7 +509,12 @@ final class StatusBarController: NSObject {
             AgentTaskOpener.open(agentDisplayName: tick.name, taskID: tick.taskID)
         }
         panel.onAgentHover = { [weak self] hovering in
-            self?.isAgentAreaHovering = hovering
+            guard let self else { return }
+            if hovering {
+                self.agentCarouselDriver.pause()
+            } else {
+                self.agentCarouselDriver.resume()
+            }
         }
         panel.onProviderHover = { [weak self] hovering in
             self?.multiAgentSettings.setAccountCarouselPaused(
@@ -620,15 +626,8 @@ final class StatusBarController: NSObject {
     // MARK: - 独立轮播
 
     private func ensureRotationTimers() {
-        if agentTickTimer == nil {
-            let timer = Timer(timeInterval: 2.8, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.advanceAgentTick()
-                }
-            }
-            agentTickTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
-        }
+        // 仅负责确保 agent 轮播驱动器已启动（幂等）。
+        agentCarouselDriver.start()
     }
 
     func refreshProviderCarouselTimer() {
@@ -671,7 +670,7 @@ final class StatusBarController: NSObject {
     }
 
     private func advanceAgentTick() {
-        guard !isAgentAreaHovering else { return }
+        // 悬停暂停已由 AgentCarouselDriver 的 pause/resume 处理，这里只需推进。
         let count = currentAgentTicks().count
         guard count > 1 else { return }
         ticker.advanceAgent(count: count)
