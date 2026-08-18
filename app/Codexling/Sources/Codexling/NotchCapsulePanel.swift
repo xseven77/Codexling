@@ -439,7 +439,6 @@ final class NotchCapsulePanelController {
 
 private struct NotchCapsuleView: View {
     let viewModel: NotchCapsuleViewModel
-    @State private var ripples: [CodexMaterialWaveToken] = []
 
     private var agent: StatusBarAgentTick? {
         viewModel.agentTicks.indices.contains(viewModel.agentIndex)
@@ -469,10 +468,6 @@ private struct NotchCapsuleView: View {
         }
         .frame(width: panelWidth, height: panelHeight)
         .clipShape(NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius))
-        .overlay {
-            // 全刘海面板的 material wave：点击 Codex agent 区域时在整块面板上扩散浅白色波纹。
-            CodexMaterialWaveLayer(ripples: $ripples, ink: .softLight)
-        }
         // 只水平居中、垂直贴顶，保证形变始终以屏幕顶部为锚点向下展开，不产生顶部空隙。
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
@@ -697,10 +692,9 @@ private struct NotchCapsuleView: View {
             }
         }
         .onTapGesture {
-            // 整块 Agent 任务信息区支持点击进入对应 agent 应用（仅 Codex），
-            // 同时在整块刘海面板上扩散浅白色 material wave。
+            // 整块 Agent 任务信息区支持点击进入对应 agent 应用（仅 Codex）；
+            // 按下态反馈由上方手型光标与悬停表现承担，不再扩散全刘海 wave。
             if let agent, AgentTaskOpener.canOpen(agentDisplayName: agent.name) {
-                ripples.spawnWave(at: CGPoint(x: 350, y: 160))
                 viewModel.onOpenAgentTask?(agent)
             }
         }
