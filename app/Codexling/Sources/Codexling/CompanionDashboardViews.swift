@@ -2945,8 +2945,6 @@ private struct TaskStackView: View {
                         }
                     }
                     Spacer()
-                    Text("任务 \(selectedIndex + 1) / \(tasks.count)")
-                        .foregroundStyle(Color.codexMuted)
                 }
                 .font(.system(size: 11))
             }
