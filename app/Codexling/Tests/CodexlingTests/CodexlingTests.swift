@@ -136,7 +136,7 @@ final class CodexlingTests: XCTestCase {
     }
 
     func testConnectionCarouselAdvancesWrapsAndRecoversMissingSelection() {
-        let keys = ["codex.current", "codex.second", "deepseek.first"]
+        let keys = ["codex.first", "codex.second", "deepseek.first"]
 
         XCTAssertEqual(ConnectionCarousel.nextKey(after: keys[0], availableKeys: keys), keys[1])
         XCTAssertEqual(ConnectionCarousel.nextKey(after: keys[2], availableKeys: keys), keys[0])

@@ -91,11 +91,6 @@ actor CodexUsageService {
         }
     }
 
-    func migrateLegacyTokenIfNeeded() -> Bool {
-        guard !tokenStore.hasStoredToken() else { return false }
-        return tokenStore.load() != nil
-    }
-
     private func validToken(forceLogin: Bool) async throws -> CodexOAuthToken {
         if !forceLogin, let token = tokenStore.load() {
             if token.expiresAt.timeIntervalSinceNow > 60 {

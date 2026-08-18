@@ -174,7 +174,8 @@ final class MultiAgentModelsTests: XCTestCase {
             ),
             credentialStore: credentialStore,
             deepSeekBalanceService: balanceService,
-            startsAutomaticRefresh: false
+            startsAutomaticRefresh: false,
+            migratesLegacyAccount: false
         )
 
         let outcome = await store.refreshAllConnections()
@@ -235,7 +236,8 @@ final class MultiAgentModelsTests: XCTestCase {
                 "first-key": 200_000_000,  // 0.2s
                 "second-key": 400_000_000, // 0.4s
             ]),
-            startsAutomaticRefresh: false
+            startsAutomaticRefresh: false,
+            migratesLegacyAccount: false
         )
 
         let refreshTask = Task { await store.refreshAllConnections() }
@@ -274,7 +276,7 @@ final class MultiAgentModelsTests: XCTestCase {
                 UserDefaults.standard.removeObject(forKey: defaultsKey)
             }
         }
-        UserDefaults.standard.set(MultiAgentSettingsStore.currentCodexConnectionKey, forKey: defaultsKey)
+        UserDefaults.standard.set("", forKey: defaultsKey)
 
         let firstID = ConnectionID(rawValue: UUID())
         let secondID = ConnectionID(rawValue: UUID())
@@ -311,7 +313,8 @@ final class MultiAgentModelsTests: XCTestCase {
                 ),
                 credentialStore: TestDeepSeekCredentialStore(values: [:]),
                 deepSeekBalanceService: TestDeepSeekBalanceService(),
-                startsAutomaticRefresh: false
+                startsAutomaticRefresh: false,
+                migratesLegacyAccount: false
             )
         }
 
@@ -336,7 +339,7 @@ final class MultiAgentModelsTests: XCTestCase {
                 UserDefaults.standard.removeObject(forKey: defaultsKey)
             }
         }
-        UserDefaults.standard.set(MultiAgentSettingsStore.currentCodexConnectionKey, forKey: defaultsKey)
+        UserDefaults.standard.set("", forKey: defaultsKey)
 
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexling-connection-order-\(UUID().uuidString)", isDirectory: true)
@@ -376,7 +379,8 @@ final class MultiAgentModelsTests: XCTestCase {
                 ),
                 credentialStore: TestDeepSeekCredentialStore(values: [:]),
                 deepSeekBalanceService: TestDeepSeekBalanceService(),
-                startsAutomaticRefresh: false
+                startsAutomaticRefresh: false,
+                migratesLegacyAccount: false
             )
         }
 
@@ -388,8 +392,8 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(makeStore().orderedConnectionKeys.first, secondKey)
 
         store.selectConnection(key: secondKey)
-        store.selectNextConnection(includesCurrentCodex: true)
-        XCTAssertEqual(store.selectedConnectionKey, MultiAgentSettingsStore.currentCodexConnectionKey)
+        store.selectNextConnection()
+        XCTAssertEqual(store.selectedConnectionKey, store.connectionKey(for: store.deepSeekConnections[0]))
     }
 
     @MainActor
@@ -409,7 +413,8 @@ final class MultiAgentModelsTests: XCTestCase {
             ),
             credentialStore: TestDeepSeekCredentialStore(values: [:]),
             deepSeekBalanceService: TestDeepSeekBalanceService(),
-            startsAutomaticRefresh: false
+            startsAutomaticRefresh: false,
+            migratesLegacyAccount: false
         )
         var pauseChanges: [Bool] = []
         store.onAccountCarouselPauseChanged = { pauseChanges.append($0) }

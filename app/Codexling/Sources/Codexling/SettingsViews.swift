@@ -52,9 +52,7 @@ struct SettingsView: View {
     @Bindable var multiAgentSettings: MultiAgentSettingsStore
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
-    let onLogout: () -> Void
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
-    @State private var showsLogoutConfirmation = false
     @State private var showsPetPicker = false
     @State private var showsCodexRestartConfirmation = false
     @State private var isRestartingCodex = false
@@ -108,16 +106,28 @@ struct SettingsView: View {
                 }
             }
             .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
+            // Present notifications at the settings window root so they are
+            // above the connection sheet and every tab's local content.
+            .overlay(alignment: .bottom) {
+                if let toast {
+                    Label(toast.message, systemImage: toast.systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(.black.opacity(0.84), in: Capsule(style: .continuous))
+                        .padding(.bottom, 18)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .accessibilityLabel(toast.message)
+                        .allowsHitTesting(false)
+                        .zIndex(1000)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: toast)
     }
 
     private var alertContent: some View {
         toastTrackingContent
-            .alert("确认退出登录？", isPresented: $showsLogoutConfirmation) {
-                Button("取消", role: .cancel) {}
-                Button("退出登录", role: .destructive, action: onLogout)
-            } message: {
-                Text("退出后需要重新授权才能查看用量。")
-            }
             .alert("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
                 Button("取消", role: .cancel) {}
                 Button("重启 Codex", role: .destructive) {
@@ -178,19 +188,6 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(Color.codexInk)
-        .overlay(alignment: .bottom) {
-            if let toast {
-                Label(toast.message, systemImage: toast.systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .frame(height: 38)
-                    .background(.black.opacity(0.84), in: Capsule(style: .continuous))
-                    .padding(.bottom, 18)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .accessibilityLabel(toast.message)
-            }
-        }
     }
 
     private func handleUpdaterPhaseChange(from oldPhase: AppUpdatePhase, to phase: AppUpdatePhase) {
@@ -393,7 +390,6 @@ struct SettingsView: View {
         [
             settings.isCodexlingPetInstalled ? "1" : "0",
             String(settings.availablePets.count),
-            store.isLoggedIn ? "1" : "0",
             String(multiAgentSettings.codexAccounts.count),
             String(multiAgentSettings.deepSeekConnections.count),
             String(describing: updater.phase),
@@ -411,8 +407,7 @@ struct SettingsView: View {
         ) {
             VStack(spacing: 12) {
                 // 添加按钮置顶，避免数据多时需滚动到底部
-                if store.isLoggedIn
-                    || !multiAgentSettings.codexAccounts.isEmpty
+                if !multiAgentSettings.codexAccounts.isEmpty
                     || !multiAgentSettings.deepSeekConnections.isEmpty {
                     Button {
                         showsConnectionSheet = true
@@ -426,28 +421,12 @@ struct SettingsView: View {
                     .foregroundStyle(Color.accentColor)
                 }
 
-                if store.isLoggedIn || !multiAgentSettings.codexAccounts.isEmpty {
+                if !multiAgentSettings.codexAccounts.isEmpty {
                     accountProviderGroup(
                         name: "Codex",
                         detail: "账号",
-                        count: (store.isLoggedIn ? 1 : 0) + multiAgentSettings.codexAccounts.count
+                        count: multiAgentSettings.codexAccounts.count
                     ) {
-                        if store.isLoggedIn {
-                            accountPoolRow(
-                                asset: .codex,
-                                title: store.snapshot.companionAccountName,
-                                subtitle: store.snapshot.accountEmail,
-                                badge: store.snapshot.planName.isEmpty ? "当前 Codex" : store.snapshot.planName,
-                                badgeColor: Color.codexGreen,
-                                actionTitle: "退出"
-                            ) {
-                                showsLogoutConfirmation = true
-                            }
-                            if !multiAgentSettings.codexAccounts.isEmpty {
-                                CodexDivider()
-                            }
-                        }
-
                         ForEach(multiAgentSettings.codexAccounts) { connection in
                             accountPoolRow(
                                 asset: .codex,
@@ -490,8 +469,7 @@ struct SettingsView: View {
                     }
                 }
 
-                if !store.isLoggedIn,
-                   multiAgentSettings.codexAccounts.isEmpty,
+                if multiAgentSettings.codexAccounts.isEmpty,
                    multiAgentSettings.deepSeekConnections.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "person.2.badge.plus")
@@ -622,107 +600,6 @@ struct SettingsView: View {
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
         ).color
-    }
-
-    private var accountCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            accountCardIdentityRow
-                .padding(.horizontal, 16)
-                .frame(minHeight: 62)
-
-            if store.isLoggedIn {
-                CodexDivider()
-                accountCardSubscriptionRow
-                    .padding(.horizontal, 16)
-                    .frame(minHeight: 60)
-            }
-        }
-        .settingsGroupSurface()
-    }
-
-    private var accountCardIdentityRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(store.isLoggedIn && store.snapshot.accountName?.isEmpty == false
-                         ? store.snapshot.accountName!
-                         : "OpenAI 账号")
-                        .font(.system(size: 13, weight: .semibold))
-                    if store.isLoggedIn {
-                        Text(store.snapshot.planName)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Color.codexGreen)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.codexGreen.opacity(0.10), in: Capsule())
-                    }
-                }
-                Text(store.isLoggedIn
-                     ? "\(store.snapshot.accountEmail) · \(store.snapshot.workspaceName)"
-                     : "尚未连接 ChatGPT / Codex")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if store.isLoggedIn {
-                Button {
-                    showsLogoutConfirmation = true
-                } label: {
-                    Text("退出登录")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.codexRed)
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(Color.codexRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.codexRed.opacity(0.18), lineWidth: 0.7))
-                }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-            } else {
-                Text("未登录")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.codexMuted)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.codexMuted.opacity(0.10), in: Capsule())
-            }
-        }
-    }
-
-    private var accountCardSubscriptionRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                if let expiryLine = store.snapshot.subscriptionSettingsExpiryLine {
-                    Text(expiryLine)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(store.snapshot.showsSubscriptionExpiryReminder
-                            ? Color.codexAmber
-                            : Color.codexInk.opacity(0.72))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let renewalLine = store.snapshot.subscriptionSettingsRenewalLine {
-                    Text(renewalLine)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.codexMuted)
-                } else if store.snapshot.subscriptionSettingsExpiryLine == nil {
-                    Text("订阅与账单请在 ChatGPT 官网管理")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.codexMuted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            ChatGPTBillingCompactLink(
-                title: "官方 Billing",
-                fontSize: 11,
-                waveFillsAvailableWidth: false
-            ) {
-                openURL(ChatGPTWebLinks.billingPage)
-            }
-        }
     }
 
     private var agentIntegrationsSection: some View {

@@ -164,7 +164,6 @@ extension CodexUsageSnapshot {
 @MainActor
 final class UsageSnapshotStore {
     private let cache = UsageSnapshotCache()
-    private let tokenStore = CodexOAuthTokenStore()
     private let persistsCache: Bool
     var snapshot: CodexUsageSnapshot
     var isLoggedIn: Bool
@@ -179,7 +178,7 @@ final class UsageSnapshotStore {
     ) {
         self.persistsCache = persistsCache
         self.snapshot = snapshot ?? cache.load() ?? CodexUsageSnapshot.preview
-        self.isLoggedIn = isLoggedIn ?? tokenStore.hasStoredToken()
+        self.isLoggedIn = isLoggedIn ?? false
     }
 
     func markRefreshing(allowsAuthorization: Bool) {
@@ -196,7 +195,6 @@ final class UsageSnapshotStore {
 
     func markDisconnected() {
         isLoggedIn = false
-        tokenStore.clear()
         snapshot.fetchedAt = Date()
         snapshot.refreshState = "已退出登录"
         snapshot.subscriptionActiveUntilISO = nil
@@ -205,7 +203,6 @@ final class UsageSnapshotStore {
 
     func markAuthenticationExpired() {
         isLoggedIn = false
-        tokenStore.clear()
         snapshot.refreshState = "登录已过期，请重新授权"
     }
 

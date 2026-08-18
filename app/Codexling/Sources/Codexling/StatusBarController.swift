@@ -231,6 +231,10 @@ final class StatusBarController: NSObject {
     /// 只有选中账号真正变化时才回写索引；否则刘海面板自身的显示轮播
     /// （「供应商自动轮播」关闭时）不会被数据刷新拉回选中项。
     private var lastSyncedProviderSelectionKey: String?
+    /// 用户在刘海展开面板手动点击供应商后，通知 AppDelegate 重置轮播倒计时。
+    var onProviderSelection: (() -> Void)?
+    /// 刘海面板专用刷新入口；由 AppDelegate 执行统一刷新但不显示 toast。
+    var onRefreshProvider: (() -> Void)?
 
     init(
         store: UsageSnapshotStore,
@@ -493,7 +497,12 @@ final class StatusBarController: NSObject {
             self?.refreshStatusTitle()
         }
         panel.onSelectProvider = { [weak self] connectionID in
-            self?.multiAgentSettings.selectConnection(key: connectionID)
+            guard let self else { return }
+            self.multiAgentSettings.selectConnection(key: connectionID)
+            self.onProviderSelection?()
+        }
+        panel.onRefreshProvider = { [weak self] in
+            self?.onRefreshProvider?()
         }
         panel.onAgentHover = { [weak self] hovering in
             self?.isAgentAreaHovering = hovering
@@ -581,9 +590,6 @@ final class StatusBarController: NSObject {
 
     private func currentProviderTicks() -> [StatusBarProviderTick] {
         var ticksByKey: [String: StatusBarProviderTick] = [:]
-        if store.isLoggedIn, let tick = currentCodexProviderTick() {
-            ticksByKey[tick.id] = tick
-        }
         for account in multiAgentSettings.codexAccounts {
             if let tick = StatusBarProviderTickFactory.codexTick(
                 id: "codex.\(account.id.rawValue.uuidString.lowercased())",
@@ -603,39 +609,6 @@ final class StatusBarController: NSObject {
         return multiAgentSettings.orderedConnectionKeys.compactMap { ticksByKey[$0] }
     }
 
-    private func currentCodexProviderTick() -> StatusBarProviderTick? {
-        let snapshot = store.snapshot
-        guard snapshot.hasShortWindow || snapshot.hasWeeklyWindow else { return nil }
-        let accountName = snapshot.accountName?.isEmpty == false
-            ? snapshot.accountName!
-            : snapshot.workspaceName
-
-        // 主值优先周额度，主窗口（shortWindow）作为副值。标签取自窗口本身，
-        // 因为 Plus 等计划可能只有周额度窗口（primary_window=604800s，无 5h）。
-        var quotaText: String
-        var detailText = ""
-        if snapshot.hasWeeklyWindow {
-            quotaText = "\(statusBarWindowLabel(snapshot.weekly.label)) \(snapshot.weekly.percentText)"
-            if snapshot.hasShortWindow, let short = snapshot.shortWindow {
-                detailText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
-            }
-        } else if let short = snapshot.shortWindow {
-            quotaText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
-        } else {
-            quotaText = "无额度"
-        }
-
-        return StatusBarProviderTick(
-            id: "codex.current",
-            providerName: "Codex",
-            accountName: accountName.isEmpty ? "Codex" : accountName,
-            asset: .codex,
-            quotaText: quotaText,
-            detailText: detailText,
-            quotaHealth: QuotaHealthLevel.from(window: snapshot.primaryWindow, isLoggedIn: store.isLoggedIn)
-        )
-    }
-
     // MARK: - 独立轮播
 
     private func ensureRotationTimers() {
@@ -652,6 +625,12 @@ final class StatusBarController: NSObject {
 
     func refreshProviderCarouselTimer() {
         refreshStatusTitle()
+    }
+
+    func updateNotchProviderRefreshState(_ state: NotchCapsuleViewModel.ProviderRefreshState) {
+        for panel in notchPanels.values {
+            panel.updateProviderRefreshState(state)
+        }
     }
 
     /// 只有全局选中账号发生变化时，才把刘海面板的供应商显示索引同步回选中项

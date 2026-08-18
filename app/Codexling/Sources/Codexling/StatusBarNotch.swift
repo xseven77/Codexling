@@ -164,7 +164,7 @@ extension BrandAssetID {
 // MARK: - 额度 tick 提取
 
 enum StatusBarProviderTickFactory {
-    /// Codex 账号额度：主值优先周额度（语义清晰稳定），5h 作为副值。与「当前 Codex」完全一致。
+    /// Codex 连接额度：主值优先周额度（语义清晰稳定），5h 作为副值。
     static func codexTick(
         id: String,
         label: String,

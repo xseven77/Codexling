@@ -50,10 +50,18 @@ private struct NotchShape: Shape {
 /// 刘海面板的稳定数据模型：rootView 只创建一次，数据变化由观察驱动。
 @Observable
 final class NotchCapsuleViewModel {
+    enum ProviderRefreshState: Equatable {
+        case idle
+        case loading
+        case success
+        case warning
+    }
+
     var agentTicks: [StatusBarAgentTick] = []
     var providerTicks: [StatusBarProviderTick] = []
     var agentIndex = 0
     var providerIndex = 0
+    var providerRefreshState: ProviderRefreshState = .idle
     var activeAgentCount = 0
     var waitingCount = 0
     var isExpanded = false
@@ -70,6 +78,7 @@ final class NotchCapsuleViewModel {
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
     var onSelectProvider: ((String) -> Void)?
+    var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -108,6 +117,7 @@ final class NotchCapsulePanelController {
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
     var onSelectProvider: ((String) -> Void)?
+    var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
@@ -169,6 +179,7 @@ final class NotchCapsulePanelController {
         // self 完全初始化后再注入回调，转发到公开属性。
         viewModel.onSelectAgent = { [weak self] index in self?.onSelectAgent?(index) }
         viewModel.onSelectProvider = { [weak self] connectionID in self?.onSelectProvider?(connectionID) }
+        viewModel.onRefreshProvider = { [weak self] in self?.onRefreshProvider?() }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
@@ -196,6 +207,10 @@ final class NotchCapsulePanelController {
         }
         viewModel.activeAgentCount = activeAgentCount
         viewModel.waitingCount = waitingCount
+    }
+
+    func updateProviderRefreshState(_ state: NotchCapsuleViewModel.ProviderRefreshState) {
+        viewModel.providerRefreshState = state
     }
 
     func show(on screen: NSScreen? = nil) {
@@ -715,38 +730,82 @@ private struct NotchCapsuleView: View {
             }
             Spacer(minLength: 0)
             if !viewModel.providerTicks.isEmpty {
-                GeometryReader { geometry in
-                    let rowOffset = providerRowOffset(viewportWidth: geometry.size.width)
-                    HStack(alignment: .center, spacing: 8) {
-                        ForEach(Array(viewModel.providerTicks.enumerated()), id: \.element.id) { index, tick in
-                            Button(action: { viewModel.onSelectProvider?(tick.id) }) {
-                                StatusBarBrandBadge(asset: tick.asset, size: 24)
-                                    .padding(4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(index == viewModel.providerIndex ? Color.white.opacity(0.15) : Color.white.opacity(0.04))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .strokeBorder(index == viewModel.providerIndex ? Color.white.opacity(0.25) : .clear, lineWidth: 1)
-                                    )
-                                    .overlay(alignment: .bottom) {
-                                        // 用透明度淡入淡出，而不是条件式增删，确保选中指示点跟滚动动画同步。
-                                        Circle().fill(.white)
-                                            .frame(width: 5, height: 5)
-                                            .offset(y: -2)
-                                            .opacity(index == viewModel.providerIndex ? 1 : 0)
+                HStack(alignment: .bottom, spacing: 8) {
+                    GeometryReader { geometry in
+                        let rowOffset = providerRowOffset(viewportWidth: geometry.size.width)
+                        HStack(alignment: .center, spacing: 8) {
+                            ForEach(Array(viewModel.providerTicks.enumerated()), id: \.element.id) { index, tick in
+                                Button {
+                                    // Update the expanded panel immediately. The
+                                    // controller callback also changes the global
+                                    // selected connection, but that refresh can
+                                    // arrive one run-loop later.
+                                    withAnimation(ConnectionLogoRowMotion.selectionAnimation) {
+                                        viewModel.providerIndex = index
                                     }
+                                    viewModel.onSelectProvider?(tick.id)
+                                } label: {
+                                    StatusBarBrandBadge(asset: tick.asset, size: 24)
+                                        .padding(4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(index == viewModel.providerIndex ? Color.white.opacity(0.15) : Color.white.opacity(0.04))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .strokeBorder(index == viewModel.providerIndex ? Color.white.opacity(0.25) : .clear, lineWidth: 1)
+                                        )
+                                        .overlay(alignment: .bottom) {
+                                            Circle().fill(.white)
+                                                .frame(width: 5, height: 5)
+                                                .offset(y: -2)
+                                                .opacity(index == viewModel.providerIndex ? 1 : 0)
+                                        }
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .frame(height: 32)
+                        .offset(x: rowOffset)
+                        .animation(ConnectionLogoRowMotion.selectionAnimation, value: viewModel.providerIndex)
                     }
                     .frame(height: 32)
-                    .offset(x: rowOffset)
-                    .animation(ConnectionLogoRowMotion.selectionAnimation, value: viewModel.providerIndex)
+                    .clipped()
+
+                    Button(action: { viewModel.onRefreshProvider?() }) {
+                        Group {
+                            switch viewModel.providerRefreshState {
+                            case .idle:
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            case .loading:
+                                CodexButtonLoading(tint: .white, size: 12)
+                            case .success:
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.codexGreen)
+                            case .warning:
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.yellow)
+                            }
+                        }
+                        .id(viewModel.providerRefreshState)
+                        .transition(.opacity.combined(with: .scale(scale: 0.78)))
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.20), style: StrokeStyle(lineWidth: 1, dash: [3]))
+                    }
+                    .animation(.easeInOut(duration: 0.22), value: viewModel.providerRefreshState)
+                    .disabled(viewModel.providerRefreshState == .loading)
+                    .help("刷新所有供应商额度")
                 }
                 .frame(height: 32)
-                .clipped()
                 .padding(.top, 16)
             }
         }

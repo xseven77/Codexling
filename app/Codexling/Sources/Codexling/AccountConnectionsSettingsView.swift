@@ -126,7 +126,7 @@ struct AccountConnectionsModalView: View {
                 connectionOption(
                     asset: .codex,
                     title: "添加 Codex 账号",
-                    subtitle: "通过官方 OAuth 授权，与主账号同级",
+                    subtitle: "通过官方 OAuth 授权，与其他供应商账号平等",
                     supportsOAuthCancellation: true
                 ) {
                     resetFields()

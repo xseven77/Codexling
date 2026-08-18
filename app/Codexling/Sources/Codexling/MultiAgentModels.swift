@@ -188,7 +188,7 @@ struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
     let relativeHomeDirectory: String
     var authenticationState: ConnectionAuthenticationState
     var isEnabled: Bool
-    /// 与主「当前 Codex」完全一致的全量快照（额度/账单/重置券）。
+    /// 该 Codex 连接的全量快照（额度/账单/重置券）。
     var usage: CodexUsageSnapshot? = nil
     let createdAt: Date
 }

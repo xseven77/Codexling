@@ -20,7 +20,6 @@ enum AccountCarouselPauseSource: Hashable {
 @MainActor
 @Observable
 final class MultiAgentSettingsStore {
-    static let currentCodexConnectionKey = "codex.current"
     private static let selectedConnectionDefaultsKey = "dashboard.selectedConnection"
     private let hookManager: AgentHookManager
     private let registryStorage: ConnectionRegistryStorage
@@ -59,7 +58,8 @@ final class MultiAgentSettingsStore {
         codexAppServerSupervisor: CodexAppServerSupervisor = CodexAppServerSupervisor(),
         credentialStore: any DeepSeekCredentialStoring = DeepSeekCredentialStore(),
         deepSeekBalanceService: any DeepSeekBalanceFetching = DeepSeekBalanceService(),
-        startsAutomaticRefresh: Bool = true
+        startsAutomaticRefresh: Bool = true,
+        migratesLegacyAccount: Bool = true
     ) {
         self.hookManager = hookManager
         self.registryStorage = registryStorage
@@ -68,10 +68,13 @@ final class MultiAgentSettingsStore {
         self.credentialStore = credentialStore
         self.deepSeekBalanceService = deepSeekBalanceService
         selectedConnectionKey = UserDefaults.standard.string(forKey: Self.selectedConnectionDefaultsKey)
-            ?? Self.currentCodexConnectionKey
+            ?? ""
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
+        if migratesLegacyAccount {
+            migrateLegacyCodexAccountIfNeeded()
+        }
         connectionOrder = registry.connectionOrder
         refresh()
         validateSelectedConnection()
@@ -86,10 +89,6 @@ final class MultiAgentSettingsStore {
 
     func clearLastMessage() {
         lastMessage = nil
-    }
-
-    func selectCurrentCodexConnection() {
-        selectedConnectionKey = Self.currentCodexConnectionKey
     }
 
     func selectCodexConnection(_ connection: CodexAccountConnection) {
@@ -116,19 +115,14 @@ final class MultiAgentSettingsStore {
         onAccountCarouselPauseChanged?(shouldPause)
     }
 
-    func selectNextConnection(includesCurrentCodex: Bool) {
-        let keys = orderedConnectionKeys.filter {
-            includesCurrentCodex || $0 != Self.currentCodexConnectionKey
-        }
-
+    func selectNextConnection() {
+        let keys = orderedConnectionKeys
         guard let nextKey = ConnectionCarousel.nextKey(
             after: selectedConnectionKey,
             availableKeys: keys
         ) else { return }
 
-        if nextKey == Self.currentCodexConnectionKey {
-            selectCurrentCodexConnection()
-        } else if let account = codexAccounts.first(where: { connectionKey(for: $0) == nextKey }) {
+        if let account = codexAccounts.first(where: { connectionKey(for: $0) == nextKey }) {
             selectCodexConnection(account)
         } else if let connection = deepSeekConnections.first(where: { connectionKey(for: $0) == nextKey }) {
             selectDeepSeekConnection(connection)
@@ -415,6 +409,30 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    /// Disconnect the selected connection without privileging any provider.
+    /// Codex credentials are cleared while the connection record remains so it
+    /// can be authenticated again; API-key connections are removed entirely.
+    func disconnectSelectedConnection() {
+        if let account = selectedCodexAccount {
+            do {
+                let tokenStore = CodexOAuthTokenStore(
+                    fileURL: try codexRuntimeManager.oauthTokenURL(for: account)
+                )
+                tokenStore.clear()
+                if let index = codexAccounts.firstIndex(where: { $0.id == account.id }) {
+                    codexAccounts[index].authenticationState = .needsLogin
+                    codexAccounts[index].usage = nil
+                }
+                try saveRegistry()
+                lastMessage = "已退出 (account.label)"
+            } catch {
+                lastMessage = "退出失败：\(error.localizedDescription)"
+            }
+        } else if let connection = selectedDeepSeekConnection {
+            removeDeepSeekConnection(connection)
+        }
+    }
+
     func addDeepSeekConnection(label: String, apiKey: String) async -> Bool {
         guard !isMutatingConnections else { return false }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -531,7 +549,6 @@ final class MultiAgentSettingsStore {
             result.append(key)
         }
 
-        appendIfNeeded(Self.currentCodexConnectionKey)
         codexAccounts.forEach { appendIfNeeded(connectionKey(for: $0)) }
         deepSeekConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
         return result
@@ -586,7 +603,6 @@ final class MultiAgentSettingsStore {
     }
 
     private func connectionExists(_ key: String) -> Bool {
-        if key == Self.currentCodexConnectionKey { return true }
         if key.hasPrefix("codex."),
            let uuid = UUID(uuidString: String(key.dropFirst("codex.".count))) {
             return codexAccounts.contains { $0.id.rawValue == uuid }
@@ -655,10 +671,36 @@ final class MultiAgentSettingsStore {
     }
 
     private func validateSelectedConnection() {
-        let valid = selectedConnectionKey == Self.currentCodexConnectionKey
-            || codexAccounts.contains(where: isSelected)
+        let valid = codexAccounts.contains(where: isSelected)
             || deepSeekConnections.contains(where: isSelected)
-        if !valid { selectedConnectionKey = Self.currentCodexConnectionKey }
+        if !valid { selectedConnectionKey = orderedConnectionKeys.first ?? "" }
+    }
+
+    /// Migrate the legacy single-account token into the same per-connection
+    /// directory used by every other Codex account. The old global token is
+    /// never treated as a special runtime after this point.
+    private func migrateLegacyCodexAccountIfNeeded() {
+        guard let token = CodexOAuthTokenStore().load() else { return }
+        do {
+            let fallback = normalizedLabel(
+                token.displayName ?? token.email ?? "Codex 账号",
+                fallback: "Codex 账号 1"
+            )
+            let connection = try codexRuntimeManager.createAccount(label: fallback)
+            let scopedStore = CodexOAuthTokenStore(
+                fileURL: try codexRuntimeManager.oauthTokenURL(for: connection)
+            )
+            scopedStore.save(token)
+            var migrated = connection
+            migrated.authenticationState = .connected
+            migrated.usage = UsageSnapshotCache().load()
+            codexAccounts.append(migrated)
+            CodexOAuthTokenStore().clear()
+            try? saveRegistry()
+            selectedConnectionKey = connectionKey(for: migrated)
+        } catch {
+            NSLog("Codexling legacy Codex account migration failed: %@", error.localizedDescription)
+        }
     }
 }
 

@@ -14,12 +14,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let frameStore = PetFrameStore()
     private let companionStatsStore = CompanionStatsStore()
     private let updateController = AppUpdateController()
-    private let usageService = CodexUsageService()
     private var actions: UsageActions?
     private var autoRefreshTimer: Timer?
     private var accountCarouselTimer: Timer?
+    /// Invalidates callbacks that were already queued when the previous
+    /// one-shot timer was cancelled (for example, immediately after a logo
+    /// click).
+    private var accountCarouselTimerGeneration = 0
+    private var notchRefreshStateGeneration = 0
     private var codexPetSelectionMonitor: CodexPetSelectionMonitor?
-    private var isRefreshing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -35,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.startAccountCarouselTimer()
         }
         multiAgentSettingsStore.onSelectedConnectionChanged = { [weak self] in
+            self?.syncSelectedCodexProjection()
             self?.startAccountCarouselTimer()
             self?.statusController?.refreshStatusTitle()
         }
@@ -114,6 +118,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.openDetachedWindow(on: screen)
             }
         )
+        statusController?.onProviderSelection = { [weak self] in
+            // Restart even when the user clicks the already-selected logo;
+            // selectedConnectionKey does not change in that case.
+            self?.startAccountCarouselTimer()
+        }
+        statusController?.onRefreshProvider = { [weak self] in
+            guard let self else { return }
+            if self.hasAnyConnection {
+                self.manualRefreshUsage(showsToast: false)
+            } else {
+                self.loginAndFetchUsage()
+            }
+        }
         startAutoRefreshTimer()
         startAccountCarouselTimer()
         activityStore.start()
@@ -134,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         codexPetSelectionMonitor = petSelectionMonitor
         syncCompanionState()
         applyStandalonePetVisibility()
-        migrateLegacyTokenIfNeeded()
+        syncSelectedCodexProjection()
         openDetachedWindow()
         autoRefreshUsage()
     }
@@ -152,53 +169,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.refreshSystemAppearanceIfNeeded()
     }
 
-    private func migrateLegacyTokenIfNeeded() {
-        Task { [weak self] in
-            guard let self else { return }
-            let migrated = await self.usageService.migrateLegacyTokenIfNeeded()
-            guard migrated else { return }
-
-            await MainActor.run {
-                self.snapshotStore.isLoggedIn = true
-                self.statusController?.refreshStatusTitle()
-                self.autoRefreshUsage()
-            }
-        }
-    }
-
     private func autoRefreshUsage() {
-        performUnifiedRefresh(showsToast: false)
+        // 启动和定时刷新不改变刘海面板按钮的结果状态；只有用户主动
+        // 点击刷新时，按钮才显示 loading / success / warning。
+        performUnifiedRefresh(showsToast: false, updatesNotchIndicator: false)
     }
 
-    /// 是否已有任一可刷新的连接（主 Codex 已登录、附加 Codex 账号或 DeepSeek Key）。
+    /// 是否已有任一可刷新的供应商连接。
     /// 只有完全没有连接时才把「刷新」升级成「登录」。
     private var hasAnyConnection: Bool {
-        snapshotStore.isLoggedIn
-            || !multiAgentSettingsStore.codexAccounts.isEmpty
+        !multiAgentSettingsStore.codexAccounts.isEmpty
             || !multiAgentSettingsStore.deepSeekConnections.isEmpty
     }
 
-    private func manualRefreshUsage() {
+    private func manualRefreshUsage(showsToast: Bool = true) {
         // 手动刷新：先重置自动刷新倒计时，等本次刷新全部加载结束后再重新计时。
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
-        performUnifiedRefresh(showsToast: true)
+        performUnifiedRefresh(showsToast: showsToast)
     }
 
-    /// 登录主流程：未登录时拉起 OAuth 授权，成功后 token 落盘并刷新额度。
+    /// OAuth 登录流程：创建一个新的 Codex 连接并刷新额度。
     private func loginAndFetchUsage() {
         Task { [weak self] in
             guard let self else { return }
-            _ = await self.refreshUsage(allowOAuthLogin: true)
-            if self.snapshotStore.isLoggedIn {
-                // 主账号登录成功后切回「当前 Codex」。
-                // 即使额度抓取失败，只要 token 已落盘也视为已登录。
-                self.multiAgentSettingsStore.selectCurrentCodexConnection()
-            }
+            _ = await self.multiAgentSettingsStore.addCodexAccount()
+            self.syncSelectedCodexProjection()
+            self.statusController?.refreshStatusTitle()
         }
     }
 
-    private func performUnifiedRefresh(showsToast: Bool) {
+    private func performUnifiedRefresh(
+        showsToast: Bool,
+        updatesNotchIndicator: Bool = true
+    ) {
         guard !snapshotStore.isUnifiedRefreshing else {
             if showsToast {
                 snapshotStore.showManualRefreshToast(for: RefreshOutcome(failures: ["正在刷新，请稍候"]))
@@ -207,12 +211,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         snapshotStore.setUnifiedRefreshing(true)
+        if updatesNotchIndicator {
+            statusController?.updateNotchProviderRefreshState(.loading)
+        }
         Task { [weak self] in
             guard let self else { return }
-            var outcome = await self.multiAgentSettingsStore.refreshAllConnections()
+            let outcome = await self.multiAgentSettingsStore.refreshAllConnections()
+            self.syncSelectedCodexProjection()
             self.statusController?.refreshStatusTitle()
-            outcome.merge(await self.refreshUsage(allowOAuthLogin: false))
             self.snapshotStore.setUnifiedRefreshing(false)
+            if updatesNotchIndicator {
+                self.finishNotchRefresh(outcome)
+            }
             // 本次刷新（手动或自动）全部结束后，重新开始自动刷新倒计时。
             self.startAutoRefreshTimer()
             if showsToast {
@@ -221,48 +231,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func refreshUsage(allowOAuthLogin: Bool) async -> RefreshOutcome {
-        guard !isRefreshing else { return RefreshOutcome(failures: ["Codex 正在刷新"]) }
-        guard allowOAuthLogin || snapshotStore.isLoggedIn else { return RefreshOutcome() }
-
-        isRefreshing = true
-        snapshotStore.markRefreshing(allowsAuthorization: allowOAuthLogin)
-        statusController?.refreshStatusTitle()
-
-        do {
-            let snapshot = allowOAuthLogin
-                ? try await usageService.connectAndFetch()
-                : try await usageService.fetchWithStoredToken()
-            snapshotStore.apply(snapshot)
-            isRefreshing = false
-            statusController?.refreshStatusTitle()
-            return RefreshOutcome(successCount: 1)
-        } catch {
-            isRefreshing = false
-            if allowOAuthLogin, await usageService.hasStoredToken() {
-                // OAuth 已成功并落盘 token，只是额度抓取失败（如请求超时）→
-                // 视为已登录，仅提示额度获取失败，避免误报成「登录失败」。
-                snapshotStore.markAuthenticated(message: "额度获取失败：\(error.localizedDescription)")
-            } else if !allowOAuthLogin,
-                      let codexError = error as? CodexUsageError,
-                      codexError == .noStoredToken || codexError == .invalidTokenResponse {
-                snapshotStore.markAuthenticationExpired()
-            } else {
-                snapshotStore.markFailed(error.localizedDescription)
+    private func finishNotchRefresh(_ outcome: RefreshOutcome) {
+        notchRefreshStateGeneration &+= 1
+        let generation = notchRefreshStateGeneration
+        if outcome.failures.isEmpty {
+            statusController?.updateNotchProviderRefreshState(.success)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, self.notchRefreshStateGeneration == generation else { return }
+                self.statusController?.updateNotchProviderRefreshState(.idle)
             }
-            statusController?.refreshStatusTitle()
-            return RefreshOutcome(failures: ["Codex：\(error.localizedDescription)"])
+        } else {
+            // A warning is intentionally sticky until the next refresh.
+            statusController?.updateNotchProviderRefreshState(.warning)
         }
     }
 
     private func disconnect() {
-        snapshotStore.markDisconnected()
+        multiAgentSettingsStore.disconnectSelectedConnection()
+        syncSelectedCodexProjection()
         statusController?.refreshStatusTitle()
+    }
 
-        Task { [weak self] in
-            guard let self else { return }
-
-            await self.usageService.disconnect()
+    /// The legacy snapshot store is now only a view projection of the selected
+    /// Codex connection; it is no longer an independent account/auth store.
+    private func syncSelectedCodexProjection() {
+        guard let account = multiAgentSettingsStore.selectedCodexAccount else {
+            snapshotStore.markDisconnected()
+            return
+        }
+        snapshotStore.isLoggedIn = account.authenticationState == .connected
+        if let usage = account.usage {
+            snapshotStore.apply(usage)
+        } else if snapshotStore.snapshot.sourceURL == "preview" {
+            snapshotStore.snapshot = .empty(refreshState: "等待刷新")
         }
     }
 
@@ -398,6 +400,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 开启 → 主窗口与刘海面板同步轮播选中项；关闭 → 仅推进刘海面板自身的
     /// 显示轮播，主窗口选中保持不变。因此开关本身不会停掉刘海面板的轮播。
     private func startAccountCarouselTimer() {
+        accountCarouselTimerGeneration &+= 1
+        let generation = accountCarouselTimerGeneration
         accountCarouselTimer?.invalidate()
         accountCarouselTimer = nil
 
@@ -407,7 +411,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         accountCarouselTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self,
+                      generation == self.accountCarouselTimerGeneration
+                else { return }
+                self.accountCarouselTimer = nil
                 self.advanceAccountCarousel()
             }
         }
@@ -417,9 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsStore.mainWindowProviderCarouselEnabled {
             // 自动轮播开启：推进全局选中账号。选中变化会触发
             // onSelectedConnectionChanged → startAccountCarouselTimer() 重新计时。
-            multiAgentSettingsStore.selectNextConnection(
-                includesCurrentCodex: snapshotStore.isLoggedIn
-            )
+            multiAgentSettingsStore.selectNextConnection()
         } else {
             // 自动轮播关闭：主窗口选中保持不变，仅推进刘海面板自身的账号轮播。
             let advanced = statusController?.advanceNotchProviderCarousel() ?? false

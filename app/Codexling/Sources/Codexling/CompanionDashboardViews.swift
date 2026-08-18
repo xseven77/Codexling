@@ -64,12 +64,15 @@ struct CompanionDashboardView: View {
             officialLinkURL: DashboardProviderLinks.codexUsage,
             syncState: snapshot.refreshState,
             syncedAt: snapshot.fetchedAt,
-            isRefreshing: snapshot.refreshState == "刷新中",
+            // Unified refresh covers every vendor connection. The selected
+            // Codex snapshot is a projection and may not change its own
+            // refreshState, so drive the footer spinner from the shared flag.
+            isRefreshing: store.isUnifiedRefreshing,
             emphasizesAccountLink: snapshot.showsSubscriptionExpiryReminder
         )
     }
 
-    /// 选中的 Codex 快照：附加账号用其 usage，主账号用 store.snapshot。
+    /// 选中的 Codex 快照来自统一连接注册表。
     private var displayedCodexSnapshot: CodexUsageSnapshot {
         if let account = multiAgentSettings.selectedCodexAccount, let usage = account.usage {
             return usage
@@ -77,12 +80,12 @@ struct CompanionDashboardView: View {
         return store.snapshot
     }
 
-    /// 是否处于「已连接 Codex」状态（主账号或附加账号任一）。
+    /// 是否处于「已连接 Codex」状态。
     private var isCodexConnected: Bool {
         if let account = multiAgentSettings.selectedCodexAccount {
             return account.authenticationState == .connected
         }
-        return store.isLoggedIn
+        return false
     }
 
     /// 订阅到期提醒来自当前选中的 Codex 快照，仅在已连接且未切到 DeepSeek 时展示。
@@ -124,27 +127,6 @@ struct CompanionDashboardView: View {
                 self.selectedTaskID = ids.first
             }
         }
-        .overlay(alignment: .bottom) {
-            if let toast = store.refreshToast {
-                Label(
-                    toast.message,
-                    systemImage: toast.isSuccess
-                        ? "checkmark.circle.fill"
-                        : "exclamationmark.triangle.fill"
-                )
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 38)
-                .background(.black.opacity(0.86), in: Capsule(style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, layout == .window ? 60 : 18)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .accessibilityLabel(toast.message)
-                .allowsHitTesting(false)
-            }
-        }
-        .animation(.spring(response: 0.32, dampingFraction: 0.84), value: store.refreshToast)
         .overlay {
             if showsConnectionSheet {
                 ZStack {
@@ -290,7 +272,6 @@ struct CompanionDashboardView: View {
     private var dashboardConnectionBar: some View {
         DashboardConnectionSwitcher(
             snapshot: store.snapshot,
-            showsCurrentCodex: store.isLoggedIn,
             store: multiAgentSettings,
             onAdd: { showsConnectionSheet = true },
             compact: true,
@@ -394,7 +375,6 @@ struct CompanionDashboardView: View {
 
                 DashboardConnectionSwitcher(
                     snapshot: store.snapshot,
-                    showsCurrentCodex: store.isLoggedIn,
                     store: multiAgentSettings,
                     onAdd: { showsConnectionSheet = true },
                     compact: true,
@@ -459,7 +439,6 @@ struct CompanionDashboardView: View {
 
             DashboardConnectionSwitcher(
                 snapshot: store.snapshot,
-                showsCurrentCodex: store.isLoggedIn,
                 store: multiAgentSettings,
                 onAdd: { showsConnectionSheet = true },
                 compact: true,
@@ -621,7 +600,11 @@ struct CompanionDashboardView: View {
 
     /// 未登录 / 授权中的简单状态，不展示额度等账号相关 UI。
     private var notLoggedInSection: some View {
-        let authorizing = store.snapshot.refreshState == "授权中"
+        // OAuth is now owned by the selected-connection store. Keep the
+        // hourglass tied to the real authorization task rather than the
+        // projected usage snapshot (which is empty before the first account
+        // exists).
+        let authorizing = multiAgentSettings.isCodexOAuthInProgress
         return VStack(spacing: 10) {
             Spacer(minLength: 24)
             if authorizing {
@@ -734,7 +717,6 @@ enum ConnectionLogoRowMotion {
 
 private struct DashboardConnectionSwitcher: View {
     let snapshot: CodexUsageSnapshot
-    let showsCurrentCodex: Bool
     @Bindable var store: MultiAgentSettingsStore
     let onAdd: () -> Void
     var compact = false
@@ -747,19 +729,6 @@ private struct DashboardConnectionSwitcher: View {
     /// 用户拖拽后的顺序同时也是自动轮播顺序。
     private var connectionItems: [ConnectionSwitcherItem] {
         store.orderedConnectionKeys.compactMap { key in
-            if key == MultiAgentSettingsStore.currentCodexConnectionKey {
-                guard showsCurrentCodex else { return nil }
-                return ConnectionSwitcherItem(
-                    key: key,
-                    asset: .codex,
-                    title: "Codex",
-                    subtitle: snapshot.companionAccountName,
-                    color: Color.codexGreen,
-                    selected: store.selectedConnectionKey == key,
-                    credential: .account(currentCodexQuotaColor),
-                    action: { store.selectCurrentCodexConnection() }
-                )
-            }
             if let account = store.codexAccounts.first(where: { store.connectionKey(for: $0) == key }) {
                 return ConnectionSwitcherItem(
                     key: key,
@@ -820,7 +789,12 @@ private struct DashboardConnectionSwitcher: View {
                                 y: isDragging ? 5 : 0
                             )
                             .zIndex(isDragging ? 10 : 0)
-                            .gesture(connectionDragGesture(for: item))
+                            // Keep the tap action and reorder gesture
+                            // simultaneous. The exclusive gesture could win
+                            // on a tiny pointer movement in the expanded
+                            // notch window, leaving the logo visually
+                            // clickable but without switching the content.
+                            .simultaneousGesture(connectionDragGesture(for: item))
                         }
                     }
                     .padding(.horizontal, 7)
@@ -1009,13 +983,6 @@ private struct DashboardConnectionSwitcher: View {
         }
     }
 
-    private var currentCodexQuotaColor: Color {
-        QuotaHealthLevel.from(
-            window: snapshot.primaryWindow,
-            isLoggedIn: showsCurrentCodex
-        ).color
-    }
-
     private func codexQuotaColor(for connection: CodexAccountConnection) -> Color {
         guard connection.authenticationState == .connected else { return .codexRed }
         guard let usage = connection.usage else { return .codexMuted }
@@ -1058,7 +1025,7 @@ private struct DeepSeekDashboardCard: View {
     let connection: DeepSeekAPIConnection
     /// 当前这个账号是否正在加载（单独请求，单独显示 loading）。
     let isRefreshingConnection: Bool
-    /// 是否还有任意账号 / 主 Codex 在加载（全部加载完前按钮不可点击）。
+    /// 是否还有任意供应商连接在加载（全部加载完前按钮不可点击）。
     let isRefreshingAny: Bool
     let onRefresh: () -> Void
 

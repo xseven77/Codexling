@@ -15,6 +15,9 @@ struct DetachedUsageWindowView: View {
     var onDashboardMeasuredHeight: (CGFloat, String) -> Void = { _, _ in }
     var onConnectionSwitcherHoverChange: (Bool) -> Void = { _ in }
 
+    @State private var connectionToastMessage: String?
+    @State private var connectionToastGeneration = 0
+
     private var dashboardContentMode: DetachedWindowContentMode {
         .dashboard(isLoggedIn: true, orientation: settings.dashboardOrientation)
     }
@@ -58,6 +61,46 @@ struct DetachedUsageWindowView: View {
             }
         }
         .ignoresSafeArea(.container, edges: [.top, .bottom, .leading, .trailing])
+        // The window root owns all dashboard notifications. This keeps them
+        // above the connection sheet and prevents individual content nodes
+        // from competing on zIndex.
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 8) {
+                if let toast = store.refreshToast {
+                    WindowToastCapsule(
+                        message: toast.message,
+                        systemImage: toast.isSuccess
+                            ? "checkmark.circle.fill"
+                            : "exclamationmark.triangle.fill"
+                    )
+                }
+                if let message = connectionToastMessage {
+                    WindowToastCapsule(
+                        message: message,
+                        systemImage: message.contains("失败")
+                            ? "exclamationmark.triangle.fill"
+                            : "link.badge.plus"
+                    )
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 18)
+            .allowsHitTesting(false)
+            .zIndex(1000)
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.84), value: store.refreshToast)
+        .animation(.easeOut(duration: 0.18), value: connectionToastMessage)
+        .onChange(of: multiAgentSettings.lastMessage) { _, message in
+            guard let message else { return }
+            connectionToastGeneration &+= 1
+            let generation = connectionToastGeneration
+            connectionToastMessage = message
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                guard generation == connectionToastGeneration else { return }
+                connectionToastMessage = nil
+            }
+        }
         .onAppear {
             onContentLayoutChanged(dashboardContentMode)
         }
@@ -81,6 +124,22 @@ struct DetachedUsageWindowView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
+    }
+}
+
+private struct WindowToastCapsule: View {
+    let message: String
+    let systemImage: String
+
+    var body: some View {
+        Label(message, systemImage: systemImage)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 38)
+            .background(.black.opacity(0.86), in: Capsule(style: .continuous))
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityLabel(message)
     }
 }
 

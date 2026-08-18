@@ -850,7 +850,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 multiAgentSettings: multiAgentSettings,
                 updater: updater,
                 layout: .window,
-                onLogout: actions.disconnect,
                 onMeasuredContentHeightChange: { [weak self] height in
                     self?.handleMeasuredContentHeight(height)
                 }
