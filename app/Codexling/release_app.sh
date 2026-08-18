@@ -349,14 +349,15 @@ publish_github_release() {
       fail "上传资产 ${RELEASE_TAG} 失败（已重试 ${PUBLISH_RETRIES} 次）。"
     fi
   else
-    # 新建 Release 时也加 --clobber，避免历史残留同名资产导致 HTTP 400。
+    # 新建 Release 并直接带资产；create 不支持 --clobber（仅 upload 支持），
+    # 新 release 本就不存在历史同名资产，无需覆盖。
     local attempt=0
     while :; do
       attempt=$((attempt + 1))
       if gh release create "${RELEASE_TAG}" "${DMG_PATH}" "${ZIP_PATH}" \
           --repo "${repo}" \
           --title "${APP_NAME} ${RELEASE_VERSION}" \
-          --notes-file "${notes_path}" --clobber; then
+          --notes-file "${notes_path}"; then
         break
       fi
       if [[ "${attempt}" -ge "${PUBLISH_RETRIES}" ]]; then
