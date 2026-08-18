@@ -3220,7 +3220,7 @@ private struct SyncFooterView: View {
         HStack(spacing: isCompact ? 4 : 6) {
             if let syncStateSymbol = context.syncStateSymbol {
                 Image(systemName: syncStateSymbol)
-                    .font(.system(size: isCompact ? 10 : 11))
+                    .font(.system(size: isCompact ? 11 : 13))
                     .foregroundStyle(context.syncColor ?? Color.codexGreen)
             }
             Text(syncText)
@@ -3231,9 +3231,12 @@ private struct SyncFooterView: View {
             Spacer(minLength: 3)
             HStack(spacing: isCompact ? 3 : 5) {
                 if let onRevealKey {
-                    Button(action: onRevealKey) { Image(systemName: "eye") }
-                        .buttonStyle(DashboardIconButtonStyle(helpText: "查看 API Key", isCompact: isCompact))
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                    Button(action: onRevealKey) {
+                        Image(systemName: "eye")
+                            .font(.system(size: isCompact ? 10 : 11))
+                    }
+                    .buttonStyle(DashboardIconButtonStyle(helpText: "查看 API Key", isCompact: isCompact))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 Button { NSWorkspace.shared.open(context.officialLinkURL) } label: {
                     Image(systemName: "arrow.up.right.square")
