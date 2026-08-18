@@ -17,9 +17,19 @@ struct CompanionDashboardView: View {
     var onMeasuredContentHeightChange: (CGFloat, String) -> Void = { _, _ in }
     /// logo 行悬停时通知所属窗口临时关闭背景拖拽。
     var onConnectionSwitcherHoverChange: (Bool) -> Void = { _ in }
+    /// 有遮罩弹窗（modal overlay）浮现时通知窗口，用于压低标题栏按钮层级。
+    var onOverlayPresentationChange: (Bool) -> Void = { _ in }
 
     @State private var selectedTaskID: String?
     @State private var showsConnectionSheet = false
+    @State private var revealedKey: RevealedAPIKey?
+    @State private var revealedKeyCopyGeneration = 0
+    @State private var openCodeModels: [String]?
+
+    /// 是否正有遮罩弹窗浮现（决定标题栏按钮是否让位）。
+    private var presentingOverlay: Bool {
+        showsConnectionSheet || revealedKey != nil || openCodeModels != nil
+    }
 
     private var selectedProviderContext: DashboardProviderContext {
         if let connection = multiAgentSettings.selectedDeepSeekConnection {
@@ -45,6 +55,35 @@ struct CompanionDashboardView: View {
                 syncedAt: connection.balance?.fetchedAt ?? connection.createdAt,
                 isRefreshing: store.isUnifiedRefreshing,
                 emphasizesAccountLink: false
+            )
+        }
+
+        if let connection = multiAgentSettings.selectedOpenCodeConnection {
+            let isConnected = connection.authenticationState == .connected
+            let statusText = connection.plan == .go ? "额度暂不可查询" : "余额暂不可查询"
+            let workspaceLink = connection.workspaceURL.flatMap { URL(string: $0) }
+            let accountLink = workspaceLink ?? DashboardProviderLinks.openCodeConsole
+            return DashboardProviderContext(
+                asset: .openCode,
+                title: connection.label,
+                subtitle: "sk-•••• \(connection.keySuffix)",
+                badge: connection.plan.displayName,
+                badgeColor: .codexGreen,
+                statusText: isConnected ? statusText : "需要检查",
+                statusColor: isConnected ? .codexGreen : .codexAmber,
+                summaryText: connection.plan == .go
+                    ? "Go API · 5h / 周 / 月额度待官方 API"
+                    : "Zen API · 账户余额待官方 API",
+                accountLinkTitle: "OpenCode 页面",
+                accountLinkURL: accountLink,
+                officialLinkHelp: "打开我的 OpenCode 工作间页面",
+                officialLinkURL: accountLink,
+                syncState: isConnected ? "已验证" : "Key 异常",
+                syncedAt: connection.lastValidatedAt ?? connection.createdAt,
+                isRefreshing: store.isUnifiedRefreshing,
+                emphasizesAccountLink: false,
+                syncColor: isConnected ? .codexGreen : nil,
+                syncStateSymbol: isConnected ? "checkmark.shield.fill" : nil
             )
         }
 
@@ -88,15 +127,64 @@ struct CompanionDashboardView: View {
         return false
     }
 
+    private var hasSelectedAPIKeyProvider: Bool {
+        multiAgentSettings.selectedDeepSeekConnection != nil
+            || multiAgentSettings.selectedOpenCodeConnection != nil
+    }
+
     /// 订阅到期提醒来自当前选中的 Codex 快照，仅在已连接且未切到 DeepSeek 时展示。
     private var showsCodexSubscriptionExpiryReminder: Bool {
         guard isCodexConnected else { return false }
-        guard multiAgentSettings.selectedDeepSeekConnection == nil else { return false }
+        guard multiAgentSettings.selectedDeepSeekConnection == nil,
+              multiAgentSettings.selectedOpenCodeConnection == nil else { return false }
         return displayedCodexSnapshot.showsSubscriptionExpiryReminder
     }
 
     private func refreshSelectedProvider() {
         actions.refresh()
+    }
+
+    /// 当前选中供应商是否为本地保存了 API Key 的连接（OpenCode / DeepSeek）。
+    private var selectedAPIKeyConnection: ConnectionID? {
+        if let connection = multiAgentSettings.selectedOpenCodeConnection {
+            return connection.id
+        }
+        if let connection = multiAgentSettings.selectedDeepSeekConnection {
+            return connection.id
+        }
+        return nil
+    }
+
+    /// 存在可查看的 API Key 时返回眼睛按钮动作，否则返回 nil（隐藏按钮）。
+    private var selectedProviderRevealAction: (() -> Void)? {
+        guard selectedAPIKeyConnection != nil else { return nil }
+        return { self.presentSelectedProviderKeyReveal() }
+    }
+
+    /// 点击小眼睛：先系统认证，通过后读取并展示 API Key。流程与设置页一致。
+    private func presentSelectedProviderKeyReveal() {
+        guard let connectionID = selectedAPIKeyConnection else { return }
+        Task { @MainActor in
+            do {
+                try await APIAuthRevealService.authorize()
+                let key = try multiAgentSettings.revealedAPIKey(for: connectionID)
+                revealedKey = RevealedAPIKey(connectionID: connectionID, value: key)
+            } catch {
+                // 取消认证或读取失败都静默关闭；不打扰用户。
+            }
+        }
+    }
+
+    private func copyRevealedKey(_ key: RevealedAPIKey) {
+        revealedKeyCopyGeneration += 1
+        let generation = revealedKeyCopyGeneration
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key.value, forType: .string)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard generation == revealedKeyCopyGeneration else { return }
+            revealedKey = nil
+        }
     }
 
     var body: some View {
@@ -127,6 +215,12 @@ struct CompanionDashboardView: View {
                 self.selectedTaskID = ids.first
             }
         }
+        .onChange(of: presentingOverlay) { _, showing in
+            onOverlayPresentationChange(showing)
+        }
+        .onAppear {
+            onOverlayPresentationChange(presentingOverlay)
+        }
         .overlay {
             if showsConnectionSheet {
                 ZStack {
@@ -143,6 +237,50 @@ struct CompanionDashboardView: View {
                     .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
                 .zIndex(20)
+            }
+        }
+        .overlay {
+            if let revealedKey {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.black.opacity(colorScheme == .dark ? 0.52 : 0.20))
+                        .background(.ultraThinMaterial)
+                        .ignoresSafeArea()
+                        .onTapGesture { self.revealedKey = nil }
+
+                    APIKeyRevealModal(
+                        key: revealedKey,
+                        onCopy: { copyRevealedKey(revealedKey) }
+                    ) {
+                        self.revealedKey = nil
+                    }
+                    .padding(14)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+                }
+                .zIndex(30)
+            }
+        }
+        .overlay {
+            if let openCodeModels {
+                GeometryReader { proxy in
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(colorScheme == .dark ? 0.52 : 0.20))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { self.openCodeModels = nil }
+
+                        OpenCodeModelsModal(
+                            models: openCodeModels
+                        ) {
+                            self.openCodeModels = nil
+                        }
+                        .frame(width: min(380, proxy.size.width - 28))
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    }
+                }
+                .zIndex(31)
             }
         }
         .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
@@ -180,7 +318,7 @@ struct CompanionDashboardView: View {
                     dashboardConnectionBar
 
                     dashboardContentFrame(fillsHeight: true) {
-                        if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
+                        if isCodexConnected, !hasSelectedAPIKeyProvider {
                             CompanionAccountRow(context: selectedProviderContext)
                         }
 
@@ -193,7 +331,8 @@ struct CompanionDashboardView: View {
                             actions: actions,
                             showsDetachedButton: showsDetachedButton,
                             onRefresh: refreshSelectedProvider,
-                            onOpenSettings: onOpenSettings
+                            onOpenSettings: onOpenSettings,
+                            onRevealKey: selectedProviderRevealAction
                         )
                         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
                         .padding(.bottom, 14)
@@ -227,7 +366,7 @@ struct CompanionDashboardView: View {
                 dashboardConnectionBar
 
                 dashboardContentFrame(fillsHeight: true) {
-                    if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
+                    if isCodexConnected, !hasSelectedAPIKeyProvider {
                         CompanionAccountRow(context: selectedProviderContext)
                     }
 
@@ -291,7 +430,8 @@ struct CompanionDashboardView: View {
             actions: actions,
             showsDetachedButton: showsDetachedButton,
             onRefresh: refreshSelectedProvider,
-            onOpenSettings: onOpenSettings
+            onOpenSettings: onOpenSettings,
+            onRevealKey: selectedProviderRevealAction
         )
         .padding(.horizontal, DetachedWindowMetrics.dashboardContentPadding)
         .padding(.bottom, layout == .window ? 14 : 16)
@@ -388,24 +528,30 @@ struct CompanionDashboardView: View {
                 .overlay(alignment: .bottom) { CodexDivider() }
 
                 dashboardContentFrame(fillsHeight: true) {
-                    if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
-                        CompanionAccountRow(context: selectedProviderContext)
-                    }
+                    // 供应商信息区铺满 header 与 footer 之间的剩余空间（带来呼吸感），
+                    // 内容超出后在区域内竖向滚动查看；footer 固定在下方始终可见。
+                    // 滚动区自身不设 padding，各内部部件自带间距与内边距。
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            if isCodexConnected, !hasSelectedAPIKeyProvider {
+                                CompanionAccountRow(context: selectedProviderContext)
+                            }
 
-                    VStack(alignment: .leading, spacing: 0) {
-                        if showsCodexSubscriptionExpiryReminder,
-                           let message = store.snapshot.subscriptionExpiryReminderMessage {
-                            SubscriptionExpiryReminderBanner(message: message)
-                                .padding(.bottom, 12)
+                            if showsCodexSubscriptionExpiryReminder,
+                               let message = store.snapshot.subscriptionExpiryReminderMessage {
+                                SubscriptionExpiryReminderBanner(message: message)
+                                    .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                            }
+                            selectedVerticalConnectionSection
                         }
-                        selectedVerticalConnectionSection
+                        // Codex 页有用户信息行时顶部无需留白；OpenCode / DeepSeek 等
+                        // 无该行的页面恢复顶部 18pt padding。
+                        .padding(.top, (isCodexConnected && !hasSelectedAPIKeyProvider) ? 0 : 18)
                     }
-                    .padding(.top, 18)
-                    .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-                    .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 : 36)
+                    // 在窗口布局里铺满 header 与 footer 之间的剩余空间，footer 固定在底部始终可见。
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scrollIndicators(.never)
                 }
-
-                Spacer(minLength: 0)
 
                 SyncFooterView(
                     context: selectedProviderContext,
@@ -413,7 +559,8 @@ struct CompanionDashboardView: View {
                     showsDetachedButton: showsDetachedButton,
                     isCompact: true,
                     onRefresh: refreshSelectedProvider,
-                    onOpenSettings: onOpenSettings
+                    onOpenSettings: onOpenSettings,
+                    onRevealKey: selectedProviderRevealAction
                 )
                 .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
                 .padding(.bottom, 14)
@@ -451,20 +598,25 @@ struct CompanionDashboardView: View {
             .overlay(alignment: .bottom) { CodexDivider() }
 
             dashboardContentFrame(fillsHeight: false) {
-                if isCodexConnected, multiAgentSettings.selectedDeepSeekConnection == nil {
-                    CompanionAccountRow(context: selectedProviderContext)
-                }
+                // 供应商信息区：测量用自然高度（至少 minHeight），窗口内用 fillsHeight 铺满剩余空间。
+                // 滚动区自身不设 padding，各内部部件自带间距与内边距。
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if isCodexConnected, !hasSelectedAPIKeyProvider {
+                            CompanionAccountRow(context: selectedProviderContext)
+                        }
 
-                VStack(alignment: .leading, spacing: 0) {
-                    if showsCodexSubscriptionExpiryReminder,
-                       let message = store.snapshot.subscriptionExpiryReminderMessage {
-                        SubscriptionExpiryReminderBanner(message: message)
-                            .padding(.bottom, 12)
+                        if showsCodexSubscriptionExpiryReminder,
+                           let message = store.snapshot.subscriptionExpiryReminderMessage {
+                            SubscriptionExpiryReminderBanner(message: message)
+                                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                        }
+                        selectedVerticalConnectionSection
                     }
-                    selectedVerticalConnectionSection
+                    .padding(.top, (isCodexConnected && !hasSelectedAPIKeyProvider) ? 0 : 18)
                 }
-                .padding(.top, 18)
-                .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
+                .frame(minHeight: DetachedWindowMetrics.verticalScrollContentHeight)
+                .scrollIndicators(.never)
 
                 SyncFooterView(
                     context: selectedProviderContext,
@@ -472,10 +624,11 @@ struct CompanionDashboardView: View {
                     showsDetachedButton: showsDetachedButton,
                     isCompact: true,
                     onRefresh: refreshSelectedProvider,
-                    onOpenSettings: onOpenSettings
+                    onOpenSettings: onOpenSettings,
+                    onRevealKey: selectedProviderRevealAction
                 )
                 .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
-                .padding(.bottom, multiAgentSettings.selectedDeepSeekConnection != nil ? 56 + 14 : 36 + 14)
+                .padding(.bottom, 14)
             }
         }
     }
@@ -492,7 +645,8 @@ struct CompanionDashboardView: View {
             showsDetachedButton: showsDetachedButton,
             isCompact: true,
             onRefresh: refreshSelectedProvider,
-            onOpenSettings: onOpenSettings
+            onOpenSettings: onOpenSettings,
+            onRevealKey: selectedProviderRevealAction
         )
         .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
         .padding(.bottom, 14)
@@ -536,6 +690,8 @@ struct CompanionDashboardView: View {
             String(activityStore.snapshot.activeTasks.count),
             multiAgentSettings.selectedDeepSeekConnection?.authenticationState.rawValue ?? "",
             multiAgentSettings.selectedDeepSeekConnection?.balance.map { String(describing: $0.total) } ?? "",
+            multiAgentSettings.selectedOpenCodeConnection?.authenticationState.rawValue ?? "",
+            multiAgentSettings.selectedOpenCodeConnection?.availableModelCount.map(String.init) ?? "",
             multiAgentSettings.selectedCodexAccount?.authenticationState.rawValue ?? "",
         ].joined(separator: "-")
     }
@@ -574,6 +730,12 @@ struct CompanionDashboardView: View {
                 actions.refresh()
             }
             .padding(.top, 18)
+        } else if let connection = multiAgentSettings.selectedOpenCodeConnection {
+            OpenCodeDashboardCard(
+                connection: connection,
+                onShowModels: { openCodeModels = connection.availableModelIDs }
+            )
+            .padding(.top, 18)
         } else if isCodexConnected {
             quotaSection
         } else {
@@ -583,19 +745,28 @@ struct CompanionDashboardView: View {
 
     @ViewBuilder
     private var selectedVerticalConnectionSection: some View {
-        if let connection = multiAgentSettings.selectedDeepSeekConnection {
-            DeepSeekDashboardCard(
-                connection: connection,
-                isRefreshingConnection: multiAgentSettings.isRefreshingConnection(connection),
-                isRefreshingAny: store.isUnifiedRefreshing
-            ) {
-                actions.refresh()
+        // 竖向滚动区的供应商卡片：水平内边距由本部件自己控制。
+        Group {
+            if let connection = multiAgentSettings.selectedDeepSeekConnection {
+                DeepSeekDashboardCard(
+                    connection: connection,
+                    isRefreshingConnection: multiAgentSettings.isRefreshingConnection(connection),
+                    isRefreshingAny: store.isUnifiedRefreshing
+                ) {
+                    actions.refresh()
+                }
+            } else if let connection = multiAgentSettings.selectedOpenCodeConnection {
+                OpenCodeDashboardCard(
+                    connection: connection,
+                    onShowModels: { openCodeModels = connection.availableModelIDs }
+                )
+            } else if isCodexConnected {
+                verticalQuotaSection
+            } else {
+                notLoggedInSection
             }
-        } else if isCodexConnected {
-            verticalQuotaSection
-        } else {
-            notLoggedInSection
         }
+        .padding(.horizontal, DetachedWindowMetrics.verticalContentPadding)
     }
 
     /// 未登录 / 授权中的简单状态，不展示额度等账号相关 UI。
@@ -753,6 +924,18 @@ private struct DashboardConnectionSwitcher: View {
                     action: { store.selectDeepSeekConnection(connection) }
                 )
             }
+            if let connection = store.openCodeConnections.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .openCode,
+                    title: connection.plan.displayName,
+                    subtitle: connection.label,
+                    color: Color.codexGreen,
+                    selected: store.isSelected(connection),
+                    credential: .apiKey(connection.authenticationState == .connected ? .codexGreen : .codexAmber),
+                    action: { store.selectOpenCodeConnection(connection) }
+                )
+            }
             return nil
         }
     }
@@ -837,7 +1020,7 @@ private struct DashboardConnectionSwitcher: View {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .strokeBorder(Color.codexLine, style: StrokeStyle(lineWidth: 1, dash: [3]))
             }
-            .help("添加 Codex 账号或 DeepSeek API Key")
+            .help("添加 Codex 账号或供应商 API Key")
         }
         .frame(height: 50, alignment: .center)
         .accessibilityElement(children: .contain)
@@ -1117,6 +1300,92 @@ private struct DeepSeekDashboardCard: View {
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
         )
+    }
+}
+
+private struct OpenCodeDashboardCard: View {
+    let connection: OpenCodeAPIConnection
+    var onShowModels: (() -> Void)? = nil
+
+    private var isConnected: Bool { connection.authenticationState == .connected }
+    private var isGo: Bool { connection.plan == .go }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(connection.plan.displayName).font(.system(size: 20, weight: .bold))
+                    Text("\(connection.label) · sk-•••• \(connection.keySuffix)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(isConnected ? Color.codexGreen : Color.codexAmber)
+                        .frame(width: 6, height: 6)
+                    Text(isConnected ? "Key 已验证" : "需要检查")
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isConnected ? Color.codexGreen : Color.codexAmber)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background((isConnected ? Color.codexGreen : Color.codexAmber).opacity(0.10), in: Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(isGo ? "订阅额度" : "账户余额")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.codexMuted)
+                    .textCase(.uppercase)
+                Text(isGo ? "暂不可查询" : "暂不可查询")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.top, 6)
+                Text(isGo
+                     ? "官方 Go 额度为 5 小时 / 周 / 月窗口，暂无公开用量 API。"
+                     : "官方暂无面向单个 Zen API Key 的余额查询 API。")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.top, 5)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let count = connection.availableModelCount,
+                   !connection.availableModelIDs.isEmpty {
+                    Button {
+                        onShowModels?()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("已验证，可访问 \(count) 个模型")
+                                .font(.system(size: 9, weight: .medium))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                        .foregroundStyle(Color.codexGreen)
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                    .padding(.top, 6)
+                } else if let count = connection.availableModelCount {
+                    Text("已验证，可访问 \(count) 个模型")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.codexGreen)
+                        .padding(.top, 6)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.codexLine) }
+            .padding(.top, 20)
+
+            Label("API Key 仅存本机，用于验证 \(connection.plan.displayName) 模型可用性；不会读取或推算账户额度。", systemImage: "checkmark.shield")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
+            .padding(.top, 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 6)
     }
 }
 
@@ -2573,19 +2842,20 @@ private struct TaskStackView: View {
     let snapshot: CodexActivitySnapshot
     @Binding var selectedTaskID: String?
     @State private var ripples: [CodexMaterialWaveToken] = []
+    @State private var isHovering = false
+    /// 卡片展示下标：本地状态直接驱动内容与计数，确保轮播时卡片真正切换。
+    @State private var displayIndex = 0
 
     private var tasks: [CodexTaskActivity] { snapshot.activeTasks }
 
     private var displayedTask: CodexTaskActivity? {
-        if let selectedTaskID, let task = tasks.first(where: { $0.id == selectedTaskID }) {
-            return task
-        }
-        return tasks.first
+        guard tasks.indices.contains(displayIndex) else { return tasks.first }
+        return tasks[displayIndex]
     }
 
     private var selectedIndex: Int {
         guard let displayedTask else { return 0 }
-        return tasks.firstIndex(where: { $0.id == displayedTask.id }) ?? 0
+        return tasks.firstIndex(where: { $0.id == displayedTask.id }) ?? displayIndex
     }
 
     var body: some View {
@@ -2610,7 +2880,7 @@ private struct TaskStackView: View {
                 .gesture(
                     codexMaterialTapGesture(in: Self.cardSpace) { location in
                         ripples.spawnWave(at: location)
-                        cycleTask()
+                        openDisplayedTask()
                     }
                 )
                 .accessibilityElement(children: .combine)
@@ -2622,6 +2892,37 @@ private struct TaskStackView: View {
             height: tasks.count > 1 ? Self.cardHeight + Self.stackOffset : Self.cardHeight,
             alignment: .top
         )
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) {
+                isHovering = hovering
+            }
+        }
+        // 外部（侧栏/本地 Agent 控件）选中变化时，跟随其任务 id。
+        .onChange(of: selectedTaskID) { _, newID in
+            guard let newID,
+                  let idx = tasks.firstIndex(where: { $0.id == newID }),
+                  idx != displayIndex else { return }
+            displayIndex = idx
+        }
+        // 自动轮播：与刘海 agent 任务轮播一致，悬停时暂停，恢复时继续。
+        .task(id: tasks.map(\.id)) {
+            guard tasks.count > 1 else { return }
+            // 当前展示的任务已消失时，规整回到显示范围内。
+            if !tasks.indices.contains(displayIndex) {
+                displayIndex = 0
+            }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, !isHovering, tasks.count > 1 else { continue }
+                withAnimation(.easeInOut(duration: 0.32)) {
+                    advanceTask()
+                }
+            }
+        }
     }
 
     private var taskCard: some View {
@@ -2650,15 +2951,19 @@ private struct TaskStackView: View {
                 .font(.system(size: 11))
             }
 
-            Text(displayTitle)
-                .font(.system(size: 15, weight: .semibold))
-                .lineLimit(1)
+            ActivityShimmerText(
+                text: displayTitle,
+                font: .system(size: 15, weight: .semibold),
+                base: .codexInk,
+                highlight: displayState.statusColor,
+                isAnimated: displayedTask != nil && displayState.showsActivityWave
+            )
+            .lineLimit(1)
             Text(displayDetail)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.codexMuted)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
             if !displayMetadata.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(displayMetadata, id: \.value) { item in
@@ -2694,8 +2999,8 @@ private struct TaskStackView: View {
         HStack {
             Text(displayState.activityLabel)
             Spacer()
-            if tasks.count > 1 {
-                Text(selectedIndex + 1 == tasks.count ? "点击回到任务 1" : "点击查看任务 \(selectedIndex + 2)")
+            if let task = displayedTask, AgentTaskOpener.canOpen(task) {
+                Text("点击打开 \(task.agentDisplayName)")
             } else {
                 Text("更新于\(UsageDateFormat.relative(displayUpdatedAt))")
             }
@@ -2743,14 +3048,27 @@ private struct TaskStackView: View {
         ].compactMap { $0 }
     }
     private var accessibilityText: String {
-        tasks.count > 1
-            ? "当前显示任务 \(selectedIndex + 1)，共 \(tasks.count) 个任务；点击查看下一个任务"
+        if let task = displayedTask, AgentTaskOpener.canOpen(task) {
+            return "\(displayState.taskLabel)：\(displayTitle)。点击打开对应 Agent 应用"
+        }
+        return tasks.count > 1
+            ? "当前显示任务 \(selectedIndex + 1)，共 \(tasks.count) 个任务"
             : "\(displayState.taskLabel)：\(displayTitle)"
     }
 
-    private func cycleTask() {
+    /// 点击任务卡：跳转到任务所属的 Agent 应用（与独立 Pet / 刘海一致的共享路由）。
+    private func openDisplayedTask() {
+        guard let task = displayedTask else { return }
+        AgentTaskOpener.open(task)
+    }
+
+    /// 自动轮播推进：切到下一个任务，并同步选中 id 供侧栏等外部控件一致显示。
+    private func advanceTask() {
         guard tasks.count > 1 else { return }
-        selectedTaskID = tasks[(selectedIndex + 1) % tasks.count].id
+        displayIndex = (displayIndex + 1) % tasks.count
+        if tasks.indices.contains(displayIndex) {
+            selectedTaskID = tasks[displayIndex].id
+        }
     }
 }
 
@@ -2841,11 +3159,19 @@ private struct DashboardProviderContext {
     let syncedAt: Date
     let isRefreshing: Bool
     let emphasizesAccountLink: Bool
+    /// 覆盖 footer 同步文案的文字颜色。为 nil 时按 `hasRefreshError`
+    /// 归类（错误红 / 常规 muted）。OpenCode 用它把「已验证」显示为绿色，
+    /// 因为额度暂不可查并不代表连接出错。
+    var syncColor: Color? = nil
+    /// 非 nil 时 footer 直接以图标 + `syncState` 文案展示（例如 OpenCode 的
+    /// 「已验证」），不推导为「上次同步：时间」。
+    var syncStateSymbol: String? = nil
 }
 
 private enum DashboardProviderLinks {
     static let codexUsage = URL(string: "https://chatgpt.com/codex/settings/usage")!
     static let deepSeekUsage = URL(string: "https://platform.deepseek.com/usage")!
+    static let openCodeConsole = URL(string: "https://opencode.ai")!
 }
 
 private struct SyncFooterView: View {
@@ -2855,15 +3181,22 @@ private struct SyncFooterView: View {
     var isCompact = false
     let onRefresh: () -> Void
     let onOpenSettings: () -> Void
+    /// 非 nil 时在 footer 显示「小眼睛查看 API Key」按钮。
+    var onRevealKey: (() -> Void)? = nil
 
     @State private var showQuitConfirmation = false
 
     private var hasRefreshError: Bool {
-        !["成功", "预览数据", "刷新中", "授权中"].contains(context.syncState)
+        !["成功", "已验证", "预览数据", "刷新中", "授权中"].contains(context.syncState)
     }
 
     /// 竖版底部只剩约 90pt，同步文案必须缩写，完整内容留在 tooltip。
     private var syncText: String {
+        // 显式要求内联展示 syncState 文案（如 OpenCode 的「已验证」）时，
+        // 直接返回该文案，不推导为「上次同步：时间」。
+        if context.syncStateSymbol != nil {
+            return context.syncState
+        }
         let lastSuccess = UsageDateFormat.syncTime(context.syncedAt)
         guard isCompact else {
             if context.isRefreshing { return "正在刷新…" }
@@ -2887,13 +3220,23 @@ private struct SyncFooterView: View {
 
     var body: some View {
         HStack(spacing: isCompact ? 4 : 6) {
+            if let syncStateSymbol = context.syncStateSymbol {
+                Image(systemName: syncStateSymbol)
+                    .font(.system(size: isCompact ? 10 : 11))
+                    .foregroundStyle(context.syncColor ?? Color.codexGreen)
+            }
             Text(syncText)
                 .font(.system(size: isCompact ? 10 : 11))
-                .foregroundStyle(hasRefreshError ? Color.codexRed : Color.codexMuted)
+                .foregroundStyle(context.syncColor ?? (hasRefreshError ? Color.codexRed : Color.codexMuted))
                 .lineLimit(1)
                 .help(syncHelpText)
             Spacer(minLength: 3)
             HStack(spacing: isCompact ? 3 : 5) {
+                if let onRevealKey {
+                    Button(action: onRevealKey) { Image(systemName: "eye") }
+                        .buttonStyle(DashboardIconButtonStyle(helpText: "查看 API Key", isCompact: isCompact))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
                 Button { NSWorkspace.shared.open(context.officialLinkURL) } label: {
                     Image(systemName: "arrow.up.right.square")
                 }
@@ -3070,4 +3413,67 @@ extension Color {
         light: (1.000, 1.000, 1.000),
         dark: (0.090, 0.100, 0.105)
     )
+}
+
+// MARK: - OpenCode 模型列表弹窗
+
+private struct OpenCodeModelsModal: View {
+    let models: [String]
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("可访问模型")
+                    .font(.system(size: 15, weight: .bold))
+                Text("\(models.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.codexMuted.opacity(0.10), in: Capsule())
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(models.enumerated()), id: \.element) { index, id in
+                        HStack(spacing: 8) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(width: 22, alignment: .leading)
+                            Text(id)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.codexInk)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 4)
+                    }
+                }
+            }
+            .frame(maxHeight: 340)
+            .scrollIndicators(.never)
+        }
+        .padding(20)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(Color.codexLine)
+        }
+    }
 }

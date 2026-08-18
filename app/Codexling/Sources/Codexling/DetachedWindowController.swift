@@ -43,6 +43,8 @@ enum DetachedWindowMetrics {
     /// 不低于横版高度，避免方向切换期间短暂塌成只显示任务卡的窗口。
     static var verticalProvisionalHeight: CGFloat { loggedInDashboardHeight }
     static let verticalMinHeight: CGFloat = 360
+    /// 竖向布局中「供应商信息区」的固定高度：内容超出后在区域内竖向滚动，footer 固定在区域之外。
+    static let verticalScrollContentHeight: CGFloat = 450
 
     static let maxWidth: CGFloat = 800
     static let minHeight: CGFloat = 420
@@ -264,6 +266,10 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
                 },
                 onConnectionSwitcherHoverChange: { [weak self] hovering in
                     self?.setConnectionSwitcherHovering(hovering)
+                },
+                onOverlayPresentationChange: { [weak self] showing in
+                    // 有遮罩弹窗浮现时隐藏标题栏按钮，避免其层级盖过弹窗。
+                    self?.titleControlsView?.isHidden = showing
                 }
             )
         )

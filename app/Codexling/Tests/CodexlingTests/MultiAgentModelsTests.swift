@@ -119,6 +119,66 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
     }
 
+    func testOpenCodeCredentialFilesArePrivateAndRoundTrip() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-opencode-credentials-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = OpenCodeCredentialStore(credentialsDir: root)
+
+        try store.save(apiKey: "sk-opencode-test", handle: "test-handle")
+
+        XCTAssertEqual(try store.read(handle: "test-handle"), "sk-opencode-test")
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: root.appendingPathComponent("test-handle.json").path
+        )
+        XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
+    }
+
+    @MainActor
+    func testUnifiedRefreshValidatesOpenCodeGoAndZenSeparately() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-opencode-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let goID = ConnectionID(rawValue: UUID())
+        let zenID = ConnectionID(rawValue: UUID())
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(openCodeConnections: [
+            OpenCodeAPIConnection(
+                id: goID, label: "Go", plan: .go, credentialHandle: "go", keySuffix: "1111",
+                authenticationState: .checking, availableModelCount: nil, lastValidatedAt: nil, createdAt: Date()
+            ),
+            OpenCodeAPIConnection(
+                id: zenID, label: "Zen", plan: .zen, credentialHandle: "zen", keySuffix: "2222",
+                authenticationState: .checking, availableModelCount: nil, lastValidatedAt: nil, createdAt: Date()
+            ),
+        ]))
+        let models = TestOpenCodeModelsService()
+        let store = MultiAgentSettingsStore(
+            hookManager: AgentHookManager(homeDirectory: root.appendingPathComponent("home", isDirectory: true)),
+            registryStorage: registry,
+            codexRuntimeManager: CodexAccountRuntimeManager(runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)),
+            credentialStore: TestDeepSeekCredentialStore(values: [:]),
+            deepSeekBalanceService: TestDeepSeekBalanceService(),
+            openCodeCredentialStore: TestOpenCodeCredentialStore(values: ["go": "go-key", "zen": "zen-key"]),
+            openCodeModelsService: models,
+            startsAutomaticRefresh: false,
+            migratesLegacyAccount: false
+        )
+
+        let outcome = await store.refreshAllConnections()
+
+        XCTAssertEqual(outcome.successCount, 2)
+        XCTAssertTrue(outcome.failures.isEmpty)
+        XCTAssertEqual(store.openCodeConnections.map(\.authenticationState), [.connected, .connected])
+        XCTAssertEqual(store.openCodeConnections.map(\.availableModelCount), [19, 56])
+        let validatedPlans = await models.plans()
+        XCTAssertEqual(Set(validatedPlans), Set([.go, .zen]))
+        XCTAssertEqual(store.connectionKey(for: store.openCodeConnections[0]).split(separator: ".").first, "opencode-go")
+        XCTAssertEqual(store.connectionKey(for: store.openCodeConnections[1]).split(separator: ".").first, "opencode-zen")
+    }
+
     func testConnectionRegistryWithoutOrderFieldRemainsDecodable() throws {
         let data = try XCTUnwrap(
             #"{"schemaVersion":2,"codexAccounts":[],"deepSeekConnections":[]}"#.data(using: .utf8)
@@ -126,6 +186,50 @@ final class MultiAgentModelsTests: XCTestCase {
         let snapshot = try JSONDecoder().decode(ConnectionRegistrySnapshot.self, from: data)
 
         XCTAssertTrue(snapshot.connectionOrder.isEmpty)
+    }
+
+    /// 回归：老版本保存的 OpenCode 连接没有 availableModelIDs / workspaceURL，
+    /// 解码不得抛错（否则整个注册表会被当作空数据，导致所有登录被清空）。
+    func testOpenCodeConnectionWithoutNewFieldsRemainsDecodable() throws {
+        let data = try XCTUnwrap(#"""
+        {
+          "codexAccounts": [
+            {
+              "authenticationState": "connected",
+              "createdAt": "2026-08-18T08:08:25Z",
+              "id": {"rawValue": "6DDB6D5B-0543-4BFE-A700-C574049B4174"},
+              "isEnabled": true,
+              "label": "seven x",
+              "relativeHomeDirectory": "6ddb6d5b-0543-4bfe-a700-c574049b4174",
+              "usage": null
+            }
+          ],
+          "openCodeConnections": [
+            {
+              "authenticationState": "connected",
+              "availableModelCount": 26,
+              "createdAt": "2026-08-18T10:22:00Z",
+              "credentialHandle": "abcd",
+              "id": {"rawValue": "25FAD053-E3D0-4E23-AF19-33A4B48CA0C6"},
+              "keySuffix": "1234",
+              "label": "Go",
+              "lastValidatedAt": "2026-08-18T10:22:00Z",
+              "plan": "go"
+            }
+          ],
+          "deepSeekConnections": [],
+          "schemaVersion": 3
+        }
+        """#.data(using: .utf8))
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(ConnectionRegistrySnapshot.self, from: data)
+        XCTAssertEqual(snapshot.codexAccounts.count, 1)
+        XCTAssertEqual(snapshot.openCodeConnections.count, 1)
+        XCTAssertEqual(snapshot.openCodeConnections[0].availableModelCount, 26)
+        XCTAssertTrue(snapshot.openCodeConnections[0].availableModelIDs.isEmpty)
+        XCTAssertNil(snapshot.openCodeConnections[0].workspaceURL)
     }
 
     @MainActor
@@ -471,6 +575,36 @@ private final class TestDeepSeekCredentialStore: DeepSeekCredentialStoring, @unc
     }
 
     func delete(handle: String) throws {}
+}
+
+private final class TestOpenCodeCredentialStore: OpenCodeCredentialStoring, @unchecked Sendable {
+    private let values: [String: String]
+
+    init(values: [String: String]) {
+        self.values = values
+    }
+
+    func save(apiKey: String, handle: String) throws {}
+
+    func read(handle: String) throws -> String {
+        guard let value = values[handle] else { throw DeepSeekCredentialError.missing }
+        return value
+    }
+
+    func delete(handle: String) throws {}
+}
+
+private actor TestOpenCodeModelsService: OpenCodeModelsFetching {
+    private var validatedPlans: [OpenCodePlan] = []
+
+    func validate(apiKey: String, plan: OpenCodePlan) async throws -> [String] {
+        validatedPlans.append(plan)
+        return plan == .go
+            ? (0..<19).map { "go-model-\($0)" }
+            : (0..<56).map { "zen-model-\($0)" }
+    }
+
+    func plans() -> [OpenCodePlan] { validatedPlans }
 }
 
 private actor TestDelayedDeepSeekBalanceService: DeepSeekBalanceFetching {

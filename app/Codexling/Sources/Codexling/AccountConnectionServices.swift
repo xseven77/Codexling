@@ -1,11 +1,12 @@
 import Foundation
 
 struct ConnectionRegistrySnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion = currentSchemaVersion
     var codexAccounts: [CodexAccountConnection] = []
     var deepSeekConnections: [DeepSeekAPIConnection] = []
+    var openCodeConnections: [OpenCodeAPIConnection] = []
     /// 用户拖拽后的连接顺序。旧配置没有此字段时按默认顺序补齐。
     var connectionOrder: [String] = []
 
@@ -13,11 +14,13 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
         schemaVersion: Int = currentSchemaVersion,
         codexAccounts: [CodexAccountConnection] = [],
         deepSeekConnections: [DeepSeekAPIConnection] = [],
+        openCodeConnections: [OpenCodeAPIConnection] = [],
         connectionOrder: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.codexAccounts = codexAccounts
         self.deepSeekConnections = deepSeekConnections
+        self.openCodeConnections = openCodeConnections
         self.connectionOrder = connectionOrder
     }
 
@@ -26,6 +29,7 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
         codexAccounts = try container.decodeIfPresent([CodexAccountConnection].self, forKey: .codexAccounts) ?? []
         deepSeekConnections = try container.decodeIfPresent([DeepSeekAPIConnection].self, forKey: .deepSeekConnections) ?? []
+        openCodeConnections = try container.decodeIfPresent([OpenCodeAPIConnection].self, forKey: .openCodeConnections) ?? []
         connectionOrder = try container.decodeIfPresent([String].self, forKey: .connectionOrder) ?? []
     }
 }
@@ -310,5 +314,100 @@ struct DeepSeekBalanceService: DeepSeekBalanceFetching {
             toppedUp: toppedUp,
             fetchedAt: Date()
         )
+    }
+}
+
+protocol OpenCodeCredentialStoring: Sendable {
+    func save(apiKey: String, handle: String) throws
+    func read(handle: String) throws -> String
+    func delete(handle: String) throws
+}
+
+/// Isolated from the DeepSeek credential directory so a provider migration can
+/// never accidentally make another provider's key addressable by handle.
+struct OpenCodeCredentialStore: OpenCodeCredentialStoring {
+    private let credentialsDir: URL
+
+    init(credentialsDir: URL? = nil) {
+        self.credentialsDir = credentialsDir ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/opencode_credentials")
+    }
+
+    private func fileURL(for handle: String) -> URL {
+        credentialsDir.appendingPathComponent("\(handle).json")
+    }
+
+    func save(apiKey: String, handle: String) throws {
+        try FileManager.default.createDirectory(at: credentialsDir, withIntermediateDirectories: true)
+        let url = fileURL(for: handle)
+        try Data(apiKey.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    func read(handle: String) throws -> String {
+        let data = try Data(contentsOf: fileURL(for: handle))
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw DeepSeekCredentialError.missing
+        }
+        return value
+    }
+
+    func delete(handle: String) throws {
+        let url = fileURL(for: handle)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+}
+
+enum OpenCodeValidationError: LocalizedError {
+    case invalidResponse
+    case unauthorized
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse: "OpenCode 返回了无法识别的模型数据"
+        case .unauthorized: "OpenCode API Key 无效、已失效或不属于此计划"
+        case .unavailable: "OpenCode 服务暂时不可用"
+        }
+    }
+}
+
+protocol OpenCodeModelsFetching: Sendable {
+    /// 校验并返回可访问的模型 id 列表（已按接口返回顺序）。
+    func validate(apiKey: String, plan: OpenCodePlan) async throws -> [String]
+}
+
+/// OpenCode documents distinct model catalog endpoints for Zen and Go. They
+/// are a low-cost validation call and do not infer balance or usage limits.
+struct OpenCodeModelsService: OpenCodeModelsFetching {
+    private struct Response: Decodable {
+        let data: [Model]
+        struct Model: Decodable { let id: String }
+    }
+
+    let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func validate(apiKey: String, plan: OpenCodePlan) async throws -> [String] {
+        let urlString: String = switch plan {
+        case .go: "https://opencode.ai/zen/go/v1/models"
+        case .zen: "https://opencode.ai/zen/v1/models"
+        }
+        var request = URLRequest(url: URL(string: urlString)!)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenCodeValidationError.invalidResponse }
+        if http.statusCode == 401 || http.statusCode == 403 { throw OpenCodeValidationError.unauthorized }
+        if http.statusCode == 429 || http.statusCode >= 500 { throw OpenCodeValidationError.unavailable }
+        guard (200..<300).contains(http.statusCode) else { throw OpenCodeValidationError.invalidResponse }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard !decoded.data.isEmpty else { throw OpenCodeValidationError.unavailable }
+        return decoded.data.map(\.id)
     }
 }

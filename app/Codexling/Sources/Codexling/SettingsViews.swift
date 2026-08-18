@@ -58,6 +58,11 @@ struct SettingsView: View {
     @State private var isRestartingCodex = false
     @State private var pendingAccountRemoval: PendingAccountRemoval?
     @State private var showsConnectionSheet = false
+    @State private var pendingAPIKeyReveal: PendingAPIKeyReveal?
+    @State private var revealedKey: RevealedAPIKey?
+    @State private var revealedKeyCopyGeneration = 0
+    @State private var workspaceEditConnection: OpenCodeAPIConnection?
+    @State private var workspaceEditInput = ""
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @State private var selectedTab: SettingsTab = .accounts
@@ -106,6 +111,56 @@ struct SettingsView: View {
                 }
             }
             .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
+            .overlay {
+                if let revealedKey {
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.25))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { self.revealedKey = nil }
+
+                        APIKeyRevealModal(
+                            key: revealedKey,
+                            onCopy: { copyRevealedKey(revealedKey) }
+                        ) {
+                            self.revealedKey = nil
+                        }
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    }
+                    .zIndex(30)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: revealedKey)
+            .overlay {
+                if let workspaceEditConnection {
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.25))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { self.workspaceEditConnection = nil }
+
+                        APIKeyWorkspaceEditModal(
+                            connection: workspaceEditConnection,
+                            initialValue: workspaceEditInput,
+                            onSave: { value in
+                                multiAgentSettings.updateOpenCodeWorkspaceURL(
+                                    connectionID: workspaceEditConnection.id,
+                                    workspaceURL: value
+                                )
+                                self.workspaceEditConnection = nil
+                            },
+                            onClose: { self.workspaceEditConnection = nil }
+                        )
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    }
+                    .zIndex(35)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: workspaceEditConnection)
             // Present notifications at the settings window root so they are
             // above the connection sheet and every tab's local content.
             .overlay(alignment: .bottom) {
@@ -392,6 +447,7 @@ struct SettingsView: View {
             String(settings.availablePets.count),
             String(multiAgentSettings.codexAccounts.count),
             String(multiAgentSettings.deepSeekConnections.count),
+            String(multiAgentSettings.openCodeConnections.count),
             String(describing: updater.phase),
         ].joined(separator: "-")
     }
@@ -408,7 +464,8 @@ struct SettingsView: View {
             VStack(spacing: 12) {
                 // 添加按钮置顶，避免数据多时需滚动到底部
                 if !multiAgentSettings.codexAccounts.isEmpty
-                    || !multiAgentSettings.deepSeekConnections.isEmpty {
+                    || !multiAgentSettings.deepSeekConnections.isEmpty
+                    || !multiAgentSettings.openCodeConnections.isEmpty {
                     Button {
                         showsConnectionSheet = true
                     } label: {
@@ -461,6 +518,8 @@ struct SettingsView: View {
                                 actionTitle: "删除"
                             ) {
                                 pendingAccountRemoval = .deepSeek(connection)
+                            } onReveal: {
+                                presentAPIKeyReveal(for: connection.id)
                             }
                             if connection.id != multiAgentSettings.deepSeekConnections.last?.id {
                                 CodexDivider()
@@ -469,8 +528,63 @@ struct SettingsView: View {
                     }
                 }
 
+                let openCodeGoConnections = multiAgentSettings.openCodeConnections.filter { $0.plan == .go }
+                if !openCodeGoConnections.isEmpty {
+                    accountProviderGroup(
+                        name: "OpenCode Go",
+                        detail: "API Key",
+                        count: openCodeGoConnections.count
+                    ) {
+                        ForEach(openCodeGoConnections) { connection in
+                            accountPoolRow(
+                                asset: .openCode,
+                                title: connection.label,
+                                subtitle: "sk-•••• \(connection.keySuffix) · 额度暂不可查",
+                                badge: openCodePoolBadge(connection),
+                                badgeColor: openCodePoolColor(connection),
+                                actionTitle: "删除"
+                            ) {
+                                pendingAccountRemoval = .openCode(connection)
+                            } onReveal: {
+                                presentAPIKeyReveal(for: connection.id)
+                            } onEditWorkspace: {
+                                presentWorkspaceEdit(for: connection)
+                            }
+                            if connection.id != openCodeGoConnections.last?.id { CodexDivider() }
+                        }
+                    }
+                }
+
+                let openCodeZenConnections = multiAgentSettings.openCodeConnections.filter { $0.plan == .zen }
+                if !openCodeZenConnections.isEmpty {
+                    accountProviderGroup(
+                        name: "OpenCode Zen",
+                        detail: "API Key",
+                        count: openCodeZenConnections.count
+                    ) {
+                        ForEach(openCodeZenConnections) { connection in
+                            accountPoolRow(
+                                asset: .openCode,
+                                title: connection.label,
+                                subtitle: "sk-•••• \(connection.keySuffix) · 余额暂不可查",
+                                badge: openCodePoolBadge(connection),
+                                badgeColor: openCodePoolColor(connection),
+                                actionTitle: "删除"
+                            ) {
+                                pendingAccountRemoval = .openCode(connection)
+                            } onReveal: {
+                                presentAPIKeyReveal(for: connection.id)
+                            } onEditWorkspace: {
+                                presentWorkspaceEdit(for: connection)
+                            }
+                            if connection.id != openCodeZenConnections.last?.id { CodexDivider() }
+                        }
+                    }
+                }
+
                 if multiAgentSettings.codexAccounts.isEmpty,
-                   multiAgentSettings.deepSeekConnections.isEmpty {
+                   multiAgentSettings.deepSeekConnections.isEmpty,
+                   multiAgentSettings.openCodeConnections.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "person.2.badge.plus")
                             .font(.system(size: 22, weight: .medium))
@@ -534,7 +648,9 @@ struct SettingsView: View {
         badge: String,
         badgeColor: Color,
         actionTitle: String,
-        action: @escaping () -> Void
+        action: @escaping () -> Void,
+        onReveal: (() -> Void)? = nil,
+        onEditWorkspace: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: 12) {
             BrandIconView(asset: asset, size: 38, cornerRadius: 10)
@@ -557,6 +673,32 @@ struct SettingsView: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
+            if let onEditWorkspace {
+                Button("工作间", action: onEditWorkspace)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.codexMuted.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.codexMuted.opacity(0.18), lineWidth: 0.7)
+                    }
+            }
+            if let onReveal {
+                Button("查看", action: onReveal)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.16), lineWidth: 0.7)
+                    }
+            }
             Button(actionTitle, action: action)
                 .buttonStyle(.plain)
                 .font(.system(size: 9.5, weight: .semibold))
@@ -583,10 +725,48 @@ struct SettingsView: View {
                     multiAgentSettings.removeCodexAccount(connection)
                 case let .deepSeek(connection):
                     multiAgentSettings.removeDeepSeekConnection(connection)
+                case let .openCode(connection):
+                    multiAgentSettings.removeOpenCodeConnection(connection)
                 }
             },
             secondaryButton: .cancel(Text("取消"))
         )
+    }
+
+    /// 点击「查看」：先弹系统认证框，通过后再读取并展示 API Key。
+    private func presentAPIKeyReveal(for connectionID: ConnectionID) {
+        guard pendingAPIKeyReveal == nil else { return }
+        pendingAPIKeyReveal = PendingAPIKeyReveal(connectionID: connectionID)
+        Task { @MainActor in
+            defer { pendingAPIKeyReveal = nil }
+            do {
+                try await APIAuthRevealService.authorize()
+                let key = try multiAgentSettings.revealedAPIKey(for: connectionID)
+                revealedKey = RevealedAPIKey(connectionID: connectionID, value: key)
+            } catch {
+                showToast(error.localizedDescription, systemImage: "lock.fill")
+            }
+        }
+    }
+
+    private func copyRevealedKey(_ key: RevealedAPIKey) {
+        revealedKeyCopyGeneration += 1
+        let generation = revealedKeyCopyGeneration
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key.value, forType: .string)
+        showToast("已复制 API Key", systemImage: "doc.on.doc")
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard generation == revealedKeyCopyGeneration else { return }
+            revealedKey = nil
+        }
+    }
+
+    /// 打开工作间地址编辑框。
+    private func presentWorkspaceEdit(for connection: OpenCodeAPIConnection) {
+        guard workspaceEditConnection == nil else { return }
+        workspaceEditInput = connection.workspaceURL ?? ""
+        workspaceEditConnection = connection
     }
 
     private func deepSeekPoolBadge(_ connection: DeepSeekAPIConnection) -> String {
@@ -600,6 +780,14 @@ struct SettingsView: View {
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
         ).color
+    }
+
+    private func openCodePoolBadge(_ connection: OpenCodeAPIConnection) -> String {
+        connection.authenticationState == .connected ? "已验证" : "需要检查"
+    }
+
+    private func openCodePoolColor(_ connection: OpenCodeAPIConnection) -> Color {
+        connection.authenticationState == .connected ? .codexGreen : .codexAmber
     }
 
     private var agentIntegrationsSection: some View {
@@ -1248,11 +1436,13 @@ private struct SettingsToast: Equatable {
 private enum PendingAccountRemoval: Identifiable {
     case codex(CodexAccountConnection)
     case deepSeek(DeepSeekAPIConnection)
+    case openCode(OpenCodeAPIConnection)
 
     var id: ConnectionID {
         switch self {
         case let .codex(connection): connection.id
         case let .deepSeek(connection): connection.id
+        case let .openCode(connection): connection.id
         }
     }
 
@@ -1260,6 +1450,7 @@ private enum PendingAccountRemoval: Identifiable {
         switch self {
         case .codex: "删除 Codex 账号？"
         case .deepSeek: "删除 DeepSeek API Key？"
+        case let .openCode(connection): "删除 \(connection.plan.displayName) API Key？"
         }
     }
 
@@ -1269,8 +1460,21 @@ private enum PendingAccountRemoval: Identifiable {
             "将删除 \(connection.label) 的本地独立运行目录和连接记录，不会删除供应商侧账号。"
         case let .deepSeek(connection):
             "将从本机 Keychain 删除 \(connection.label) 的 API Key 和连接记录，此操作无法撤销。"
+        case let .openCode(connection):
+            "将从本机删除 \(connection.label) 的 API Key 和连接记录，此操作无法撤销。"
         }
     }
+}
+
+/// In-flight reveal request; holds the id while system auth is being evaluated.
+private struct PendingAPIKeyReveal {
+    let connectionID: ConnectionID
+}
+
+/// A successfully revealed API key, shown only after system auth completes.
+struct RevealedAPIKey: Equatable {
+    let connectionID: ConnectionID
+    let value: String
 }
 
 struct ScrollIndicatorHider: NSViewRepresentable {
@@ -1917,5 +2121,155 @@ private func notchDisplayTitle(_ target: NotchDisplayTarget) -> String {
     case .specificScreen(let number):
         return NSScreen.screens.first(where: { $0.screenNumber == number })?.displayName
             ?? "显示器 \(number)"
+    }
+}
+
+// MARK: - API Key 明文展示
+
+struct APIKeyRevealModal: View {
+    let key: RevealedAPIKey
+    var onCopy: () -> Void
+    var onClose: () -> Void
+    @State private var isCopied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("API Key")
+                    .font(.system(size: 15, weight: .bold))
+                Spacer()
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("通过系统认证后展示，请勿泄露给他人。")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
+
+            Text(key.value)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12)
+                .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.codexLine)
+                }
+
+            Button {
+                onCopy()
+                isCopied = true
+            } label: {
+                Label(isCopied ? "已复制" : "复制到剪贴板", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 38)
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
+            .foregroundStyle(Color.codexOnPrimary)
+            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .padding(20)
+        .frame(width: 360)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(Color.codexLine)
+        }
+    }
+}
+
+// MARK: - OpenCode 工作间地址编辑
+
+private struct APIKeyWorkspaceEditModal: View {
+    let connection: OpenCodeAPIConnection
+    let initialValue: String
+    var onSave: (String) -> Void
+    var onClose: () -> Void
+
+    @State private var input = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(connection.plan.displayName) 工作间地址")
+                        .font(.system(size: 15, weight: .bold))
+                    Text(connection.label)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("用于 footer「前往官方页面」深链到你的账号页。留空则退回 opencode.ai 首页。")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
+
+            PlainTextField(text: $input, placeholder: "https://opencode.ai/workspace/wrk_…/go")
+                .frame(height: 36)
+                .padding(.horizontal, 4)
+
+            HStack(spacing: 8) {
+                Button("清空", action: { input = "" })
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                Spacer()
+                Button("取消", action: onClose)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                Button("保存") {
+                    onSave(input)
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.codexOnPrimary)
+                .padding(.horizontal, 16)
+                .frame(height: 34)
+                .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(Color.codexLine)
+        }
+        .onAppear { input = initialValue }
+        .onSubmit { onSave(input) }
     }
 }

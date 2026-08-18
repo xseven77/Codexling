@@ -165,100 +165,6 @@ final class StandalonePetViewModel {
     }
 }
 
-/// 打开任务所属 Agent 的路由：优先打开对应 session，其次打开 Agent 应用；
-/// 都不支持时返回 false（调用方据此去掉点击与小箭头）。
-enum StandalonePetOpenRouter {
-    static func canOpen(_ task: CodexTaskActivity) -> Bool {
-        switch task.agentDisplayName {
-        case "Codex": true
-        default: false
-        }
-    }
-
-    @discardableResult
-    static func open(_ task: CodexTaskActivity) -> Bool {
-        switch task.agentDisplayName {
-        case "Codex":
-            let threadID = task.id
-            NSLog("[StandalonePet] 打开 Codex 任务 id=%@", threadID)
-            if let url = URL(string: "codex://threads/\(threadID)"),
-               NSWorkspace.shared.open(url) {
-                NSLog("[StandalonePet] 深链已打开: %@", url.absoluteString)
-                return true
-            }
-            let opened = openCodexApplication()
-            NSLog("[StandalonePet] 回退打开 ChatGPT.app: %@", opened ? "成功" : "失败")
-            return opened
-        case "Hermes":
-            return openHermes(task)
-        case "Deepseek Harness":
-            return openDeepseekHarness(task)
-        default:
-            return false
-        }
-    }
-
-    private static func openCodexApplication() -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [
-            URL(fileURLWithPath: "/Applications/ChatGPT.app"),
-            URL(fileURLWithPath: "/Applications/Codex.app"),
-            home.appendingPathComponent("Applications/ChatGPT.app"),
-            home.appendingPathComponent("Applications/Codex.app"),
-        ]
-        guard let appURL = candidates.first(where: {
-            FileManager.default.fileExists(atPath: $0.appendingPathComponent("Contents/Info.plist").path)
-        }) else {
-            NSLog("[StandalonePet] 未找到 ChatGPT.app / Codex.app")
-            return false
-        }
-        NSLog("[StandalonePet] 打开应用: %@", appURL.path)
-        return NSWorkspace.shared.open(appURL)
-    }
-
-    /// Hermes：启动 Electron 桌面应用（`hermes desktop`）。会话级深链不受支持，先打开 Agent。
-    /// 暂未启用（canOpen 对 Hermes 返回 false）；待官方会话能力齐全后恢复。
-    private static func openHermes(_ task: CodexTaskActivity) -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [
-            home.appendingPathComponent(".local/bin/hermes").path,
-            "/usr/local/bin/hermes",
-            "/opt/homebrew/bin/hermes",
-        ]
-        guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            NSLog("[StandalonePet] 未找到 hermes 可执行文件")
-            return false
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = ["desktop"]
-        do {
-            try process.run()
-            NSLog("[StandalonePet] 已启动 Hermes 桌面应用")
-            return true
-        } catch {
-            NSLog("[StandalonePet] 启动 Hermes 桌面应用失败: %@", error.localizedDescription)
-            return false
-        }
-    }
-
-    /// Deepseek Harness：打开本地 Web UI 的会话页（`http://127.0.0.1:3080/sessions/<id>`）。
-    /// 暂未启用（canOpen 对 Deepseek Harness 返回 false）；待官方会话能力齐全后恢复。
-    private static func openDeepseekHarness(_ task: CodexTaskActivity) -> Bool {
-        let sessionID = task.id.replacingOccurrences(of: "dsh:", with: "")
-        let base = "http://127.0.0.1:3080"
-        if let url = URL(string: "\(base)/sessions/\(sessionID)"),
-           NSWorkspace.shared.open(url) {
-            NSLog("[StandalonePet] 已打开 DSH 会话页: %@", url.absoluteString)
-            return true
-        }
-        if let root = URL(string: base) {
-            NSLog("[StandalonePet] 回退打开 DSH 首页")
-            return NSWorkspace.shared.open(root)
-        }
-        return false
-    }
-}
 
 /// 独立 Pet 窗口：两个透明置顶的 NSPanel —— 一个是固定尺寸的 Pet，另一个是
 /// 独立定位的任务弹窗。任务弹窗的开关/移动都不会改变 Pet 窗口的位置。
@@ -328,7 +234,7 @@ final class StandalonePetWindowController {
             self?.finishDrag()
         }
         model.onOpenTask = { task in
-            _ = StandalonePetOpenRouter.open(task)
+            _ = AgentTaskOpener.open(task)
         }
         model.onTaskCountChanged = { [weak self] _ in
             self?.relayoutTaskPanel()
@@ -734,7 +640,7 @@ private struct StandaloneTaskPanelView: View {
     @ViewBuilder
     private func taskRow(_ task: CodexTaskActivity) -> some View {
         let row = taskRowContent(task)
-        if StandalonePetOpenRouter.canOpen(task) {
+        if AgentTaskOpener.canOpen(task) {
             Button {
                 model.openTask(task)
             } label: {
@@ -784,7 +690,7 @@ private struct StandaloneTaskPanelView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if StandalonePetOpenRouter.canOpen(task) {
+            if AgentTaskOpener.canOpen(task) {
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color.codexMuted.opacity(0.7))

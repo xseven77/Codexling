@@ -80,6 +80,7 @@ final class NotchCapsuleViewModel {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
 }
@@ -119,6 +120,7 @@ final class NotchCapsulePanelController {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
 
@@ -181,6 +183,7 @@ final class NotchCapsulePanelController {
         viewModel.onSelectProvider = { [weak self] connectionID in self?.onSelectProvider?(connectionID) }
         viewModel.onRefreshProvider = { [weak self] in self?.onRefreshProvider?() }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
+        viewModel.onOpenAgentTask = { [weak self] tick in self?.onOpenAgentTask?(tick) }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
     }
@@ -616,7 +619,8 @@ private struct NotchCapsuleView: View {
                     .foregroundStyle(.white.opacity(0.45))
                     .padding(.top, 8)
                 }
-                if let updatedAt = agent.updatedAt {
+                // 「更新于…」只在相对时间有含义时展示，避免无意义的「更新于刚刚」。
+                if let updatedAt = agent.updatedAt, Date().timeIntervalSince(updatedAt) >= 60 {
                     HStack(spacing: 5) {
                         Text(agent.state.activityLabel)
                         Text("·")
@@ -675,8 +679,15 @@ private struct NotchCapsuleView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.trailing, 24)
+        .contentShape(Rectangle())
         .overlay(alignment: .trailing) { Rectangle().fill(Color.white.opacity(0.10)).frame(width: 0.5) }
         .onHover { hovering in viewModel.onAgentHover?(hovering) }
+        .onTapGesture {
+            // 整块 Agent 任务信息区支持点击进入对应 agent 应用（仅 Codex）。
+            if let agent, AgentTaskOpener.canOpen(agentDisplayName: agent.name) {
+                viewModel.onOpenAgentTask?(agent)
+            }
+        }
     }
 
     private var providerColumn: some View {

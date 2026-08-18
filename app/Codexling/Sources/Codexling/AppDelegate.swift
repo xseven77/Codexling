@@ -180,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasAnyConnection: Bool {
         !multiAgentSettingsStore.codexAccounts.isEmpty
             || !multiAgentSettingsStore.deepSeekConnections.isEmpty
+            || !multiAgentSettingsStore.openCodeConnections.isEmpty
     }
 
     private func manualRefreshUsage(showsToast: Bool = true) {

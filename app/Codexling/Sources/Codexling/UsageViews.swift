@@ -14,6 +14,7 @@ struct DetachedUsageWindowView: View {
     let onOpenSettings: () -> Void
     var onDashboardMeasuredHeight: (CGFloat, String) -> Void = { _, _ in }
     var onConnectionSwitcherHoverChange: (Bool) -> Void = { _ in }
+    var onOverlayPresentationChange: (Bool) -> Void = { _ in }
 
     @State private var connectionToastMessage: String?
     @State private var connectionToastGeneration = 0
@@ -47,7 +48,8 @@ struct DetachedUsageWindowView: View {
             showsDetachedButton: false,
             onOpenSettings: onOpenSettings,
             onMeasuredContentHeightChange: onDashboardMeasuredHeight,
-            onConnectionSwitcherHoverChange: onConnectionSwitcherHoverChange
+            onConnectionSwitcherHoverChange: onConnectionSwitcherHoverChange,
+            onOverlayPresentationChange: onOverlayPresentationChange
         )
         .modifier(DetachedUsageWindowRootFrame(fillsContentView: fillsDashboardContentView))
         .preferredColorScheme(settings.resolvedColorScheme)

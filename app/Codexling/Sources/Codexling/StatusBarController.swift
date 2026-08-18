@@ -504,6 +504,9 @@ final class StatusBarController: NSObject {
         panel.onRefreshProvider = { [weak self] in
             self?.onRefreshProvider?()
         }
+        panel.onOpenAgentTask = { tick in
+            AgentTaskOpener.open(agentDisplayName: tick.name, taskID: tick.taskID)
+        }
         panel.onAgentHover = { [weak self] hovering in
             self?.isAgentAreaHovering = hovering
         }
@@ -583,7 +586,8 @@ final class StatusBarController: NSObject {
                 workspaceName: latest?.workspaceName,
                 gitBranch: latest?.gitBranch,
                 model: latest?.model,
-                updatedAt: latest?.updatedAt ?? status.updatedAt
+                updatedAt: latest?.updatedAt ?? status.updatedAt,
+                taskID: latest?.id
             )
         }
     }
@@ -605,6 +609,10 @@ final class StatusBarController: NSObject {
             if let tick = StatusBarProviderTickFactory.deepSeekTick(connection) {
                 ticksByKey[tick.id] = tick
             }
+        }
+        for connection in multiAgentSettings.openCodeConnections {
+            let tick = StatusBarProviderTickFactory.openCodeTick(connection)
+            ticksByKey[tick.id] = tick
         }
         return multiAgentSettings.orderedConnectionKeys.compactMap { ticksByKey[$0] }
     }
@@ -686,6 +694,7 @@ final class StatusBarController: NSObject {
         guard store.isLoggedIn || activity.keepsHoverPanelVisible else {
             let connectedLabels = multiAgentSettings.deepSeekConnections.map(\.label)
                 + multiAgentSettings.codexAccounts.map(\.label)
+                + multiAgentSettings.openCodeConnections.map(\.label)
             if connectedLabels.isEmpty {
                 hoverPanel.update(
                     title: "尚未连接账号",

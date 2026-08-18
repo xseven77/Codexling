@@ -5,6 +5,7 @@ enum BrandAssetID: String, Sendable {
     case codex
     case hermesAgent = "hermes-agent"
     case deepSeek = "deepseek"
+    case openCode = "opencode"
 
     static func agent(_ id: AgentID) -> BrandAssetID {
         switch id {
@@ -72,7 +73,7 @@ struct BrandIconView: View {
         switch asset {
         case .codex, .hermesAgent:
             size * 0.10
-        case .deepSeek:
+        case .deepSeek, .openCode:
             size * 0.16
         }
     }

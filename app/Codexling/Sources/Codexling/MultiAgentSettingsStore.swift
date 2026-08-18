@@ -27,10 +27,13 @@ final class MultiAgentSettingsStore {
     private let codexAppServerSupervisor: CodexAppServerSupervisor
     private let credentialStore: any DeepSeekCredentialStoring
     private let deepSeekBalanceService: any DeepSeekBalanceFetching
+    private let openCodeCredentialStore: any OpenCodeCredentialStoring
+    private let openCodeModelsService: any OpenCodeModelsFetching
 
     private(set) var integrations: [AgentIntegrationStatus] = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
+    private(set) var openCodeConnections: [OpenCodeAPIConnection] = []
     private(set) var connectionOrder: [String] = []
     private(set) var isMutatingConnections = false
     private(set) var isRefreshingConnections = false
@@ -58,6 +61,8 @@ final class MultiAgentSettingsStore {
         codexAppServerSupervisor: CodexAppServerSupervisor = CodexAppServerSupervisor(),
         credentialStore: any DeepSeekCredentialStoring = DeepSeekCredentialStore(),
         deepSeekBalanceService: any DeepSeekBalanceFetching = DeepSeekBalanceService(),
+        openCodeCredentialStore: any OpenCodeCredentialStoring = OpenCodeCredentialStore(),
+        openCodeModelsService: any OpenCodeModelsFetching = OpenCodeModelsService(),
         startsAutomaticRefresh: Bool = true,
         migratesLegacyAccount: Bool = true
     ) {
@@ -67,11 +72,14 @@ final class MultiAgentSettingsStore {
         self.codexAppServerSupervisor = codexAppServerSupervisor
         self.credentialStore = credentialStore
         self.deepSeekBalanceService = deepSeekBalanceService
+        self.openCodeCredentialStore = openCodeCredentialStore
+        self.openCodeModelsService = openCodeModelsService
         selectedConnectionKey = UserDefaults.standard.string(forKey: Self.selectedConnectionDefaultsKey)
             ?? ""
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
+        openCodeConnections = registry.openCodeConnections
         if migratesLegacyAccount {
             migrateLegacyCodexAccountIfNeeded()
         }
@@ -97,6 +105,10 @@ final class MultiAgentSettingsStore {
 
     func selectDeepSeekConnection(_ connection: DeepSeekAPIConnection) {
         selectedConnectionKey = "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    func selectOpenCodeConnection(_ connection: OpenCodeAPIConnection) {
+        selectedConnectionKey = connectionKey(for: connection)
     }
 
     func setAccountCarouselPaused(
@@ -126,6 +138,8 @@ final class MultiAgentSettingsStore {
             selectCodexConnection(account)
         } else if let connection = deepSeekConnections.first(where: { connectionKey(for: $0) == nextKey }) {
             selectDeepSeekConnection(connection)
+        } else if let connection = openCodeConnections.first(where: { connectionKey(for: $0) == nextKey }) {
+            selectOpenCodeConnection(connection)
         }
     }
 
@@ -137,12 +151,20 @@ final class MultiAgentSettingsStore {
         selectedConnectionKey == "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
     }
 
+    func isSelected(_ connection: OpenCodeAPIConnection) -> Bool {
+        selectedConnectionKey == connectionKey(for: connection)
+    }
+
     var selectedCodexAccount: CodexAccountConnection? {
         codexAccounts.first(where: isSelected)
     }
 
     var selectedDeepSeekConnection: DeepSeekAPIConnection? {
         deepSeekConnections.first(where: isSelected)
+    }
+
+    var selectedOpenCodeConnection: OpenCodeAPIConnection? {
+        openCodeConnections.first(where: isSelected)
     }
 
     @discardableResult
@@ -177,10 +199,12 @@ final class MultiAgentSettingsStore {
 
         let codexAccounts = self.codexAccounts
         let deepSeekConnections = self.deepSeekConnections
+        let openCodeConnections = self.openCodeConnections
         // 先登记全部账号为「加载中」，各自完成后逐个移除，
         // 让界面可以按账号单独展示加载 / 完成状态。
         refreshingConnectionIDs.formUnion(codexAccounts.map(\.id))
         refreshingConnectionIDs.formUnion(deepSeekConnections.map(\.id))
+        refreshingConnectionIDs.formUnion(openCodeConnections.map(\.id))
 
         var tasks: [Task<RefreshOutcome, Never>] = []
         for connection in codexAccounts {
@@ -193,6 +217,14 @@ final class MultiAgentSettingsStore {
         for connection in deepSeekConnections {
             tasks.append(Task { @MainActor [weak self] in
                 let outcome = await self?.refreshDeepSeekConnectionWithoutLock(connection, publishesMessage: false)
+                    ?? RefreshOutcome()
+                self?.refreshingConnectionIDs.remove(connection.id)
+                return outcome
+            })
+        }
+        for connection in openCodeConnections {
+            tasks.append(Task { @MainActor [weak self] in
+                let outcome = await self?.refreshOpenCodeConnectionWithoutLock(connection, publishesMessage: false)
                     ?? RefreshOutcome()
                 self?.refreshingConnectionIDs.remove(connection.id)
                 return outcome
@@ -430,6 +462,8 @@ final class MultiAgentSettingsStore {
             }
         } else if let connection = selectedDeepSeekConnection {
             removeDeepSeekConnection(connection)
+        } else if let connection = selectedOpenCodeConnection {
+            removeOpenCodeConnection(connection)
         }
     }
 
@@ -527,6 +561,147 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    // MARK: - OpenCode Go / Zen
+
+    func addOpenCodeConnection(
+        plan: OpenCodePlan,
+        label: String,
+        apiKey: String,
+        workspaceURL: String? = nil
+    ) async -> Bool {
+        guard !isMutatingConnections else { return false }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedKey.count >= 12 else {
+            lastMessage = "\(plan.displayName) API Key 格式不正确"
+            return false
+        }
+
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        let id = ConnectionID(rawValue: UUID())
+        let handle = id.rawValue.uuidString.lowercased()
+        do {
+            try openCodeCredentialStore.save(apiKey: trimmedKey, handle: handle)
+            let modelIDs = try await openCodeModelsService.validate(apiKey: trimmedKey, plan: plan)
+            let connection = OpenCodeAPIConnection(
+                id: id,
+                label: normalizedLabel(
+                    label,
+                    fallback: "\(plan.displayName) Key \(openCodeConnections.filter { $0.plan == plan }.count + 1)"
+                ),
+                plan: plan,
+                credentialHandle: handle,
+                keySuffix: String(trimmedKey.suffix(4)),
+                authenticationState: .connected,
+                availableModelCount: modelIDs.count,
+                availableModelIDs: modelIDs,
+                lastValidatedAt: Date(),
+                workspaceURL: Self.normalizedWorkspaceURL(workspaceURL),
+                createdAt: Date()
+            )
+            openCodeConnections.append(connection)
+            selectOpenCodeConnection(connection)
+            try saveRegistry()
+            lastMessage = "\(plan.displayName) Key 已验证并安全保存"
+            return true
+        } catch {
+            try? openCodeCredentialStore.delete(handle: handle)
+            lastMessage = "\(plan.displayName) Key 验证失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// 更新某个 OpenCode 连接的工作间页面地址（深链 footer「前往官方页面」）。
+    func updateOpenCodeWorkspaceURL(connectionID: ConnectionID, workspaceURL: String?) {
+        guard let index = openCodeConnections.firstIndex(where: { $0.id == connectionID }) else { return }
+        openCodeConnections[index].workspaceURL = Self.normalizedWorkspaceURL(workspaceURL)
+        try? saveRegistry()
+        lastMessage = "已更新工作间页面地址"
+    }
+
+    /// 规范化：去掉前后空白并按需补 http 前缀，空串归一为 nil。
+    private static func normalizedWorkspaceURL(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if !value.lowercased().hasPrefix("http://"), !value.lowercased().hasPrefix("https://") {
+            value = "https://\(value)"
+        }
+        return value
+    }
+
+    func refreshOpenCodeConnection(_ connection: OpenCodeAPIConnection) async {
+        guard !isRefreshingConnections, !isMutatingConnections else { return }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        refreshingConnectionIDs.insert(connection.id)
+        _ = await refreshOpenCodeConnectionWithoutLock(connection, publishesMessage: true)
+        refreshingConnectionIDs.remove(connection.id)
+    }
+
+    private func refreshOpenCodeConnectionWithoutLock(
+        _ connection: OpenCodeAPIConnection,
+        publishesMessage: Bool
+    ) async -> RefreshOutcome {
+        do {
+            let key = try openCodeCredentialStore.read(handle: connection.credentialHandle)
+            let modelIDs = try await openCodeModelsService.validate(apiKey: key, plan: connection.plan)
+            guard let index = openCodeConnections.firstIndex(where: { $0.id == connection.id }) else {
+                return RefreshOutcome(failures: ["\(connection.label)：连接已不存在"])
+            }
+            openCodeConnections[index].availableModelCount = modelIDs.count
+            openCodeConnections[index].availableModelIDs = modelIDs
+            openCodeConnections[index].lastValidatedAt = Date()
+            openCodeConnections[index].authenticationState = .connected
+            try saveRegistry()
+            if publishesMessage { lastMessage = "\(connection.label) 连接已验证" }
+            return RefreshOutcome(successCount: 1)
+        } catch OpenCodeValidationError.unauthorized {
+            if let index = openCodeConnections.firstIndex(where: { $0.id == connection.id }) {
+                openCodeConnections[index].authenticationState = .invalid
+                try? saveRegistry()
+            }
+            let message = "\(connection.label)：OpenCode API Key 无效、已失效或不属于此计划"
+            if publishesMessage { lastMessage = "刷新失败：OpenCode API Key 无效、已失效或不属于此计划" }
+            return RefreshOutcome(failures: [message])
+        } catch {
+            // 网络、429 和服务端错误不应把一个此前有效的 Key 标记为失效。
+            let message = "\(connection.label)：\(error.localizedDescription)"
+            if publishesMessage { lastMessage = "刷新失败：\(error.localizedDescription)" }
+            return RefreshOutcome(failures: [message])
+        }
+    }
+
+    func removeOpenCodeConnection(_ connection: OpenCodeAPIConnection) {
+        guard !isMutatingConnections else { return }
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        do {
+            try openCodeCredentialStore.delete(handle: connection.credentialHandle)
+            openCodeConnections.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == connectionKey(for: connection) }
+            validateSelectedConnection()
+            try saveRegistry()
+            lastMessage = "已从本机移除 \(connection.label) 的 API Key"
+        } catch {
+            lastMessage = "移除失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - API Key Reveal
+
+    /// 读取某个连接保存的 API Key 明文。调用方必须在调用前完成系统认证；
+    /// 此方法本身不弹认证框，只负责从本机存储解密读取。
+    func revealedAPIKey(for connectionID: ConnectionID) throws -> String {
+        if let connection = deepSeekConnections.first(where: { $0.id == connectionID }) {
+            return try credentialStore.read(handle: connection.credentialHandle)
+        }
+        if let connection = openCodeConnections.first(where: { $0.id == connectionID }) {
+            return try openCodeCredentialStore.read(handle: connection.credentialHandle)
+        }
+        throw APIKeyRevealError.connectionNotFound
+    }
+
     // MARK: - Connection Ordering and Selection
 
     func connectionKey(for account: CodexAccountConnection) -> String {
@@ -535,6 +710,11 @@ final class MultiAgentSettingsStore {
 
     func connectionKey(for connection: DeepSeekAPIConnection) -> String {
         "deepseek.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
+    func connectionKey(for connection: OpenCodeAPIConnection) -> String {
+        let prefix = connection.plan == .go ? "opencode-go" : "opencode-zen"
+        return "\(prefix).\(connection.id.rawValue.uuidString.lowercased())"
     }
 
     /// 已保存的顺序优先；新连接追加到末尾，已删除或重复的 key 会被忽略。
@@ -551,6 +731,7 @@ final class MultiAgentSettingsStore {
 
         codexAccounts.forEach { appendIfNeeded(connectionKey(for: $0)) }
         deepSeekConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
+        openCodeConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
         return result
     }
 
@@ -602,6 +783,10 @@ final class MultiAgentSettingsStore {
         refreshingConnectionIDs.contains(connection.id)
     }
 
+    func isRefreshingConnection(_ connection: OpenCodeAPIConnection) -> Bool {
+        refreshingConnectionIDs.contains(connection.id)
+    }
+
     private func connectionExists(_ key: String) -> Bool {
         if key.hasPrefix("codex."),
            let uuid = UUID(uuidString: String(key.dropFirst("codex.".count))) {
@@ -610,6 +795,12 @@ final class MultiAgentSettingsStore {
         if key.hasPrefix("deepseek."),
            let uuid = UUID(uuidString: String(key.dropFirst("deepseek.".count))) {
             return deepSeekConnections.contains { $0.id.rawValue == uuid }
+        }
+        for prefix in ["opencode-go.", "opencode-zen."] {
+            if key.hasPrefix(prefix),
+               let uuid = UUID(uuidString: String(key.dropFirst(prefix.count))) {
+                return openCodeConnections.contains { $0.id.rawValue == uuid }
+            }
         }
         return false
     }
@@ -624,6 +815,7 @@ final class MultiAgentSettingsStore {
         try registryStorage.save(ConnectionRegistrySnapshot(
             codexAccounts: codexAccounts,
             deepSeekConnections: deepSeekConnections,
+            openCodeConnections: openCodeConnections,
             connectionOrder: orderedConnectionKeys
         ))
     }
@@ -673,6 +865,7 @@ final class MultiAgentSettingsStore {
     private func validateSelectedConnection() {
         let valid = codexAccounts.contains(where: isSelected)
             || deepSeekConnections.contains(where: isSelected)
+            || openCodeConnections.contains(where: isSelected)
         if !valid { selectedConnectionKey = orderedConnectionKeys.first ?? "" }
     }
 

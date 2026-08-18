@@ -12,7 +12,7 @@ OpenCode 供应商应拆成两个独立的连接类型：
 
 两者都通过 API Key 接入，但账本不同，不能合并成一个“OpenCode 额度”字段。
 
-登录和连接管理可直接复用当前 DeepSeek API Key 连接模型；额度查询不能依赖 OpenCode 通用 Provider API，必须为 Go 和 Zen 分别设计适配器。
+登录和连接管理可直接复用当前 API Key 连接模型；额度查询不能依赖 OpenCode 通用 Provider API，必须为 Go 和 Zen 分别设计适配器。
 
 ## 2. 官方登录模型
 
@@ -38,7 +38,7 @@ type: api
 
 这说明 Codexling 可以支持两种入口：
 
-1. 用户在 Codexling 中输入 API Key，由 Codexling 保存为自己的供应商连接。
+1. 用户在 Codexling 中输入 API Key，由 Codexling 保存为自己的供应商连接（独立目录、权限 `0600`）。
 2. 可选地读取 OpenCode 的 `auth.json`，导入已存在的 `opencode-go` 或 `opencode-zen` API Key。
 
 第二种入口必须提供明确的导入确认，不能静默复制凭证。
@@ -94,6 +94,13 @@ OpenCode Go 官方公开的额度窗口为：
 ### 4.2 官方 API 现状
 
 OpenCode Server 的 `/provider`、`/provider/auth` 和 `/auth/:id` 只解决 Provider 列表和凭证管理，不提供 Go 账户的 rolling、weekly、monthly 使用量接口。
+
+当前已落地的 Key 验证使用官方模型目录端点，而非推理请求：
+
+- Go：`GET https://opencode.ai/zen/go/v1/models`
+- Zen：`GET https://opencode.ai/zen/v1/models`
+
+请求携带 `Authorization: Bearer <API_KEY>`。响应只用于确认 Key / 计划可用性并记录可用模型数；绝不由此推算余额或用量。
 
 OpenCode 官方 issue 明确记录：Go 额度目前只能从 Web Dashboard 查看，尚无公开的程序化额度 API。该 issue 中提出的 `/api/v1/usage/plan` 是功能建议，不是已确认可用的接口。
 
@@ -167,7 +174,7 @@ Zen 第一阶段不做：
 | 统一轮播 | 支持 | 支持 |
 | 状态栏健康色 | 基于连接状态 | 基于连接状态 |
 
-当前项目中最合适的落点是将 DeepSeek 的 API Key 连接抽象成通用 `APIKeyProviderConnection`，而不是把 Go/Zen 塞进 Codex OAuth 账号模型。
+当前实现将 Go / Zen 落为独立的 `OpenCodeAPIConnection`，与 Codex OAuth 和 DeepSeek Key 平等参与选择、删除、轮播及统一刷新；它保留计划字段，避免把两种账本混成单一 API Key 卡片。后续可再将 DeepSeek 与 OpenCode 提炼到通用 `APIKeyProviderConnection`，但不得牺牲 Go / Zen 的独立额度语义。
 
 ## 7. 推荐落地顺序
 

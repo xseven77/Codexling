@@ -13,6 +13,8 @@ private enum ConnectionPickerTab: String, CaseIterable, Identifiable {
 private enum ConnectionModalPage {
     case picker
     case deepSeek
+    case openCodeGo
+    case openCodeZen
 }
 
 /// Dashboard-owned modal matching the connection picker demonstrated by the
@@ -27,6 +29,7 @@ struct AccountConnectionsModalView: View {
     @State private var page: ConnectionModalPage = .picker
     @State private var label = ""
     @State private var apiKey = ""
+    @State private var workspaceInput = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -37,6 +40,10 @@ struct AccountConnectionsModalView: View {
                 pickerContent
             case .deepSeek:
                 deepSeekForm
+            case .openCodeGo:
+                openCodeForm(plan: .go)
+            case .openCodeZen:
+                openCodeForm(plan: .zen)
             }
         }
         .padding(16)
@@ -86,6 +93,8 @@ struct AccountConnectionsModalView: View {
         switch page {
         case .picker: "添加账号或 API Key"
         case .deepSeek: "添加 DeepSeek API Key"
+        case .openCodeGo: "添加 OpenCode Go API Key"
+        case .openCodeZen: "添加 OpenCode Zen API Key"
         }
     }
 
@@ -93,6 +102,8 @@ struct AccountConnectionsModalView: View {
         switch page {
         case .picker: "同一种 Agent 可以登录多个账号。"
         case .deepSeek: "Key 只存入 macOS Keychain，用于官方余额接口。"
+        case .openCodeGo: "Key 只存本机，用于验证 Go 模型可用性；额度暂不可查询。"
+        case .openCodeZen: "Key 只存本机，用于验证 Zen 模型可用性；余额暂不可查询。"
         }
     }
 
@@ -144,6 +155,22 @@ struct AccountConnectionsModalView: View {
                 ) {
                     resetFields()
                     page = .deepSeek
+                }
+                connectionOption(
+                    asset: .openCode,
+                    title: "添加 OpenCode Go API Key",
+                    subtitle: "验证 Go 订阅模型；5h / 周 / 月额度暂不可查"
+                ) {
+                    resetFields()
+                    page = .openCodeGo
+                }
+                connectionOption(
+                    asset: .openCode,
+                    title: "添加 OpenCode Zen API Key",
+                    subtitle: "验证 Zen 模型；账户余额暂不可查"
+                ) {
+                    resetFields()
+                    page = .openCodeZen
                 }
             }
             if let message = store.lastMessage,
@@ -257,9 +284,75 @@ struct AccountConnectionsModalView: View {
         .padding(.top, 16)
     }
 
+    private func openCodeForm(plan: OpenCodePlan) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PlainTextField(text: $label, placeholder: "连接名称")
+                .frame(height: 28)
+            PlainTextField(text: $apiKey, placeholder: "sk-…")
+                .frame(height: 28)
+            PlainTextField(text: $workspaceInput, placeholder: "工作间地址（可选） https://opencode.ai/workspace/wrk_.../go")
+                .frame(height: 28)
+            Text(plan == .go
+                 ? "会验证 Go 模型目录；官方尚未提供 5h / 周 / 月用量 API。"
+                 : "会验证 Zen 模型目录；官方尚未提供单 Key 余额 API。")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("工作间地址用于 footer「前往官方页面」深链到你的账号页（含 wrk_ 的 workspace 地址）。")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            if let message = store.lastMessage, message.contains("失败") {
+                Text(message)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.red)
+            }
+            HStack(spacing: 8) {
+                Button { page = .picker } label: {
+                    Text("返回")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                Spacer()
+                Button {
+                    Task {
+                        if await store.addOpenCodeConnection(
+                            plan: plan,
+                            label: label,
+                            apiKey: apiKey,
+                            workspaceURL: workspaceInput
+                        ) {
+                            onClose()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if store.isMutatingConnections {
+                            CodexButtonLoading(tint: .white, size: 10)
+                        } else {
+                            Text("验证并添加")
+                        }
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 15)
+                    .frame(height: 32)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
+                .disabled(store.isMutatingConnections || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(.top, 16)
+    }
+
     private func resetFields() {
         label = ""
         apiKey = ""
+        workspaceInput = ""
     }
 
     private func closeModal() {
@@ -335,7 +428,7 @@ private struct CancelCodexOAuthButton: View {
 
 /// 用原生 NSTextField 包装的文本输入框。Overlay/modal 中没有标准
 /// Edit 菜单时，编辑快捷键需要直接路由给 NSTextField 的 Field Editor。
-private struct PlainTextField: NSViewRepresentable {
+struct PlainTextField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
 

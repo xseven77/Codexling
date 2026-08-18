@@ -96,6 +96,8 @@ struct StatusBarAgentTick: Identifiable, Equatable, Sendable {
     var gitBranch: String?
     var model: String?
     var updatedAt: Date?
+    /// 对应的底层任务 id（用于深链打开该 Agent 的会话）。为空时退回打开 Agent 应用。
+    var taskID: String?
 
     var statusText: String {
         state.statusBarText ?? (state == .unavailable ? "不可用" : "空闲")
@@ -217,6 +219,30 @@ enum StatusBarProviderTickFactory {
             quotaText: text,
             detailText: "API Key",
             quotaHealth: quotaHealth
+        )
+    }
+
+    /// OpenCode 提供独立的 Go / Zen 模型目录端点，可用于验证 Key；但目前
+    /// 没有稳定的公开账户额度接口，因此明确展示为不可查询而非虚构数值。
+    static func openCodeTick(_ connection: OpenCodeAPIConnection) -> StatusBarProviderTick {
+        let connected = connection.authenticationState == .connected
+        let quotaText = connection.plan == .go ? "额度暂不可查" : "余额暂不可查"
+        let detailText: String
+        switch connection.plan {
+        case .go: detailText = "5h / 周 / 月额度"
+        case .zen:
+            detailText = connection.availableModelCount.map { "已验证 \($0) 个模型" } ?? "API Key"
+        }
+        return StatusBarProviderTick(
+            id: connection.plan == .go
+                ? "opencode-go.\(connection.id.rawValue.uuidString.lowercased())"
+                : "opencode-zen.\(connection.id.rawValue.uuidString.lowercased())",
+            providerName: connection.plan.displayName,
+            accountName: connection.label,
+            asset: .openCode,
+            quotaText: quotaText,
+            detailText: detailText,
+            quotaHealth: connected ? .green : .yellow
         )
     }
 }

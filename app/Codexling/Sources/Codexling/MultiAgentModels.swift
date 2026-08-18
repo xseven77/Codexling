@@ -91,6 +91,8 @@ struct ProviderID: RawRepresentable, Hashable, Codable, Sendable {
     let rawValue: String
 
     static let deepSeek = Self(rawValue: "provider.deepseek")
+    static let openCodeGo = Self(rawValue: "provider.opencode-go")
+    static let openCodeZen = Self(rawValue: "provider.opencode-zen")
 }
 
 struct ProviderConnection: Identifiable, Hashable, Codable, Sendable {
@@ -201,6 +203,113 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
     var authenticationState: ConnectionAuthenticationState
     var balance: ProviderBalanceSnapshot?
     let createdAt: Date
+}
+
+/// OpenCode Go 与 Zen 使用相同的 API Key 凭据机制，但它们是两种不同的
+/// 计费产品：Go 是订阅额度窗口，Zen 是按余额/消费计费。因此不能合并成
+/// 单一的 "OpenCode" 连接或复用同一张额度卡片。
+enum OpenCodePlan: String, CaseIterable, Hashable, Codable, Sendable {
+    case go
+    case zen
+
+    var providerID: ProviderID {
+        switch self {
+        case .go: .openCodeGo
+        case .zen: .openCodeZen
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .go: "OpenCode Go"
+        case .zen: "OpenCode Zen"
+        }
+    }
+}
+
+/// A validated OpenCode API-key connection. `availableModelCount` is only a
+/// capability check; neither OpenCode Go usage windows nor Zen account balance
+/// currently have a stable public API, so this record deliberately stores no
+/// inferred quota value.
+struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
+    let id: ConnectionID
+    var label: String
+    let plan: OpenCodePlan
+    let credentialHandle: String
+    let keySuffix: String
+    var authenticationState: ConnectionAuthenticationState
+    var availableModelCount: Int?
+    /// 可访问的模型 id 列表（用于「点击查看模型列表」弹窗）。
+    var availableModelIDs: [String] = []
+    var lastValidatedAt: Date?
+    /// 用户账号的 OpenCode 工作间页面地址（例如 .../workspace/wrk_xxx/go）。
+    /// 用于 footer「前往官方页面」深链到账号页面；为空时退回通用控制台。
+    var workspaceURL: String?
+    let createdAt: Date
+
+    /// Custom Codable so `availableModelIDs` decodes as `[]` when absent
+    /// (older saved registries), preventing a decode failure that would wipe
+    /// the whole connection registry on load.
+    enum CodingKeys: String, CodingKey {
+        case id, label, plan, credentialHandle, keySuffix, authenticationState
+        case availableModelCount, availableModelIDs, lastValidatedAt, workspaceURL, createdAt
+    }
+
+    init(
+        id: ConnectionID,
+        label: String,
+        plan: OpenCodePlan,
+        credentialHandle: String,
+        keySuffix: String,
+        authenticationState: ConnectionAuthenticationState,
+        availableModelCount: Int? = nil,
+        availableModelIDs: [String] = [],
+        lastValidatedAt: Date? = nil,
+        workspaceURL: String? = nil,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.label = label
+        self.plan = plan
+        self.credentialHandle = credentialHandle
+        self.keySuffix = keySuffix
+        self.authenticationState = authenticationState
+        self.availableModelCount = availableModelCount
+        self.availableModelIDs = availableModelIDs
+        self.lastValidatedAt = lastValidatedAt
+        self.workspaceURL = workspaceURL
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ConnectionID.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        plan = try container.decode(OpenCodePlan.self, forKey: .plan)
+        credentialHandle = try container.decode(String.self, forKey: .credentialHandle)
+        keySuffix = try container.decode(String.self, forKey: .keySuffix)
+        authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        availableModelCount = try container.decodeIfPresent(Int.self, forKey: .availableModelCount)
+        availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
+        lastValidatedAt = try container.decodeIfPresent(Date.self, forKey: .lastValidatedAt)
+        workspaceURL = try container.decodeIfPresent(String.self, forKey: .workspaceURL)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(plan, forKey: .plan)
+        try container.encode(credentialHandle, forKey: .credentialHandle)
+        try container.encode(keySuffix, forKey: .keySuffix)
+        try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encodeIfPresent(availableModelCount, forKey: .availableModelCount)
+        try container.encode(availableModelIDs, forKey: .availableModelIDs)
+        try container.encodeIfPresent(lastValidatedAt, forKey: .lastValidatedAt)
+        try container.encodeIfPresent(workspaceURL, forKey: .workspaceURL)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 enum AgentActivityState: String, CaseIterable, Codable, Sendable {
