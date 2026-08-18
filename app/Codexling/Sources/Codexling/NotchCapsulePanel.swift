@@ -684,11 +684,14 @@ private struct NotchCapsuleView: View {
         .onHover { hovering in
             // 悬停时暂停 Agent 轮播；移开后由宿主重新进入轮播流程。
             viewModel.onAgentHover?(hovering)
-            guard let agent, AgentTaskOpener.canOpen(agentDisplayName: agent.name) else { return }
+            guard let agent, AgentTaskOpener.canOpen(agentDisplayName: agent.name) else {
+                if !hovering { NSCursor.arrow.set() }
+                return
+            }
             if hovering {
-                NSCursor.pointingHand.push()
+                NSCursor.pointingHand.set()
             } else {
-                NSCursor.pop()
+                NSCursor.arrow.set()
             }
         }
         .onTapGesture {
