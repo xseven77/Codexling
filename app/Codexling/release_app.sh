@@ -11,6 +11,8 @@ CURRENT_BRANCH="$(git -C "${REPO_ROOT}" branch --show-current)"
 ORIGINAL_VERSION=""
 ORIGINAL_BUILD=""
 ROLLBACK_VERSION_ON_FAILURE="false"
+PUBLISH_ONLY="false"
+PUBLISH_RETRIES="${PUBLISH_RETRIES:-3}"
 
 cd "${ROOT_DIR}"
 
@@ -300,6 +302,26 @@ EOF
   printf "%s" "${notes_path}"
 }
 
+# 尝试上传资产，带重试；一次性提交 DMG+ZIP。返回 0 表示全部到位。
+upload_assets_with_retry() {
+  local release_tag="$1" repo="$2" attempt=0
+
+  while :; do
+    attempt=$((attempt + 1))
+    if gh release upload "${release_tag}" "${DMG_PATH}" "${ZIP_PATH}" \
+        --repo "${repo}" --clobber >/dev/null 2>&1; then
+      info "资产上传成功"
+      return 0
+    fi
+
+    if [[ "${attempt}" -ge "${PUBLISH_RETRIES}" ]]; then
+      return 1
+    fi
+    warn "资产上传失败（第 ${attempt}/${PUBLISH_RETRIES} 次），重试中…"
+    sleep 2
+  done
+}
+
 publish_github_release() {
   local repo notes_path release_exists
   repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -321,24 +343,110 @@ publish_github_release() {
     gh release edit "${RELEASE_TAG}" \
       --repo "${repo}" \
       --title "${APP_NAME} ${RELEASE_VERSION}" \
-      --notes-file "${notes_path}"
-    gh release upload "${RELEASE_TAG}" "${DMG_PATH}" "${ZIP_PATH}" --repo "${repo}" --clobber
+      --notes-file "${notes_path}" || fail "更新 Release 信息失败。"
+
+    if ! upload_assets_with_retry "${RELEASE_TAG}" "${repo}"; then
+      fail "上传资产 ${RELEASE_TAG} 失败（已重试 ${PUBLISH_RETRIES} 次）。"
+    fi
   else
-    gh release create "${RELEASE_TAG}" "${DMG_PATH}" "${ZIP_PATH}" \
-      --repo "${repo}" \
-      --title "${APP_NAME} ${RELEASE_VERSION}" \
-      --notes-file "${notes_path}"
+    # 新建 Release 时也加 --clobber，避免历史残留同名资产导致 HTTP 400。
+    local attempt=0
+    while :; do
+      attempt=$((attempt + 1))
+      if gh release create "${RELEASE_TAG}" "${DMG_PATH}" "${ZIP_PATH}" \
+          --repo "${repo}" \
+          --title "${APP_NAME} ${RELEASE_VERSION}" \
+          --notes-file "${notes_path}" --clobber; then
+        break
+      fi
+      if [[ "${attempt}" -ge "${PUBLISH_RETRIES}" ]]; then
+        fail "创建/上传 Release ${RELEASE_TAG} 失败（已重试 ${PUBLISH_RETRIES} 次）。"
+      fi
+      warn "创建 Release 失败（第 ${attempt}/${PUBLISH_RETRIES} 次），重试中…"
+      sleep 2
+    done
   fi
 
   gh release view "${RELEASE_TAG}" --repo "${repo}" --web
 }
 
+usage() {
+  cat <<EOF
+用法：$(basename "$0") [选项]
+
+发布 ${APP_NAME} 到 GitHub Release。
+
+选项：
+  --publish-only, -p   只发布当前已构建的产物到 GitHub Release，跳过打包/验证/提交/推送。
+                       版本号取当前 Info.plist，直接上传 dist/ 下的 .zip 与 .dmg。
+  --help, -h           显示本帮助。
+
+环境变量：
+  PUBLISH_RETRIES      上传失败时的重试次数（默认 3）。
+
+默认（不带参数）执行完整发布流程：
+  授权 -> 版本号 -> 打包 -> DMG 验证 -> 提交版本号 -> 推送分支/tag -> 发布 Release。
+EOF
+}
+
+parse_args() {
+  [[ "$#" -eq 0 ]] && return 0
+  for arg in "$@"; do
+    case "$arg" in
+      --publish-only|-p)
+        PUBLISH_ONLY="true"
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        fail "未知参数：${arg}（可用 --publish-only / --help）"
+        ;;
+    esac
+  done
+}
+
+# 只发布当前已构建的产物到 GitHub Release。
+# 不重新打包、不验证 DMG、不提交、不推送分支/tag。
+publish_only() {
+  local current_version current_build
+  current_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${PLIST_PATH}")"
+  current_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${PLIST_PATH}")"
+
+  RELEASE_VERSION="${current_version}"
+  RELEASE_BUILD="${current_build}"
+  RELEASE_TAG="v${current_version}"
+  ZIP_PATH="${DIST_DIR}/${APP_NAME}-${current_version}.zip"
+  DMG_PATH="${DIST_DIR}/${APP_NAME}-${current_version}.dmg"
+
+  info "发布模式：仅上传当前已构建产物（版本 ${RELEASE_VERSION}，build ${RELEASE_BUILD}）"
+
+  [[ -f "${DMG_PATH}" ]] || fail "未找到 DMG：${DMG_PATH}。请先运行 package_app.sh 或完整发布流程生成产物。"
+  [[ -s "${DMG_PATH}" ]] || fail "DMG 为空文件：${DMG_PATH}"
+  [[ -f "${ZIP_PATH}" ]] || fail "未找到 ZIP：${ZIP_PATH}。请先运行 package_app.sh 或完整发布流程生成产物。"
+  [[ -s "${ZIP_PATH}" ]] || fail "ZIP 为空文件：${ZIP_PATH}"
+
+  publish_github_release
+
+  info "发布完成：${RELEASE_TAG}"
+}
+
 main() {
+  parse_args "$@"
+
   require_command swift "请先安装 Xcode Command Line Tools。"
   require_command hdiutil "hdiutil 是 macOS 自带命令，请在 macOS 上运行。"
   require_command codesign "codesign 是 macOS 自带命令，请在 macOS 上运行。"
+  require_command gh "请先安装 GitHub CLI：brew install gh"
 
   ensure_github_auth
+
+  if [[ "${PUBLISH_ONLY}" == "true" ]]; then
+    publish_only
+    return 0
+  fi
+
   require_branch
   require_clean_worktree
   read_release_inputs
