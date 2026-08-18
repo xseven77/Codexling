@@ -1380,6 +1380,7 @@ private struct OpenCodeDashboardCard: View {
                     .padding(.top, 14)
 
                 // 前往官方页面查看额度，点击行为与 footer「前往官方页面」一致。
+                // 顶部/底部留白对称，让链接文字在分隔线与卡片底 border 之间居中。
                 HStack {
                     Spacer(minLength: 0)
                     Button {
@@ -1395,9 +1396,12 @@ private struct OpenCodeDashboardCard: View {
                     }
                     .buttonStyle(.plain)
                 }
+                .padding(.top, 16)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
+            .padding(.top, 20)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
             .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(Color.codexLine) }
             .padding(.top, 20)
