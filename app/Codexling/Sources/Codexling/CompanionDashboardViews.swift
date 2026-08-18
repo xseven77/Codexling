@@ -1386,9 +1386,31 @@ private struct OpenCodeDashboardCard: View {
                 .font(.system(size: 9))
                 .foregroundStyle(Color.codexMuted)
             .padding(.top, 12)
+
+            // 前往官方页面查看额度，点击行为与 footer「前往官方页面」一致。
+            Button {
+                openWorkspacePage()
+            } label: {
+                HStack(spacing: 4) {
+                    Text("前往官方页面查看额度")
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 6)
+    }
+
+    /// 与 footer「前往官方页面」一致：优先打开保存的工作间地址，未填则退回 opencode.ai。
+    private func openWorkspacePage() {
+        let url = connection.workspaceURL.flatMap { URL(string: $0) }
+            ?? DashboardProviderLinks.openCodeConsole
+        NSWorkspace.shared.open(url)
     }
 }
 
