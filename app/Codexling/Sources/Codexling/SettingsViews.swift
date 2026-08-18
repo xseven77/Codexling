@@ -113,21 +113,24 @@ struct SettingsView: View {
             .animation(.easeOut(duration: 0.18), value: showsConnectionSheet)
             .overlay {
                 if let revealedKey {
-                    ZStack {
-                        Rectangle()
-                            .fill(Color.black.opacity(0.25))
-                            .background(.ultraThinMaterial)
-                            .ignoresSafeArea()
-                            .onTapGesture { self.revealedKey = nil }
+                    GeometryReader { proxy in
+                        ZStack {
+                            Rectangle()
+                                .fill(Color.black.opacity(0.25))
+                                .background(.ultraThinMaterial)
+                                .ignoresSafeArea()
+                                .onTapGesture { self.revealedKey = nil }
 
-                        APIKeyRevealModal(
-                            key: revealedKey,
-                            onCopy: { copyRevealedKey(revealedKey) }
-                        ) {
-                            self.revealedKey = nil
+                            APIKeyRevealModal(
+                                key: revealedKey,
+                                onCopy: { copyRevealedKey(revealedKey) }
+                            ) {
+                                self.revealedKey = nil
+                            }
+                            .frame(width: min(360, proxy.size.width - 28))
+                            .padding(14)
+                            .transition(.scale(scale: 0.96).combined(with: .opacity))
                         }
-                        .padding(14)
-                        .transition(.scale(scale: 0.96).combined(with: .opacity))
                     }
                     .zIndex(30)
                 }
@@ -2184,7 +2187,6 @@ struct APIKeyRevealModal: View {
             .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .padding(20)
-        .frame(width: 360)
         .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22)

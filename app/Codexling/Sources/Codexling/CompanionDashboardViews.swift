@@ -241,21 +241,24 @@ struct CompanionDashboardView: View {
         }
         .overlay {
             if let revealedKey {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.black.opacity(colorScheme == .dark ? 0.52 : 0.20))
-                        .background(.ultraThinMaterial)
-                        .ignoresSafeArea()
-                        .onTapGesture { self.revealedKey = nil }
+                GeometryReader { proxy in
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(colorScheme == .dark ? 0.52 : 0.20))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { self.revealedKey = nil }
 
-                    APIKeyRevealModal(
-                        key: revealedKey,
-                        onCopy: { copyRevealedKey(revealedKey) }
-                    ) {
-                        self.revealedKey = nil
+                        APIKeyRevealModal(
+                            key: revealedKey,
+                            onCopy: { copyRevealedKey(revealedKey) }
+                        ) {
+                            self.revealedKey = nil
+                        }
+                        .frame(width: min(360, proxy.size.width - 28))
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
                     }
-                    .padding(14)
-                    .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
                 .zIndex(30)
             }
