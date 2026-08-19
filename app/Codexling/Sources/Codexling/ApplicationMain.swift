@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 
 @main
 enum CodexlingMain {
@@ -13,11 +14,28 @@ enum CodexlingMain {
             return
         }
 
+        registerBundledFonts()
+
         let application = NSApplication.shared
         let delegate = AppDelegate()
         appDelegate = delegate
         application.delegate = delegate
         application.run()
+    }
+
+    /// Registers fonts bundled under `Contents/Resources/Fonts` so SwiftUI
+    /// `Font.custom` can reference them by family name.
+    @MainActor
+    private static func registerBundledFonts() {
+        guard let fontsURL = Bundle.main.resourceURL?
+            .appendingPathComponent("Fonts", isDirectory: true) else { return }
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: fontsURL, includingPropertiesForKeys: nil
+        ) else { return }
+        for file in files where file.pathExtension.lowercased() == "ttf" {
+            var error: Unmanaged<CFError>?
+            CTFontManagerRegisterFontsForURL(file as CFURL, .process, &error)
+        }
     }
 
     @MainActor

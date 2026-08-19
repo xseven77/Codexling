@@ -11,9 +11,9 @@ private enum SettingsLayoutMetrics {
 }
 
 private enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
     case accounts
     case agents
-    case general
     case pet
 
     var id: String { rawValue }
@@ -65,7 +65,7 @@ struct SettingsView: View {
     @State private var workspaceEditInput = ""
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
-    @State private var selectedTab: SettingsTab = .accounts
+    @State private var selectedTab: SettingsTab = .general
     @State private var showsStickySettingsTitle = false
     @Environment(\.openURL) private var openURL
 
@@ -378,7 +378,16 @@ struct SettingsView: View {
             Text("Codexling \(updater.currentVersion)")
                 .font(.system(size: 9))
                 .foregroundStyle(Color.codexMuted.opacity(0.82))
-                .padding(.horizontal, 10)
+
+            Button {
+                openURL(URL(string: "https://qiizo.cn")!)
+            } label: {
+                Text("QintelliZØ.")
+                    .font(.custom("Carter One", size: 11))
+                    .foregroundStyle(Color.codexMuted.opacity(0.82))
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 6))
+            .padding(.top, 2)
         }
         .padding(.horizontal, 10)
         .padding(.top, SettingsLayoutMetrics.sidebarTopInset)
