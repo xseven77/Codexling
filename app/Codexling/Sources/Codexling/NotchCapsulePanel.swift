@@ -80,6 +80,7 @@ final class NotchCapsuleViewModel {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
     var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
@@ -121,6 +122,7 @@ final class NotchCapsulePanelController {
     var onSelectProvider: ((String) -> Void)?
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
     var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
@@ -185,6 +187,7 @@ final class NotchCapsulePanelController {
         viewModel.onSelectProvider = { [weak self] connectionID in self?.onSelectProvider?(connectionID) }
         viewModel.onRefreshProvider = { [weak self] in self?.onRefreshProvider?() }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
+        viewModel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
         viewModel.onQuit = { [weak self] in self?.onQuit?() }
         viewModel.onOpenAgentTask = { [weak self] tick in self?.onOpenAgentTask?(tick) }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
@@ -863,6 +866,19 @@ private struct NotchCapsuleView: View {
         HStack {
             HStack(spacing: 12) {
                 Button {
+                    viewModel.onOpenSettings?()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开设置")
+                .help("打开设置")
+
+                Button {
                     showQuitConfirmation = true
                 } label: {
                     Image(systemName: "power")
@@ -874,14 +890,6 @@ private struct NotchCapsuleView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭软件")
                 .help("关闭软件")
-
-                Text("\(viewModel.activeAgentCount) 个本地任务")
-                if viewModel.waitingCount > 0 {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color.orange).frame(width: 6, height: 6)
-                        Text("\(viewModel.waitingCount) 个待确认")
-                    }
-                }
             }
             Spacer()
             HStack(spacing: 10) {

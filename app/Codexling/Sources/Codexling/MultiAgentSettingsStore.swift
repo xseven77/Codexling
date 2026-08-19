@@ -503,6 +503,52 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    /// 更新某个 DeepSeek 连接的名称 / API Key：复用原 handle 覆盖保存，
+    /// 重新验证余额并同步 Keychain 与注册表。
+    func updateDeepSeekConnection(
+        connectionID: ConnectionID,
+        label: String,
+        apiKey: String
+    ) async -> Bool {
+        guard !isMutatingConnections else { return false }
+        guard let connection = deepSeekConnections.first(where: { $0.id == connectionID }) else {
+            lastMessage = "连接不存在，无法编辑"
+            return false
+        }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedKey.count >= 12 else {
+            lastMessage = "DeepSeek API Key 格式不正确"
+            return false
+        }
+
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        do {
+            let oldKey = try credentialStore.read(handle: connection.credentialHandle)
+            try credentialStore.save(apiKey: trimmedKey, handle: connection.credentialHandle)
+            do {
+                let balance = try await deepSeekBalanceService.fetch(apiKey: trimmedKey, connectionID: connection.id)
+                guard let index = deepSeekConnections.firstIndex(where: { $0.id == connectionID }) else {
+                    return false
+                }
+                deepSeekConnections[index].label = normalizedLabel(label, fallback: connection.label)
+                deepSeekConnections[index].keySuffix = String(trimmedKey.suffix(4))
+                deepSeekConnections[index].authenticationState = .connected
+                deepSeekConnections[index].balance = balance
+                try saveRegistry()
+                lastMessage = "DeepSeek Key 已更新并验证"
+                return true
+            } catch {
+                // 验证失败（含网络错误）时回滚旧 Key，避免破坏原本可用的凭据。
+                try? credentialStore.save(apiKey: oldKey, handle: connection.credentialHandle)
+                throw error
+            }
+        } catch {
+            lastMessage = "DeepSeek Key 更新失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
     func refreshDeepSeekConnection(_ connection: DeepSeekAPIConnection) async {
         guard !isRefreshingConnections, !isMutatingConnections else { return }
         isRefreshingConnections = true
@@ -611,12 +657,54 @@ final class MultiAgentSettingsStore {
         }
     }
 
-    /// 更新某个 OpenCode 连接的工作间页面地址（深链 footer「前往官方页面」）。
-    func updateOpenCodeWorkspaceURL(connectionID: ConnectionID, workspaceURL: String?) {
-        guard let index = openCodeConnections.firstIndex(where: { $0.id == connectionID }) else { return }
-        openCodeConnections[index].workspaceURL = Self.normalizedWorkspaceURL(workspaceURL)
-        try? saveRegistry()
-        lastMessage = "已更新工作间页面地址"
+    /// 更新某个 OpenCode 连接的名称 / API Key / 工作间地址：复用原 handle
+    /// 覆盖保存，并重新验证模型目录；失败时回滚旧 Key。
+    func updateOpenCodeConnection(
+        connectionID: ConnectionID,
+        label: String,
+        apiKey: String,
+        workspaceURL: String?
+    ) async -> Bool {
+        guard !isMutatingConnections else { return false }
+        guard let connection = openCodeConnections.first(where: { $0.id == connectionID }) else {
+            lastMessage = "连接不存在，无法编辑"
+            return false
+        }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedKey.count >= 12 else {
+            lastMessage = "\(connection.plan.displayName) API Key 格式不正确"
+            return false
+        }
+
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        do {
+            let oldKey = try openCodeCredentialStore.read(handle: connection.credentialHandle)
+            try openCodeCredentialStore.save(apiKey: trimmedKey, handle: connection.credentialHandle)
+            do {
+                let modelIDs = try await openCodeModelsService.validate(apiKey: trimmedKey, plan: connection.plan)
+                guard let index = openCodeConnections.firstIndex(where: { $0.id == connectionID }) else {
+                    return false
+                }
+                openCodeConnections[index].label = normalizedLabel(label, fallback: connection.label)
+                openCodeConnections[index].keySuffix = String(trimmedKey.suffix(4))
+                openCodeConnections[index].authenticationState = .connected
+                openCodeConnections[index].availableModelCount = modelIDs.count
+                openCodeConnections[index].availableModelIDs = modelIDs
+                openCodeConnections[index].lastValidatedAt = Date()
+                openCodeConnections[index].workspaceURL = Self.normalizedWorkspaceURL(workspaceURL)
+                try saveRegistry()
+                lastMessage = "\(connection.plan.displayName) Key 已更新并验证"
+                return true
+            } catch {
+                // 验证失败（含网络错误）时回滚旧 Key，避免破坏原本可用的凭据。
+                try? openCodeCredentialStore.save(apiKey: oldKey, handle: connection.credentialHandle)
+                throw error
+            }
+        } catch {
+            lastMessage = "\(connection.plan.displayName) Key 更新失败：\(error.localizedDescription)"
+            return false
+        }
     }
 
     /// 规范化：去掉前后空白并按需补 http 前缀，空串归一为 nil。

@@ -236,6 +236,8 @@ final class StatusBarController: NSObject {
     var onProviderSelection: (() -> Void)?
     /// 刘海面板专用刷新入口；由 AppDelegate 执行统一刷新但不显示 toast。
     var onRefreshProvider: (() -> Void)?
+    /// 刘海面板「打开设置」按钮的回调；由 AppDelegate 打开设置窗口。
+    var onOpenSettings: (() -> Void)?
 
     init(
         store: UsageSnapshotStore,
@@ -493,6 +495,7 @@ final class StatusBarController: NSObject {
         let panel = NotchCapsulePanelController()
         panel.onClick = { [weak self] in self?.openFromNotchPanel() }
         panel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
+        panel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
         panel.onQuit = actions.quit
         panel.onSelectAgent = { [weak self] index in
             self?.ticker.agentIndex = index

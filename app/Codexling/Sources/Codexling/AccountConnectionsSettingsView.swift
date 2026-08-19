@@ -10,11 +10,40 @@ private enum ConnectionPickerTab: String, CaseIterable, Identifiable {
     var title: String { self == .agent ? "Agent 账号" : "API Key" }
 }
 
-private enum ConnectionModalPage {
+enum ConnectionModalPage {
     case picker
     case deepSeek
     case openCodeGo
     case openCodeZen
+}
+
+/// 编辑目标：复用一个创建连接的 modal 来编辑已有连接。
+struct AccountConnectionEditTarget: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case deepSeek
+        case openCode(OpenCodePlan)
+    }
+
+    let id: ConnectionID
+    let kind: Kind
+    let initialLabel: String
+    let initialAPIKey: String
+    let initialWorkspaceURL: String?
+
+    var page: ConnectionModalPage {
+        switch kind {
+        case .deepSeek: .deepSeek
+        case .openCode(.go): .openCodeGo
+        case .openCode(.zen): .openCodeZen
+        }
+    }
+
+    var displayName: String {
+        switch kind {
+        case .deepSeek: "DeepSeek"
+        case .openCode(let plan): plan.displayName
+        }
+    }
 }
 
 /// Dashboard-owned modal matching the connection picker demonstrated by the
@@ -23,6 +52,9 @@ private enum ConnectionModalPage {
 struct AccountConnectionsModalView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: MultiAgentSettingsStore
+    /// 传入后进入编辑模式：跳过 picker、直达对应表单并预填当前值，
+    /// 保存时调用 store 的 update 方法而非 add。
+    var editing: AccountConnectionEditTarget? = nil
     let onClose: () -> Void
 
     @State private var selectedTab: ConnectionPickerTab = .agent
@@ -59,12 +91,19 @@ struct AccountConnectionsModalView: View {
         .onDisappear {
             store.cancelCurrentCodexOAuth()
         }
+        .onAppear {
+            guard let editing else { return }
+            label = editing.initialLabel
+            apiKey = editing.initialAPIKey
+            workspaceInput = editing.initialWorkspaceURL ?? ""
+            page = editing.page
+        }
     }
 
     private var modalHeader: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(page == .picker ? "NEW CONNECTION" : "NEW CREDENTIAL")
+                Text(editing != nil ? "EDIT CREDENTIAL" : (page == .picker ? "NEW CONNECTION" : "NEW CREDENTIAL"))
                     .font(.system(size: 9, weight: .bold))
                     .tracking(1.5)
                     .foregroundStyle(Color.codexGreen)
@@ -85,12 +124,15 @@ struct AccountConnectionsModalView: View {
                     .background(closeButtonSurface, in: Circle())
             }
             .buttonStyle(CodexPressableCircleStyle())
-            .accessibilityLabel("关闭添加连接")
+            .accessibilityLabel(editing == nil ? "关闭添加连接" : "关闭编辑连接")
         }
     }
 
     private var headerTitle: String {
-        switch page {
+        if let editing {
+            return "编辑 \(editing.displayName) API Key"
+        }
+        return switch page {
         case .picker: "添加账号或 API Key"
         case .deepSeek: "添加 DeepSeek API Key"
         case .openCodeGo: "添加 OpenCode Go API Key"
@@ -99,7 +141,10 @@ struct AccountConnectionsModalView: View {
     }
 
     private var headerSubtitle: String {
-        switch page {
+        if editing != nil {
+            return "修改名称、API Key 或工作间地址，保存后会重新验证。"
+        }
+        return switch page {
         case .picker: "同一种 Agent 可以登录多个账号。"
         case .deepSeek: "Key 只存入 macOS Keychain，用于官方余额接口。"
         case .openCodeGo: "Key 只存本机，用于验证 Go 模型可用性；额度暂不可查询。"
@@ -248,18 +293,28 @@ struct AccountConnectionsModalView: View {
                     .foregroundStyle(Color.red)
             }
             HStack(spacing: 8) {
-                Button { page = .picker } label: {
-                    Text("返回")
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 14)
-                        .frame(height: 32)
-                        .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                if editing == nil {
+                    Button { page = .picker } label: {
+                        Text("返回")
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 14)
+                            .frame(height: 32)
+                            .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 Spacer()
                 Button {
                     Task {
-                        if await store.addDeepSeekConnection(label: label, apiKey: apiKey) {
+                        if let editing {
+                            if await store.updateDeepSeekConnection(
+                                connectionID: editing.id,
+                                label: label,
+                                apiKey: apiKey
+                            ) {
+                                onClose()
+                            }
+                        } else if await store.addDeepSeekConnection(label: label, apiKey: apiKey) {
                             onClose()
                         }
                     }
@@ -268,7 +323,7 @@ struct AccountConnectionsModalView: View {
                         if store.isMutatingConnections {
                             CodexButtonLoading(tint: .white, size: 10)
                         } else {
-                            Text("验证并添加")
+                            Text(editing == nil ? "验证并添加" : "验证并保存")
                         }
                     }
                     .font(.system(size: 11, weight: .semibold))
@@ -308,18 +363,29 @@ struct AccountConnectionsModalView: View {
                     .foregroundStyle(Color.red)
             }
             HStack(spacing: 8) {
-                Button { page = .picker } label: {
-                    Text("返回")
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 14)
-                        .frame(height: 32)
-                        .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                if editing == nil {
+                    Button { page = .picker } label: {
+                        Text("返回")
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 14)
+                            .frame(height: 32)
+                            .background(segmentedSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 Spacer()
                 Button {
                     Task {
-                        if await store.addOpenCodeConnection(
+                        if let editing {
+                            if await store.updateOpenCodeConnection(
+                                connectionID: editing.id,
+                                label: label,
+                                apiKey: apiKey,
+                                workspaceURL: workspaceInput
+                            ) {
+                                onClose()
+                            }
+                        } else if await store.addOpenCodeConnection(
                             plan: plan,
                             label: label,
                             apiKey: apiKey,
@@ -333,7 +399,7 @@ struct AccountConnectionsModalView: View {
                         if store.isMutatingConnections {
                             CodexButtonLoading(tint: .white, size: 10)
                         } else {
-                            Text("验证并添加")
+                            Text(editing == nil ? "验证并添加" : "验证并保存")
                         }
                     }
                     .font(.system(size: 11, weight: .semibold))

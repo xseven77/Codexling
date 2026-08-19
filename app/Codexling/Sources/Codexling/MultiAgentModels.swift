@@ -199,7 +199,7 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
     let id: ConnectionID
     var label: String
     let credentialHandle: String
-    let keySuffix: String
+    var keySuffix: String
     var authenticationState: ConnectionAuthenticationState
     var balance: ProviderBalanceSnapshot?
     let createdAt: Date
@@ -236,7 +236,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
     var label: String
     let plan: OpenCodePlan
     let credentialHandle: String
-    let keySuffix: String
+    var keySuffix: String
     var authenticationState: ConnectionAuthenticationState
     var availableModelCount: Int?
     /// 可访问的模型 id 列表（用于「点击查看模型列表」弹窗）。

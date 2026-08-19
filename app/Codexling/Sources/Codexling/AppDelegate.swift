@@ -131,6 +131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.loginAndFetchUsage()
             }
         }
+        statusController?.onOpenSettings = { [weak self] in
+            self?.openSettingsWindow()
+        }
         startAutoRefreshTimer()
         startAccountCarouselTimer()
         activityStore.start()
