@@ -706,13 +706,9 @@ private struct StandaloneTaskPanelView: View {
     private func fluidGlass<Content: View>(_ content: Content, cornerRadius: CGFloat = 14) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
-            content
-                .glassEffect(in: .rect(cornerRadius: cornerRadius))
-                .overlay { shape.strokeBorder(Color.white.opacity(0.30), lineWidth: 0.6) }
+            content.glassEffect(in: .rect(cornerRadius: cornerRadius))
         } else {
-            content
-                .background(.ultraThinMaterial, in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.30), lineWidth: 0.6) }
+            content.background(.ultraThinMaterial, in: shape)
         }
     }
 }
