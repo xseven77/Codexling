@@ -125,6 +125,9 @@ struct StatusBarProviderTick: Identifiable, Equatable, Sendable {
     let detailText: String
     /// 与主界面额度状态共用的红 / 黄 / 绿颜色等级。
     let quotaHealth: QuotaHealthLevel
+    /// 该供应商账号对应的工作间跳转地址（例如 OpenCode 的 workspace 页面）。
+    /// nil 时面板不展示「工作区跳转」按钮。
+    var workspaceURL: String?
 }
 
 /// 双维度独立轮播索引：左区 Agent 与右区 Provider 各自独立计时切换。
@@ -242,7 +245,8 @@ enum StatusBarProviderTickFactory {
             asset: .openCode,
             quotaText: quotaText,
             detailText: detailText,
-            quotaHealth: connected ? .green : .yellow
+            quotaHealth: connected ? .green : .yellow,
+            workspaceURL: connection.workspaceURL
         )
     }
 }

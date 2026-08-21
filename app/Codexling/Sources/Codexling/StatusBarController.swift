@@ -526,6 +526,14 @@ final class StatusBarController: NSObject {
                 source: .notch(screenNumber: screen.screenNumber)
             )
         }
+        panel.onOpenWorkspace = { tick in
+            guard let workspaceURL = tick.workspaceURL,
+                  let url = URL(string: workspaceURL) else { return }
+            NSLog("[StatusBarController] 打开供应商工作区: %@", url.absoluteString)
+            NSWorkspace.shared.open(url)
+            // 打开系统浏览器后收起刘海面板，避免面板悬停在别的应用上方。
+            panel.setExpandedFromWorkspaceJump()
+        }
         notchPanels[screen.screenNumber] = panel
         return panel
     }

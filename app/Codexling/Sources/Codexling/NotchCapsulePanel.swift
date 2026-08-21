@@ -85,6 +85,8 @@ final class NotchCapsuleViewModel {
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
+    /// 供应商「工作区跳转」按钮回调（携带该供应商的跳转地址）。
+    var onOpenWorkspace: ((StatusBarProviderTick) -> Void)?
 }
 
 /// 自定义命中视图：限制 SwiftUI 宿主内部的响应区域。
@@ -127,6 +129,7 @@ final class NotchCapsulePanelController {
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
+    var onOpenWorkspace: ((StatusBarProviderTick) -> Void)?
 
     init() {
         hosting = NSHostingController(rootView: NotchCapsuleView(viewModel: viewModel))
@@ -192,6 +195,7 @@ final class NotchCapsulePanelController {
         viewModel.onOpenAgentTask = { [weak self] tick in self?.onOpenAgentTask?(tick) }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
+        viewModel.onOpenWorkspace = { [weak self] tick in self?.onOpenWorkspace?(tick) }
     }
 
     func update(
@@ -279,6 +283,12 @@ final class NotchCapsulePanelController {
     }
 
     private func closePanel() {
+        cancelCollapse()
+        setExpanded(false)
+    }
+
+    /// 工作区跳转打开系统浏览器后调用：把展开态刘海面板收起。
+    func setExpandedFromWorkspaceJump() {
         cancelCollapse()
         setExpanded(false)
     }
@@ -520,7 +530,10 @@ private struct NotchCapsuleView: View {
                 if let provider {
                     Text(provider.quotaText)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(provider.quotaHealth.color)
+                        .foregroundStyle(
+                            provider.quotaText.contains("暂不可查")
+                                ? Color.gray : provider.quotaHealth.color
+                        )
                         .lineLimit(1)
                     StatusBarBrandBadge(asset: provider.asset, size: 14)
                 } else {
@@ -738,15 +751,34 @@ private struct NotchCapsuleView: View {
                     .padding(.top, 12)
                 Text(provider.quotaText)
                     .font(.system(size: 18, weight: .bold, design: .monospaced))
-                    .foregroundStyle(provider.quotaHealth.color)
+                    .foregroundStyle(
+                        provider.quotaText.contains("暂不可查")
+                            ? Color.gray : provider.quotaHealth.color
+                    )
                     .lineLimit(1)
                     .padding(.top, 8)
                 if !provider.detailText.isEmpty {
-                    Text(provider.detailText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.45))
-                        .lineLimit(1)
-                        .padding(.top, 4)
+                    HStack(spacing: 8) {
+                        Text(provider.detailText)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1)
+                        if let workspaceURL = provider.workspaceURL {
+                            Button {
+                                viewModel.onOpenWorkspace?(provider)
+                            } label: {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.82))
+                                    .frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .help("打开 \(workspaceURL)")
+                        }
+                    }
+                    .padding(.top, 4)
                 }
             } else {
                 // 空态：暂无额度数据
