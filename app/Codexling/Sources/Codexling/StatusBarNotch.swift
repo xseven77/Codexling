@@ -17,21 +17,33 @@ extension NSScreen {
         isBuiltin && (safeAreaInsets.top > 0 || auxiliaryTopLeftArea != nil)
     }
 
-    /// 刘海高度（安全获取）：内建刘海屏用 safeAreaInsets.top，其余屏幕用系统菜单栏高度。
+    /// 刘海高度（安全获取）：
+    /// - 内建刘海屏（MacBook Pro 等）：刘海区比状态栏高，保持原有 `safeAreaInsets.top` 逻辑。
+    /// - 内建非刘海屏 / 外接屏：统一走「逐屏自适应」的状态栏高度，不写死、不借用其它屏的差值。
     var notchHeight: CGFloat {
-        if isBuiltin {
-            let top = safeAreaInsets.top
-            return top > 0 ? top : Self.systemMenuBarHeight
+        if isNotched {
+            return safeAreaInsets.top
         }
-        return Self.systemMenuBarHeight
+        return Self.menuBarHeight(on: self)
     }
 
-    /// 系统状态栏（菜单栏）高度：从「有菜单栏的屏幕」的 frame 与 visibleFrame 顶部差获取。
-    /// 这比 NSStatusBar.system.thickness 更贴近真实菜单栏高度。
-    private static var systemMenuBarHeight: CGFloat {
-        for screen in NSScreen.screens {
-            let top = screen.frame.maxY - screen.visibleFrame.maxY
-            if top > 0 { return top }
+    /// 返回「指定屏幕」顶部被系统状态栏（菜单栏）占用的高度。
+    ///
+    /// 关键点：不能用 `frame.maxY - visibleFrame.maxY` 去遍历所有屏幕取第一个非零值，
+    /// 因为不同屏幕的顶部内缩各不相同（刘海屏是刘海内缩 ≈38pt，外接屏是它自己的菜单栏高度），
+    /// 套用别屏的值会导致外接屏胶囊偏高或偏矮。每块屏的 `frame` 与 `visibleFrame` 顶部差，
+    /// 恰恰就是「本屏」顶部被状态栏/Dock 让出的真实高度（用户开启“显示器具有独立 Spaces”
+    /// 后每块屏都有自己的菜单栏，此差值会正确反映各自的高度），因此要逐屏就地读取。
+    private static func menuBarHeight(on screen: NSScreen) -> CGFloat {
+        let top = screen.frame.maxY - screen.visibleFrame.maxY
+        if top > 0 { return top }
+        // 兜底：本屏顶部无内缩（例如全屏/自动隐藏菜单栏）时，退回系统菜单栏厚度。
+        let thickness = NSStatusBar.system.thickness
+        if thickness > 0 { return thickness }
+        // 最后兜底：任何 API 都读不到时，用常见菜单栏高度。
+        for candidate in NSScreen.screens {
+            let inset = candidate.frame.maxY - candidate.visibleFrame.maxY
+            if inset > 0 { return inset }
         }
         return 24
     }
