@@ -211,6 +211,17 @@ struct SettingsView: View {
             .onChange(of: settings.dashboardOrientation) { _, orientation in
                 showToast("主界面布局：\(orientation.title)")
             }
+            .onChange(of: settings.launchAtLoginEnabled) { _, enabled in
+                showToast("开机自启已\(enabled ? "开启" : "关闭")")
+            }
+            .onChange(of: settings.silentLaunchEnabled) { _, enabled in
+                showToast("静默启动已\(enabled ? "开启" : "关闭")")
+            }
+            .onChange(of: settings.launchAtLoginErrorMessage) { _, message in
+                guard let message else { return }
+                showToast(message, systemImage: "exclamationmark.triangle.fill")
+                settings.clearLaunchAtLoginError()
+            }
             .onChange(of: settings.statusBarWaveEnabled) { _, enabled in
                 showToast("活动流光已\(enabled ? "开启" : "关闭")")
             }
@@ -919,6 +930,10 @@ struct SettingsView: View {
                         .tint(Color.codexPrimary)
                 }
                 CodexDivider()
+                launchAtLoginSection
+                CodexDivider()
+                silentLaunchSection
+                CodexDivider()
                 themeSection
                 CodexDivider()
                 orientationSection
@@ -931,6 +946,9 @@ struct SettingsView: View {
             }
             .settingsGroupSurface()
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            settings.refreshLaunchAtLoginStatus()
         }
     }
 
@@ -962,6 +980,33 @@ struct SettingsView: View {
                 selection: $settings.theme,
                 options: AppThemePreference.allCases,
                 title: \.title
+            )
+        }
+    }
+
+    private var launchAtLoginSection: some View {
+        SettingsInlineRow(
+            title: "开机自启",
+            subtitle: "将 Codexling 添加到 macOS 系统登录项"
+        ) {
+            SettingsSwitch(
+                isOn: Binding(
+                    get: { settings.launchAtLoginEnabled },
+                    set: { settings.setLaunchAtLoginEnabled($0) }
+                ),
+                accessibilityLabel: "开机自启"
+            )
+        }
+    }
+
+    private var silentLaunchSection: some View {
+        SettingsInlineRow(
+            title: "静默启动",
+            subtitle: "启动时仅驻留菜单栏，不自动打开主窗口"
+        ) {
+            SettingsSwitch(
+                isOn: $settings.silentLaunchEnabled,
+                accessibilityLabel: "静默启动"
             )
         }
     }

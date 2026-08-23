@@ -135,6 +135,23 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(AppSettingsStore(defaults: defaults).accountCarouselInterval, .seconds10)
     }
 
+    @MainActor
+    func testSilentLaunchDefaultsOffAndPersists() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertFalse(settings.silentLaunchEnabled)
+        XCTAssertTrue(settings.shouldOpenMainWindowAtLaunch)
+
+        settings.silentLaunchEnabled = true
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(restored.silentLaunchEnabled)
+        XCTAssertFalse(restored.shouldOpenMainWindowAtLaunch)
+    }
+
     func testConnectionCarouselAdvancesWrapsAndRecoversMissingSelection() {
         let keys = ["codex.first", "codex.second", "deepseek.first"]
 

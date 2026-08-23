@@ -155,7 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncCompanionState()
         applyStandalonePetVisibility()
         syncSelectedCodexProjection()
-        openDetachedWindow()
+        if settingsStore.shouldOpenMainWindowAtLaunch {
+            openDetachedWindow()
+        }
         autoRefreshUsage()
     }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import ServiceManagement
 import SwiftUI
 
 enum AppThemePreference: String, CaseIterable, Identifiable {
@@ -295,6 +296,7 @@ final class AppSettingsStore {
     }
 
     private enum Keys {
+        static let silentLaunchEnabled = "codexling.silentLaunchEnabled"
         static let theme = "codexling.theme"
         static let autoRefreshInterval = "codexling.autoRefreshInterval"
         static let accountCarouselInterval = "codexling.accountCarouselInterval"
@@ -321,6 +323,20 @@ final class AppSettingsStore {
     private let codexPetSelectionSync: CodexPetSelectionSync?
     private var suppressCodexPetSelectionWrite = true
     private(set) var systemColorScheme: ColorScheme
+
+    /// 开机自启由 macOS 登录项负责，系统状态是唯一事实来源。
+    private(set) var launchAtLoginEnabled: Bool
+    private(set) var launchAtLoginErrorMessage: String?
+
+    /// 启动后只驻留在菜单栏，不自动展示主窗口。
+    var silentLaunchEnabled: Bool {
+        didSet {
+            guard silentLaunchEnabled != oldValue else { return }
+            defaults.set(silentLaunchEnabled, forKey: Keys.silentLaunchEnabled)
+        }
+    }
+
+    var shouldOpenMainWindowAtLaunch: Bool { !silentLaunchEnabled }
 
     var theme: AppThemePreference {
         didSet {
@@ -527,6 +543,9 @@ final class AppSettingsStore {
         self.codexPetSelectionSync = codexPetSelectionSync
             ?? (defaults === UserDefaults.standard ? CodexPetSelectionSync() : nil)
         systemColorScheme = Self.currentSystemColorScheme()
+        launchAtLoginEnabled = Self.isLaunchAtLoginRegistered
+        launchAtLoginErrorMessage = nil
+        silentLaunchEnabled = defaults.object(forKey: Keys.silentLaunchEnabled) as? Bool ?? false
 
         if let raw = defaults.string(forKey: Keys.theme),
            let saved = AppThemePreference(rawValue: raw) {
@@ -606,6 +625,7 @@ final class AppSettingsStore {
         guard let legacyDefaults = UserDefaults(suiteName: Legacy.domain) else { return }
 
         let keys = [
+            Keys.silentLaunchEnabled,
             Keys.theme,
             Keys.autoRefreshInterval,
             Keys.accountCarouselInterval,
@@ -634,6 +654,39 @@ final class AppSettingsStore {
         for window in NSApplication.shared.windows {
             window.appearance = appearance
             window.contentView?.needsDisplay = true
+        }
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        launchAtLoginErrorMessage = nil
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            launchAtLoginErrorMessage = "设置开机自启失败：\(error.localizedDescription)"
+        }
+        refreshLaunchAtLoginStatus()
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginEnabled = Self.isLaunchAtLoginRegistered
+    }
+
+    func clearLaunchAtLoginError() {
+        launchAtLoginErrorMessage = nil
+    }
+
+    private static var isLaunchAtLoginRegistered: Bool {
+        switch SMAppService.mainApp.status {
+        case .enabled, .requiresApproval:
+            true
+        case .notRegistered, .notFound:
+            false
+        @unknown default:
+            false
         }
     }
 

@@ -27,7 +27,8 @@ let package = Package(
             path: "Sources/Codexling",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
+                .linkedFramework("ServiceManagement")
             ]
         ),
         .executableTarget(
