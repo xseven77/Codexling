@@ -200,10 +200,30 @@ update_plist_version() {
 
 build_release_artifacts() {
   info "开始打包。发布前会重新生成 .app、.zip 和 .dmg"
-  "${ROOT_DIR}/package_app.sh"
+  CODEXLING_REQUIRE_GEMINI_OAUTH_CONFIG=1 "${ROOT_DIR}/package_app.sh"
 
   [[ -f "${DMG_PATH}" ]] || fail "DMG 未生成：${DMG_PATH}"
   [[ -f "${ZIP_PATH}" ]] || fail "ZIP 未生成：${ZIP_PATH}"
+}
+
+verify_packaged_gemini_oauth_config() {
+  local app_bundle="$1"
+  local config_path="${app_bundle}/Contents/Resources/GeminiOAuthConfig.plist"
+  local client_id
+
+  if [[ ! -f "${config_path}" ]]; then
+    echo "发布包缺少 GeminiOAuthConfig.plist。" >&2
+    return 1
+  fi
+  if ! plutil -lint "${config_path}" >/dev/null; then
+    echo "发布包中的 Gemini OAuth 配置格式无效。" >&2
+    return 1
+  fi
+  client_id="$(plutil -extract clientID raw -o - "${config_path}" 2>/dev/null || true)"
+  if [[ -z "${client_id}" ]]; then
+    echo "发布包必须包含 OAuth Client ID。" >&2
+    return 1
+  fi
 }
 
 release_dmg_image_if_busy() {
@@ -244,6 +264,11 @@ verify_dmg() {
   if [[ ! -L "${mount_point}/Applications" ]]; then
     hdiutil detach "${mount_point}" >/dev/null || true
     fail "DMG 中缺少 Applications 快捷方式"
+  fi
+
+  if ! verify_packaged_gemini_oauth_config "${mount_point}/${APP_NAME}.app"; then
+    hdiutil detach "${mount_point}" >/dev/null || true
+    fail "拒绝发布无法登录 Gemini 的版本。"
   fi
 
   hdiutil detach "${mount_point}" >/dev/null
@@ -384,6 +409,12 @@ usage() {
 
 环境变量：
   PUBLISH_RETRIES      上传失败时的重试次数（默认 3）。
+  CODEXLING_GEMINI_OAUTH_CONFIG_PLIST
+                       Codexling Gemini OAuth plist 的绝对路径。
+  CODEXLING_GEMINI_OAUTH_CLIENT_ID
+                       Codexling 自有 Google Desktop OAuth Client ID。
+  CODEXLING_GEMINI_OAUTH_LEGACY_CLIENT_SECRET
+                       仅兼容旧 OAuth Client；自有 Desktop Client 不应设置。
 
 默认（不带参数）执行完整发布流程：
   授权 -> 版本号 -> 打包 -> DMG 验证 -> 提交版本号 -> 推送分支/tag -> 发布 Release。
@@ -428,6 +459,7 @@ publish_only() {
   [[ -f "${ZIP_PATH}" ]] || fail "未找到 ZIP：${ZIP_PATH}。请先运行 package_app.sh 或完整发布流程生成产物。"
   [[ -s "${ZIP_PATH}" ]] || fail "ZIP 为空文件：${ZIP_PATH}"
 
+  verify_dmg
   publish_github_release
 
   info "发布完成：${RELEASE_TAG}"

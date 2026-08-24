@@ -961,7 +961,7 @@ final class MultiAgentSettingsStore {
             return RefreshOutcome(failures: [message])
         }
 
-        guard token.usesAntigravityAuthorization else {
+        guard token.usesCurrentAuthorization else {
             if let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) {
                 geminiConnections[index].authenticationState = .needsLogin
                 geminiConnections[index].rateLimitState = "unauthorized"
@@ -971,7 +971,7 @@ final class MultiAgentSettingsStore {
                 geminiConnections[index].claudeGptFiveHourRemaining = nil
                 try? saveRegistry()
             }
-            let message = "\(connection.label)：旧版 Google 凭证无法读取 Antigravity 额度，请重新登录"
+            let message = "\(connection.label)：OAuth 客户端已升级，请重新登录 Google 账号"
             if publishesMessage { lastMessage = message }
             return RefreshOutcome(failures: [message])
         }

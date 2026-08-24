@@ -4,8 +4,16 @@ set -euo pipefail
 APP_NAME="Codexling"
 BINARY_NAME="Codexling"
 BRIDGE_BINARY_NAME="CodexlingAgentBridge"
+VALIDATE_OAUTH_CONFIG_ONLY="false"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
+
+if [[ "${1:-}" == "--validate-oauth-config" ]]; then
+  VALIDATE_OAUTH_CONFIG_ONLY="true"
+elif [[ "$#" -gt 0 ]]; then
+  echo "Unknown option: $1" >&2
+  exit 2
+fi
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
 BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
@@ -16,12 +24,72 @@ DMG_PATH="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
 DMG_VOLUME_NAME="${APP_NAME} ${VERSION}"
 DMG_STAGING_DIR="${DIST_DIR}/dmg-staging"
 BUILD_LOG="$(mktemp -t codexling-build)"
+GEMINI_OAUTH_CONFIG_SOURCE=""
+GEMINI_OAUTH_CONFIG_TEMP=""
 
 cleanup_build_log() {
   rm -f "${BUILD_LOG}"
+  if [[ -n "${GEMINI_OAUTH_CONFIG_TEMP}" ]]; then
+    rm -f "${GEMINI_OAUTH_CONFIG_TEMP}"
+  fi
 }
 
 trap cleanup_build_log EXIT
+
+validate_gemini_oauth_config() {
+  local config_path="$1" client_id
+  plutil -lint "${config_path}" >/dev/null
+  client_id="$(plutil -extract clientID raw -o - "${config_path}" 2>/dev/null || true)"
+  [[ -n "${client_id}" ]]
+}
+
+prepare_gemini_oauth_config() {
+  local explicit_path="${CODEXLING_GEMINI_OAUTH_CONFIG_PLIST:-}"
+  local local_path="Resources/GeminiOAuthConfig.plist"
+  local client_id="${CODEXLING_GEMINI_OAUTH_CLIENT_ID:-}"
+  local legacy_client_secret="${CODEXLING_GEMINI_OAUTH_LEGACY_CLIENT_SECRET:-}"
+
+  if [[ -n "${explicit_path}" ]]; then
+    [[ -f "${explicit_path}" ]] || {
+      echo "Gemini OAuth config file not found: ${explicit_path}" >&2
+      exit 1
+    }
+    GEMINI_OAUTH_CONFIG_SOURCE="${explicit_path}"
+  elif [[ -n "${client_id}" ]]; then
+    GEMINI_OAUTH_CONFIG_TEMP="$(mktemp -t codexling-gemini-oauth).plist"
+    plutil -create xml1 "${GEMINI_OAUTH_CONFIG_TEMP}"
+    plutil -insert clientID -string "${client_id}" "${GEMINI_OAUTH_CONFIG_TEMP}"
+    if [[ -n "${legacy_client_secret}" ]]; then
+      plutil -insert legacyClientSecret -string "${legacy_client_secret}" "${GEMINI_OAUTH_CONFIG_TEMP}"
+    fi
+    GEMINI_OAUTH_CONFIG_SOURCE="${GEMINI_OAUTH_CONFIG_TEMP}"
+  elif [[ -f "${local_path}" ]]; then
+    GEMINI_OAUTH_CONFIG_SOURCE="${local_path}"
+  fi
+
+  if [[ -n "${GEMINI_OAUTH_CONFIG_SOURCE}" ]]; then
+    if ! validate_gemini_oauth_config "${GEMINI_OAUTH_CONFIG_SOURCE}"; then
+      echo "Gemini OAuth config must contain a non-empty clientID." >&2
+      exit 1
+    fi
+    return
+  fi
+
+  if [[ "${CODEXLING_REQUIRE_GEMINI_OAUTH_CONFIG:-0}" == "1" ]]; then
+    echo "Gemini OAuth config is required for release builds." >&2
+    echo "Provide CODEXLING_GEMINI_OAUTH_CONFIG_PLIST or CODEXLING_GEMINI_OAUTH_CLIENT_ID." >&2
+    exit 1
+  fi
+
+  echo "Warning: Gemini OAuth config not supplied; this development build cannot add Gemini accounts." >&2
+}
+
+prepare_gemini_oauth_config
+
+if [[ "${VALIDATE_OAUTH_CONFIG_ONLY}" == "true" ]]; then
+  echo "Gemini OAuth config validation passed."
+  exit 0
+fi
 
 build_release_binary() {
   : > "${BUILD_LOG}"
@@ -65,14 +133,9 @@ cp ".build/release/${BINARY_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 cp ".build/release/${BRIDGE_BINARY_NAME}" "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
 cp "Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 
-# Gemini OAuth 凭证不进入 Git。发布环境通过变量指定私有 plist；本地开发也可使用
-# 被 .gitignore 排除的 Resources/GeminiOAuthConfig.plist。
-GEMINI_OAUTH_CONFIG_SOURCE="${CODEXLING_GEMINI_OAUTH_CONFIG_PLIST:-Resources/GeminiOAuthConfig.plist}"
-if [[ -f "${GEMINI_OAUTH_CONFIG_SOURCE}" ]]; then
-  plutil -lint "${GEMINI_OAUTH_CONFIG_SOURCE}" >/dev/null
+# OAuth 配置只进入最终 App bundle，不进入源码仓库；临时配置由 EXIT trap 删除。
+if [[ -n "${GEMINI_OAUTH_CONFIG_SOURCE}" ]]; then
   cp "${GEMINI_OAUTH_CONFIG_SOURCE}" "${APP_BUNDLE}/Contents/Resources/GeminiOAuthConfig.plist"
-else
-  echo "Warning: Gemini OAuth config not supplied; account login will be unavailable in this build." >&2
 fi
 
 cp "Resources/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"

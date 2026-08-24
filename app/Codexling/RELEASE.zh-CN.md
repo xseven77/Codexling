@@ -58,7 +58,7 @@ cd app/Codexling
 
 ## Gemini OAuth 构建配置
 
-Gemini OAuth Client ID 和 Client Secret 不保存在 Git 仓库中。打包前请在仓库外准备私有 plist：
+Gemini 正式发布应使用 Codexling 自己在 Google Cloud 创建的 **Desktop app OAuth Client**。自有桌面客户端采用 PKCE，通常只需要 Client ID。旧 OAuth Client 如果在 Token 接口强制校验 Secret，可以通过仅本机的兼容配置临时注入。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -66,12 +66,21 @@ Gemini OAuth Client ID 和 Client Secret 不保存在 Git 仓库中。打包前�
 <plist version="1.0">
 <dict>
   <key>clientID</key>
-  <string>YOUR_CLIENT_ID</string>
-  <key>clientSecret</key>
-  <string>YOUR_CLIENT_SECRET</string>
+  <string>YOUR_CODEXLING_DESKTOP_CLIENT_ID</string>
 </dict>
 </plist>
 ```
+
+仓库中的 `Resources/GeminiOAuthConfig.example.plist` 可以直接复制为自有 Desktop Client 模板。
+
+本机的 `package_local.sh`、`release_local.sh` 会读取同目录下被 Git 忽略的 `.env`：
+
+```bash
+CODEXLING_GEMINI_OAUTH_CLIENT_ID='YOUR_CLIENT_ID'
+CODEXLING_GEMINI_OAUTH_LEGACY_CLIENT_SECRET='YOUR_LEGACY_CLIENT_SECRET'
+```
+
+切换到 Codexling 自有 Desktop Client 后，删除 `CODEXLING_GEMINI_OAUTH_LEGACY_CLIENT_SECRET`，并相应取消本地脚本对它的必填检查。
 
 通过环境变量把文件路径交给打包脚本：
 
@@ -80,7 +89,24 @@ export CODEXLING_GEMINI_OAUTH_CONFIG_PLIST=/absolute/private/path/GeminiOAuthCon
 ./release_app.sh
 ```
 
-本地开发也可以将文件放在 `Resources/GeminiOAuthConfig.plist`；该路径已被 `.gitignore` 排除。未提供配置时仍可构建和使用其他功能，但 Gemini 新账号登录会给出“尚未配置”的明确提示。
+本地开发也可以将文件放在 `Resources/GeminiOAuthConfig.plist`；该路径已被 `.gitignore` 排除。未提供配置时仍可构建和使用其他功能，但 Gemini 新账号登录会提示当前开发版本不包含登录配置。
+
+CI 可以直接把 GitHub Actions Secrets 映射为环境变量，不需要在工作区生成或提交配置文件：
+
+```yaml
+env:
+  CODEXLING_GEMINI_OAUTH_CLIENT_ID: ${{ secrets.CODEXLING_GEMINI_OAUTH_CLIENT_ID }}
+```
+
+`package_app.sh` 会在临时目录生成 plist，只复制到 App bundle，并在脚本结束时删除临时文件。完整发布流程会检查 Client ID 以及 DMG 内的最终 App；缺少配置时发布会立即失败，不会上传一个无法登录 Gemini 的安装包。Client ID 会随桌面应用公开，这是 Installed App OAuth 的正常行为；不要使用或复制 Antigravity、Gemini CLI 等其他应用的 OAuth Client ID。
+
+CI 或本地发布前可以只执行配置预检，不触发编译：
+
+```bash
+CODEXLING_REQUIRE_GEMINI_OAUTH_CONFIG=1 ./package_app.sh --validate-oauth-config
+```
+
+普通用户不需要配置任何 ID、Secret、plist，也不需要安装 Antigravity Desktop 或 CLI。发布者注入 Codexling 自有 Client ID 并完成 Google OAuth 应用发布/验证后，用户安装 Codexling 并点击“添加 Gemini 账号”即可完成授权。
 
 如果缺少 GitHub CLI，先安装：
 

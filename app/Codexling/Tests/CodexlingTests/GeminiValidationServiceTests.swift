@@ -29,7 +29,7 @@ final class GeminiValidationServiceTests: XCTestCase {
             email: "developer@gmail.com",
             displayName: "Test Developer",
             avatarURL: "https://example.com/avatar.png",
-            authorizationProfile: "antigravity"
+            authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
         )
 
         try store.save(token, handle: handle)
@@ -49,34 +49,43 @@ final class GeminiValidationServiceTests: XCTestCase {
         XCTAssertNil(store.load(handle: handle))
     }
 
-    func testLegacyGCloudTokenDecodesAndRequiresAntigravityRelogin() throws {
+    func testLegacyOAuthTokensRequireCodexlingClientRelogin() throws {
         let data = #"{"accessToken":"old-token","expiresAt":"2026-08-25T00:00:00Z","email":"old@example.com"}"#.data(using: .utf8)!
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let token = try decoder.decode(GeminiOAuthToken.self, from: data)
 
         XCTAssertNil(token.authorizationProfile)
-        XCTAssertFalse(token.usesAntigravityAuthorization)
+        XCTAssertFalse(token.usesCurrentAuthorization)
+
+        let antigravityToken = GeminiOAuthToken(
+            accessToken: "old-antigravity-token",
+            refreshToken: "old-refresh-token",
+            expiresAt: .distantFuture,
+            email: nil,
+            displayName: nil,
+            avatarURL: nil,
+            authorizationProfile: "antigravity"
+        )
+        XCTAssertFalse(antigravityToken.usesCurrentAuthorization)
     }
 
     func testGeminiOAuthConfigurationUsesInjectedValuesWithoutSourceDefaults() {
         let configuration = GeminiOAuthConfiguration.resolve(
             environment: [
                 GeminiOAuthConfiguration.clientIDEnvironmentKey: " injected-client ",
-                GeminiOAuthConfiguration.clientSecretEnvironmentKey: " injected-secret ",
             ],
             plist: [
                 "clientID": "plist-client",
-                "clientSecret": "plist-secret",
             ]
         )
 
         XCTAssertEqual(configuration.clientID, "injected-client")
-        XCTAssertEqual(configuration.clientSecret, "injected-secret")
+        XCTAssertNil(configuration.legacyClientSecret)
         XCTAssertTrue(configuration.isConfigured)
     }
 
-    func testGeminiOAuthConfigurationFallsBackToPrivatePlistAndAllowsMissingSecret() {
+    func testGeminiOAuthConfigurationFallsBackToClientIDOnlyPlist() {
         let plistConfiguration = GeminiOAuthConfiguration.resolve(
             environment: [:],
             plist: ["clientID": "plist-client"]
@@ -84,9 +93,154 @@ final class GeminiValidationServiceTests: XCTestCase {
         let missingConfiguration = GeminiOAuthConfiguration.resolve(environment: [:], plist: [:])
 
         XCTAssertEqual(plistConfiguration.clientID, "plist-client")
-        XCTAssertNil(plistConfiguration.clientSecret)
+        XCTAssertNil(plistConfiguration.legacyClientSecret)
         XCTAssertTrue(plistConfiguration.isConfigured)
         XCTAssertFalse(missingConfiguration.isConfigured)
+    }
+
+    func testGeminiOAuthConfigurationLoadsOptionalLegacyClientSecret() {
+        let configuration = GeminiOAuthConfiguration.resolve(
+            environment: [
+                GeminiOAuthConfiguration.clientIDEnvironmentKey: "legacy-client",
+                GeminiOAuthConfiguration.legacyClientSecretEnvironmentKey: " legacy-secret ",
+            ],
+            plist: [:]
+        )
+
+        XCTAssertEqual(configuration.clientID, "legacy-client")
+        XCTAssertEqual(configuration.legacyClientSecret, "legacy-secret")
+    }
+
+    func testMissingGeminiOAuthConfigurationFailsBeforeOpeningAuthorization() async {
+        let service = GeminiOAuthService(
+            configuration: GeminiOAuthConfiguration(clientID: "", legacyClientSecret: nil)
+        )
+
+        do {
+            _ = try await service.startOAuth(forceLogin: true)
+            XCTFail("缺少构建配置时不应启动 OAuth")
+        } catch let error as GeminiOAuthError {
+            guard case .configurationMissing = error else {
+                return XCTFail("错误类型不正确：\(error)")
+            }
+            XCTAssertEqual(
+                error.localizedDescription,
+                "此版本未包含 Gemini 登录配置，请更新 Codexling 或联系发布者"
+            )
+        } catch {
+            XCTFail("出现了未预期错误：\(error)")
+        }
+    }
+
+    func testOAuthCallbackServerUsesAnAvailableLoopbackPort() async throws {
+        let server = GoogleOAuthCallbackServer(
+            expectedState: "test-state",
+            callbackPath: "/"
+        )
+        let redirectURI = try await server.start()
+
+        XCTAssertEqual(redirectURI.scheme, "http")
+        XCTAssertEqual(redirectURI.host, "127.0.0.1")
+        XCTAssertNotNil(redirectURI.port)
+        XCTAssertEqual(redirectURI.path, "/")
+
+        server.cancel()
+        do {
+            _ = try await server.waitForCode(timeoutSeconds: 1)
+            XCTFail("取消监听后不应继续等待 OAuth 回调")
+        } catch let error as GeminiOAuthError {
+            guard case .oauthCancelled = error else {
+                return XCTFail("错误类型不正确：\(error)")
+            }
+        }
+    }
+
+    func testRefreshTokenUsesPKCEDesktopClientWithoutClientSecret() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiMockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        GeminiMockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/token":
+                let body = try XCTUnwrap(Self.requestBody(request))
+                let form = try XCTUnwrap(String(data: body, encoding: .utf8))
+                XCTAssertTrue(form.contains("client_id=codexling-desktop-client"))
+                XCTAssertTrue(form.contains("refresh_token=refresh-token"))
+                XCTAssertFalse(form.contains("client_secret"))
+                return (200, #"{"access_token":"new-access-token","expires_in":3600,"token_type":"Bearer"}"#)
+            case "/oauth2/v2/userinfo":
+                return (200, #"{"email":"user@example.com","name":"User"}"#)
+            default:
+                XCTFail("出现了未预期的请求：\(request.url?.absoluteString ?? "nil")")
+                return (404, "{}")
+            }
+        }
+        defer { GeminiMockURLProtocol.handler = nil }
+
+        let service = GeminiOAuthService(
+            configuration: GeminiOAuthConfiguration(
+                clientID: "codexling-desktop-client",
+                legacyClientSecret: nil
+            ),
+            session: session
+        )
+        let refreshed = try await service.refreshToken(
+            GeminiOAuthToken(
+                accessToken: "old-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: .distantPast,
+                email: nil,
+                displayName: nil,
+                avatarURL: nil,
+                authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
+            )
+        )
+
+        XCTAssertEqual(refreshed.accessToken, "new-access-token")
+        XCTAssertEqual(refreshed.refreshToken, "refresh-token")
+        XCTAssertEqual(refreshed.email, "user@example.com")
+    }
+
+    func testRefreshTokenIncludesOptionalLegacyClientSecret() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiMockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        GeminiMockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/token":
+                let body = try XCTUnwrap(Self.requestBody(request))
+                let form = try XCTUnwrap(String(data: body, encoding: .utf8))
+                XCTAssertTrue(form.contains("client_id=legacy-client"))
+                XCTAssertTrue(form.contains("client_secret=legacy-secret"))
+                return (200, #"{"access_token":"legacy-access-token","expires_in":3600,"token_type":"Bearer"}"#)
+            case "/oauth2/v2/userinfo":
+                return (200, "{}")
+            default:
+                return (404, "{}")
+            }
+        }
+        defer { GeminiMockURLProtocol.handler = nil }
+
+        let service = GeminiOAuthService(
+            configuration: GeminiOAuthConfiguration(
+                clientID: "legacy-client",
+                legacyClientSecret: "legacy-secret"
+            ),
+            session: session
+        )
+        let refreshed = try await service.refreshToken(
+            GeminiOAuthToken(
+                accessToken: "old-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: .distantPast,
+                email: nil,
+                displayName: nil,
+                avatarURL: nil,
+                authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
+            )
+        )
+
+        XCTAssertEqual(refreshed.accessToken, "legacy-access-token")
     }
 
     func testOAuthSuccessPagesShareCodexLayoutAndUseProviderCopy() {
@@ -113,6 +267,10 @@ final class GeminiValidationServiceTests: XCTestCase {
         GeminiMockURLProtocol.handler = { request in
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer account-a-token")
             XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "antigravity")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Client-Metadata"),
+                #"{"ideType":"ANTIGRAVITY"}"#
+            )
             switch request.url?.path {
             case "/v1internal:loadCodeAssist":
                 return (200, #"{"cloudaicompanionProject":"project-account-a","paidTier":{"id":"pro","name":"Google AI Pro"}}"#)
@@ -130,7 +288,13 @@ final class GeminiValidationServiceTests: XCTestCase {
         }
         defer { GeminiMockURLProtocol.handler = nil }
 
-        let snapshot = await GeminiOAuthService(session: session)
+        let snapshot = await GeminiOAuthService(
+            configuration: GeminiOAuthConfiguration(
+                clientID: "legacy-client",
+                legacyClientSecret: "legacy-secret"
+            ),
+            session: session
+        )
             .fetchQuotaSnapshot(accessToken: "account-a-token")
 
         XCTAssertEqual(snapshot.projectId, "project-account-a")
@@ -141,6 +305,28 @@ final class GeminiValidationServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.claudeGptWeeklyRemaining, 0.90)
         XCTAssertEqual(snapshot.availableModels, ["claude-sonnet", "gemini-pro"])
         XCTAssertEqual(snapshot.quotaFetchState, "normal")
+    }
+
+    func testCodexlingDesktopClientDoesNotSendLegacyAntigravityIdentityHeaders() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiMockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        GeminiMockURLProtocol.handler = { request in
+            XCTAssertTrue(request.value(forHTTPHeaderField: "User-Agent")?.hasPrefix("Codexling/") == true)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Client-Metadata"))
+            return (403, #"{"error":{"status":"PERMISSION_DENIED"}}"#)
+        }
+        defer { GeminiMockURLProtocol.handler = nil }
+
+        let snapshot = await GeminiOAuthService(
+            configuration: GeminiOAuthConfiguration(
+                clientID: "codexling-desktop-client",
+                legacyClientSecret: nil
+            ),
+            session: session
+        ).fetchQuotaSnapshot(accessToken: "codexling-token")
+
+        XCTAssertEqual(snapshot.quotaFetchState, "quota_unavailable")
     }
 
     func testRemoteAntigravityUnauthorizedNeverInventsQuota() async {
@@ -366,7 +552,7 @@ final class GeminiValidationServiceTests: XCTestCase {
                 email: "gemini-user@google.com",
                 displayName: "Gemini User",
                 avatarURL: nil,
-                authorizationProfile: "antigravity"
+                authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
             ),
             modelIDs: [
                 "models/gemini-2.5-pro",

@@ -12,7 +12,7 @@ alwaysApply: false
 cd app/Codexling && ./rebuild_and_run.sh
 ```
 
-- 使用 `rebuild_and_run.sh`（内部调用 `package_app.sh`，再 `pkill -x Codexling` 并 `open dist/Codexling.app`）。
+- 使用 `rebuild_and_run.sh`（内部调用被 Git 忽略的 `package_local.sh` 注入本机 OAuth 配置，再 `pkill -x Codexling` 并 `open dist/Codexling.app`）。
 - 需要完整权限以便结束进程并启动 GUI 应用（`required_permissions: ["all"]`）。
 - 若仅文档/注释且未动可执行产物，可跳过；若用户明确要求「只编译不重启」则只跑 `swift build`。
 - 打包失败时汇报编译错误，不要假装已重启。

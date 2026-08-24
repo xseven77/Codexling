@@ -4,21 +4,23 @@ import Foundation
 import Network
 
 struct GeminiOAuthToken: Codable, Sendable {
+    static let currentAuthorizationProfile = "codexling-google-desktop-v1"
+
     let accessToken: String
     let refreshToken: String?
     let expiresAt: Date
     let email: String?
     let displayName: String?
     let avatarURL: String?
-    /// 用于区分旧版 GCloud OAuth 凭证与 Antigravity 专用凭证。
+    /// 用于区分旧版或其他应用签发的 OAuth 凭证与 Codexling 自有客户端凭证。
     let authorizationProfile: String?
 
     var isExpired: Bool {
         expiresAt.timeIntervalSinceNow < 60
     }
 
-    var usesAntigravityAuthorization: Bool {
-        authorizationProfile == "antigravity"
+    var usesCurrentAuthorization: Bool {
+        authorizationProfile == Self.currentAuthorizationProfile
     }
 }
 
@@ -81,7 +83,7 @@ enum GeminiOAuthError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .configurationMissing:
-            return "Gemini OAuth 尚未配置，请在构建时注入客户端配置"
+            return "此版本未包含 Gemini 登录配置，请更新 Codexling 或联系发布者"
         case .oauthCancelled:
             return "Google 账号授权已取消"
         case .oauthTimedOut:
@@ -107,11 +109,11 @@ enum GeminiOAuthError: LocalizedError, Sendable {
 
 struct GeminiOAuthConfiguration: Equatable, Sendable {
     static let clientIDEnvironmentKey = "CODEXLING_GEMINI_OAUTH_CLIENT_ID"
-    static let clientSecretEnvironmentKey = "CODEXLING_GEMINI_OAUTH_CLIENT_SECRET"
+    static let legacyClientSecretEnvironmentKey = "CODEXLING_GEMINI_OAUTH_LEGACY_CLIENT_SECRET"
     static let resourceName = "GeminiOAuthConfig"
 
     let clientID: String
-    let clientSecret: String?
+    let legacyClientSecret: String?
 
     var isConfigured: Bool { !clientID.isEmpty }
 
@@ -135,9 +137,9 @@ struct GeminiOAuthConfiguration: Equatable, Sendable {
         let clientID = normalized(environment[clientIDEnvironmentKey])
             ?? normalized(plist["clientID"])
             ?? ""
-        let clientSecret = normalized(environment[clientSecretEnvironmentKey])
-            ?? normalized(plist["clientSecret"])
-        return Self(clientID: clientID, clientSecret: clientSecret)
+        let legacyClientSecret = normalized(environment[legacyClientSecretEnvironmentKey])
+            ?? normalized(plist["legacyClientSecret"])
+        return Self(clientID: clientID, legacyClientSecret: legacyClientSecret)
     }
 
     private static func normalized(_ value: String?) -> String? {
@@ -183,8 +185,7 @@ protocol GeminiOAuthServicing: Sendable {
 
 final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     private let clientID: String
-    private let clientSecret: String?
-    private let redirectURI = "http://localhost:51121/oauth-callback"
+    private let legacyClientSecret: String?
     private let authorizationURL = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     private let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
     private let userInfoURL = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
@@ -199,6 +200,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     ]
 
     private let session: URLSession
+    private let userAgent: String
     private var activeCallbackServer: GoogleOAuthCallbackServer?
     private var cancellationRequested = false
 
@@ -207,8 +209,10 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         session: URLSession = .shared
     ) {
         clientID = configuration.clientID
-        clientSecret = configuration.clientSecret
+        legacyClientSecret = configuration.legacyClientSecret
         self.session = session
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        userAgent = "Codexling/\(version ?? "development")"
     }
 
     func cancelOAuthAuthorization() {
@@ -232,7 +236,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         let verifier = randomBase64URL(byteCount: 32)
         let challenge = sha256Base64URL(verifier)
 
-        let server = GoogleOAuthCallbackServer(expectedState: state, port: 51121, callbackPath: "/oauth-callback")
+        let server = GoogleOAuthCallbackServer(expectedState: state, callbackPath: "/")
         activeCallbackServer = server
         defer {
             if activeCallbackServer === server {
@@ -240,12 +244,13 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             }
             cancellationRequested = false
         }
+        let redirectURI = try await server.start()
 
         var components = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)!
         let queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientID),
-            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "redirect_uri", value: redirectURI.absoluteString),
             URLQueryItem(name: "scope", value: scopes.joined(separator: " ")),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: challenge),
@@ -262,7 +267,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         NSWorkspace.shared.open(authURL)
 
         let code = try await server.waitForCode(timeoutSeconds: 300)
-        let tokenData = try await exchangeCode(code, verifier: verifier)
+        let tokenData = try await exchangeCode(code, verifier: verifier, redirectURI: redirectURI)
         let userInfo = try? await fetchUserInfo(accessToken: tokenData.accessToken)
 
         return GeminiOAuthToken(
@@ -272,7 +277,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             email: userInfo?.email,
             displayName: userInfo?.name,
             avatarURL: userInfo?.picture,
-            authorizationProfile: "antigravity"
+            authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
         )
     }
 
@@ -293,8 +298,8 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             "refresh_token": refreshToken,
             "client_id": clientID
         ]
-        if let clientSecret, !clientSecret.isEmpty {
-            bodyParams["client_secret"] = clientSecret
+        if let legacyClientSecret {
+            bodyParams["client_secret"] = legacyClientSecret
         }
         request.httpBody = bodyParams
             .map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")" }
@@ -321,11 +326,15 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             email: userInfo?.email ?? token.email,
             displayName: userInfo?.name ?? token.displayName,
             avatarURL: userInfo?.picture ?? token.avatarURL,
-            authorizationProfile: token.authorizationProfile ?? "antigravity"
+            authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
         )
     }
 
-    private func exchangeCode(_ code: String, verifier: String) async throws -> GoogleTokenResponse {
+    private func exchangeCode(
+        _ code: String,
+        verifier: String,
+        redirectURI: URL
+    ) async throws -> GoogleTokenResponse {
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -335,10 +344,10 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             "code": code,
             "code_verifier": verifier,
             "client_id": clientID,
-            "redirect_uri": redirectURI
+            "redirect_uri": redirectURI.absoluteString
         ]
-        if let clientSecret, !clientSecret.isEmpty {
-            bodyParams["client_secret"] = clientSecret
+        if let legacyClientSecret {
+            bodyParams["client_secret"] = legacyClientSecret
         }
         request.httpBody = bodyParams
             .map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")" }
@@ -509,8 +518,14 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         request.timeoutInterval = 15
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("antigravity", forHTTPHeaderField: "User-Agent")
-        request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
+        if legacyClientSecret != nil {
+            // 旧 Antigravity OAuth Client 会根据客户端元数据裁剪 loadCodeAssist 响应。
+            // 仅本机兼容配置启用；Codexling 自有 Desktop Client 不发送这些标识。
+            request.setValue("antigravity", forHTTPHeaderField: "User-Agent")
+            request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
+        } else {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
 
         let (data, response) = try await session.data(for: request)
@@ -716,26 +731,51 @@ private struct AntigravityRemoteQuota {
     }
 }
 
-private final class GoogleOAuthCallbackServer: @unchecked Sendable {
+final class GoogleOAuthCallbackServer: @unchecked Sendable {
     private let expectedState: String
-    private let port: UInt16
     private let callbackPath: String
     private let stateLock = NSLock()
     private var listener: NWListener?
+    private var startupContinuation: CheckedContinuation<URL, Error>?
     private var continuation: CheckedContinuation<String, Error>?
+    private var pendingResult: Result<String, Error>?
+    private var isFinished = false
 
-    init(expectedState: String, port: UInt16, callbackPath: String) {
+    init(expectedState: String, callbackPath: String) {
         self.expectedState = expectedState
-        self.port = port
         self.callbackPath = callbackPath
+    }
+
+    func start() async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            stateLock.lock()
+            guard listener == nil, startupContinuation == nil, !isFinished else {
+                stateLock.unlock()
+                continuation.resume(throwing: GeminiOAuthError.oauthCallbackInvalid)
+                return
+            }
+            startupContinuation = continuation
+            stateLock.unlock()
+            startListener()
+        }
     }
 
     func waitForCode(timeoutSeconds: TimeInterval) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             stateLock.lock()
+            if let pendingResult {
+                self.pendingResult = nil
+                stateLock.unlock()
+                continuation.resume(with: pendingResult)
+                return
+            }
+            guard !isFinished, self.continuation == nil else {
+                stateLock.unlock()
+                continuation.resume(throwing: GeminiOAuthError.oauthCallbackInvalid)
+                return
+            }
             self.continuation = continuation
             stateLock.unlock()
-            startListener()
 
             DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
                 self?.finish(.failure(GeminiOAuthError.oauthTimedOut))
@@ -749,9 +789,11 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
 
     private func startListener() {
         do {
-            let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            let listener = try NWListener(using: parameters)
             stateLock.lock()
-            guard continuation != nil else {
+            guard startupContinuation != nil, !isFinished else {
                 stateLock.unlock()
                 listener.cancel()
                 return
@@ -762,14 +804,33 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
                 self?.handle(connection)
             }
             listener.stateUpdateHandler = { [weak self] state in
-                if case .failed(let error) = state {
+                switch state {
+                case .ready:
+                    self?.listenerDidBecomeReady(listener)
+                case .failed(let error):
                     self?.finish(.failure(error))
+                default:
+                    break
                 }
             }
             listener.start(queue: .global())
         } catch {
             finish(.failure(error))
         }
+    }
+
+    private func listenerDidBecomeReady(_ listener: NWListener) {
+        guard let port = listener.port,
+              let redirectURI = URL(string: "http://127.0.0.1:\(port.rawValue)\(callbackPath)") else {
+            finish(.failure(GeminiOAuthError.oauthCallbackInvalid))
+            return
+        }
+
+        stateLock.lock()
+        let continuation = startupContinuation
+        startupContinuation = nil
+        stateLock.unlock()
+        continuation?.resume(returning: redirectURI)
     }
 
     private func handle(_ connection: NWConnection) {
@@ -783,7 +844,7 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
 
             let firstLine = request.components(separatedBy: "\r\n").first ?? ""
             let path = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
-            let components = URLComponents(string: "http://127.0.0.1:\(port)\(path)")
+            let components = URLComponents(string: "http://127.0.0.1\(path)")
 
             guard components?.path == callbackPath else {
                 self.send("Not found", status: 404, on: connection)
@@ -863,21 +924,32 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
 
     private func finish(_ result: Result<String, Error>) {
         stateLock.lock()
-        guard let continuation else {
+        guard !isFinished else {
             stateLock.unlock()
             return
         }
+        isFinished = true
+        let startupContinuation = startupContinuation
+        self.startupContinuation = nil
+        let continuation = continuation
         self.continuation = nil
+        if continuation == nil {
+            pendingResult = result
+        }
         let listener = listener
         self.listener = nil
         stateLock.unlock()
         listener?.cancel()
 
-        switch result {
-        case .success(let code):
-            continuation.resume(returning: code)
-        case .failure(let error):
-            continuation.resume(throwing: error)
+        if let startupContinuation {
+            switch result {
+            case .success:
+                startupContinuation.resume(throwing: GeminiOAuthError.oauthCallbackInvalid)
+            case .failure(let error):
+                startupContinuation.resume(throwing: error)
+            }
         }
+
+        continuation?.resume(with: result)
     }
 }
