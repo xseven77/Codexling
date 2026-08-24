@@ -1371,9 +1371,9 @@ final class CodexlingTests: XCTestCase {
             now: ISO8601DateFormatter().date(from: "2026-07-22T08:00:03Z")!
         )
 
-        XCTAssertEqual(snapshot.activeTaskCount, 1)
-        XCTAssertEqual(snapshot.activeTasks.map(\.id), ["thread-waiting"])
-        XCTAssertEqual(snapshot.activeTasks.map(\.state), [.waitingForUser])
+        XCTAssertEqual(snapshot.activeTaskCount, 2)
+        XCTAssertEqual(snapshot.activeTasks.map(\.id), ["thread-waiting", "thread-executing"])
+        XCTAssertEqual(snapshot.activeTasks.map(\.state), [.waitingForUser, .executing])
         XCTAssertEqual(snapshot.state, .waitingForUser)
     }
 
@@ -1541,6 +1541,39 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(snapshot.activeAgentStatuses[0].state, .executing)
         XCTAssertEqual(snapshot.activeAgentStatuses[0].taskCount, 2)
         XCTAssertEqual(snapshot.activeAgentStatuses[1].taskCount, 1)
+    }
+
+    func testStatusBarTaskTicksKeepMultipleTasksFromTheSameAgentNavigable() {
+        let now = Date()
+        let snapshot = CodexActivitySnapshot(
+            state: .waitingForUser,
+            detail: "多个任务",
+            threadTitle: "等待任务",
+            activeTaskCount: 2,
+            updatedAt: now,
+            activeTasks: [
+                CodexTaskActivity(
+                    id: "codex-waiting",
+                    state: .waitingForUser,
+                    detail: "等待确认",
+                    title: "任务二",
+                    updatedAt: now
+                ),
+                CodexTaskActivity(
+                    id: "codex-executing",
+                    state: .executing,
+                    detail: "执行工具",
+                    title: "任务一",
+                    updatedAt: now.addingTimeInterval(-1)
+                )
+            ]
+        )
+
+        XCTAssertEqual(snapshot.activeAgentStatuses.count, 1)
+        XCTAssertEqual(snapshot.statusBarTaskTicks.count, 2)
+        XCTAssertEqual(snapshot.statusBarTaskTicks.map(\.id), ["codex-waiting", "codex-executing"])
+        XCTAssertEqual(snapshot.statusBarTaskTicks.map(\.taskTitle), ["任务二", "任务一"])
+        XCTAssertEqual(snapshot.statusBarTaskTicks.map(\.taskCount), [2, 2])
     }
 
     func testActivityServicePrefersIndexedThreadNameAndLoadsTaskMetadata() throws {

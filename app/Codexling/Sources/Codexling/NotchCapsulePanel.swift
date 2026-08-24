@@ -625,6 +625,8 @@ private struct NotchCapsuleView: View {
                     isAnimated: !agent.taskTitle.isEmpty && agent.state.showsActivityWave
                 )
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 12)
                 if !agent.taskDetail.isEmpty {
                     Text(agent.taskDetail)

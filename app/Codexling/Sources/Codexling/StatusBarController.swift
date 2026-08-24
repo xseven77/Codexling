@@ -394,8 +394,9 @@ final class StatusBarController: NSObject {
         let providerTicks = currentProviderTicks()
         ticker.clampAgent(to: agentTicks.count)
         syncProviderIndexToSelectionIfNeeded(providerTicks: providerTicks)
-        let activeAgentCount = agentTicks.count
-        let waitingCount = agentTicks.filter { $0.state == .waitingForUser }.count
+        let agentStatuses = activity.activeAgentStatuses
+        let activeAgentCount = agentStatuses.count
+        let waitingCount = agentStatuses.filter { $0.state == .waitingForUser }.count
 
         // 共享：降级胶囊/状态栏文本与颜色
         let health = QuotaHealthLevel.from(
@@ -587,27 +588,7 @@ final class StatusBarController: NSObject {
     // MARK: - 双维度数据提取
 
     private func currentAgentTicks() -> [StatusBarAgentTick] {
-        let snapshot = activityStore.snapshot
-        let statuses = snapshot.activeAgentStatuses
-        guard !statuses.isEmpty else { return [] }
-        return statuses.map { status in
-            let latest = snapshot.activeTasks
-                .filter { $0.agentDisplayName == status.agentName }
-                .max(by: { $0.updatedAt < $1.updatedAt })
-            return StatusBarAgentTick(
-                name: status.agentName,
-                state: status.state,
-                taskCount: status.taskCount,
-                asset: BrandAssetID.forAgentDisplayName(status.agentName),
-                taskTitle: latest?.title ?? "",
-                taskDetail: latest?.detail ?? "",
-                workspaceName: latest?.workspaceName,
-                gitBranch: latest?.gitBranch,
-                model: latest?.model,
-                updatedAt: latest?.updatedAt ?? status.updatedAt,
-                taskID: latest?.id
-            )
-        }
+        activityStore.snapshot.statusBarTaskTicks
     }
 
     private func currentProviderTicks() -> [StatusBarProviderTick] {
@@ -682,7 +663,7 @@ final class StatusBarController: NSObject {
     }
 
     private func advanceAgentTick() {
-        // 悬停暂停已由 AgentCarouselDriver 的 pause/resume 处理，这里只需推进。
+        // 悬停暂停已由 AgentCarouselDriver 的 pause/resume 处理，这里只需推进任务页。
         let count = currentAgentTicks().count
         guard count > 1 else { return }
         ticker.advanceAgent(count: count)

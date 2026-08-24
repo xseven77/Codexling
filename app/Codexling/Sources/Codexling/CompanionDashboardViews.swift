@@ -2911,7 +2911,6 @@ private struct TaskStackView: View {
                     CodexMaterialWaveLayer(ripples: $ripples)
                     .clipShape(cardShape)
                 }
-                .coordinateSpace(name: Self.cardSpace)
                 .gesture(
                     codexMaterialTapGesture(in: Self.cardSpace) { location in
                         ripples.spawnWave(at: location)
@@ -2921,7 +2920,19 @@ private struct TaskStackView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(accessibilityText)
+
+            // Footer 是卡片内部独立的顶层命中区域；按钮位于 footer 的 HStack
+            // 内，不受整张任务卡的打开手势吞掉，也不会落到后层卡片偏移区。
+            taskFooter
+                .padding(.horizontal, 13)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: Self.cardHeight,
+                    maxHeight: Self.cardHeight,
+                    alignment: .bottom
+                )
         }
+        .coordinateSpace(name: Self.cardSpace)
         .padding(.trailing, tasks.count > 1 ? 8 : 0)
         .frame(
             height: tasks.count > 1 ? Self.cardHeight + Self.stackOffset : Self.cardHeight,
@@ -2953,7 +2964,10 @@ private struct TaskStackView: View {
                 }
             }
             // 当前展示的任务已消失时，规整回到显示范围内。
-            if !tasks.indices.contains(displayIndex) {
+            if let selectedTaskID,
+               let selectedIndex = tasks.firstIndex(where: { $0.id == selectedTaskID }) {
+                displayIndex = selectedIndex
+            } else if !tasks.indices.contains(displayIndex) {
                 displayIndex = 0
             }
             carouselDriver?.isEnabled = tasks.count > 1
@@ -3001,6 +3015,8 @@ private struct TaskStackView: View {
                 isAnimated: displayedTask != nil && displayState.showsActivityWave
             )
             .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Text(displayDetail)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.codexMuted)
@@ -3029,22 +3045,23 @@ private struct TaskStackView: View {
             alignment: .topLeading
         )
         .background(Color.codexCard, in: cardShape)
-        .overlay(alignment: .bottom) {
-            taskFooter
-                .padding(.horizontal, 13)
-        }
         .overlay(cardShape.stroke(Color.codexLine, lineWidth: 0.7))
         .contentShape(cardShape)
     }
 
     private var taskFooter: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text(displayState.activityLabel)
             Spacer()
             if let task = displayedTask, AgentTaskOpener.canOpen(task) {
                 Text("点击打开 \(task.agentDisplayName)")
+                    .lineLimit(1)
             } else {
                 Text("更新于\(UsageDateFormat.relative(displayUpdatedAt))")
+                    .lineLimit(1)
+            }
+            if tasks.count > 1 {
+                taskAdvanceButton
             }
         }
         .font(.system(size: 10))
@@ -3053,6 +3070,34 @@ private struct TaskStackView: View {
         .overlay(alignment: .top) {
             CodexDivider()
         }
+    }
+
+    private var taskAdvanceButton: some View {
+        Button(action: advanceTask) {
+            HStack(spacing: 4) {
+                Text("\(selectedIndex + 1)/\(tasks.count)")
+                    .monospacedDigit()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Color.codexPrimary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(Color.codexPrimary.opacity(0.09), in: Capsule())
+            .overlay {
+                Capsule().stroke(Color.codexPrimary.opacity(0.18), lineWidth: 0.7)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(
+            codexMaterialTapGesture(in: Self.cardSpace) { location in
+                ripples.spawnWave(at: location)
+            }
+        )
+        .help("切换到下一个任务")
+        .accessibilityLabel("切换任务，当前第 \(selectedIndex + 1) 个，共 \(tasks.count) 个")
     }
 
     private var displayState: CodexActivityState { displayedTask?.state ?? snapshot.state }

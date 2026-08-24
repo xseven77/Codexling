@@ -97,7 +97,8 @@ final class MenuBarNotchDetector: NSObject {
 
 /// 左区 tick：本机某个 Agent 的运行状态（Codex 可登录多个账号，各自独立）。
 struct StatusBarAgentTick: Identifiable, Equatable, Sendable {
-    var id: String { name }
+    /// 刘海导航按任务而不是按 Agent 分页；同一个 Agent 的多个任务必须有独立 id。
+    var id: String { taskID ?? "\(name):\(updatedAt?.timeIntervalSince1970 ?? 0)" }
     let name: String
     let state: CodexActivityState
     let taskCount: Int
@@ -122,6 +123,32 @@ struct StatusBarAgentTick: Identifiable, Equatable, Sendable {
             gitBranch.map { ("arrow.triangle.branch", $0) },
             model.map { ("cpu", $0) }
         ].compactMap { $0 }
+    }
+}
+
+extension CodexActivitySnapshot {
+    /// 刘海左栏的一页对应一个任务。同 Agent 多任务会保留为多页，避免
+    /// 聚合成单个 Agent tick 后左右按钮只能在不同 Agent 之间切换。
+    var statusBarTaskTicks: [StatusBarAgentTick] {
+        let sortedTasks = activeTasks.sorted { $0.updatedAt > $1.updatedAt }
+        let countsByAgent = Dictionary(grouping: sortedTasks, by: \.agentDisplayName)
+            .mapValues(\.count)
+
+        return sortedTasks.map { task in
+            StatusBarAgentTick(
+                name: task.agentDisplayName,
+                state: task.state,
+                taskCount: countsByAgent[task.agentDisplayName] ?? 1,
+                asset: BrandAssetID.forAgentDisplayName(task.agentDisplayName),
+                taskTitle: task.title,
+                taskDetail: task.detail,
+                workspaceName: task.workspaceName,
+                gitBranch: task.gitBranch,
+                model: task.model,
+                updatedAt: task.updatedAt,
+                taskID: task.id
+            )
+        }
     }
 }
 

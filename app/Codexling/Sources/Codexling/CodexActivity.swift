@@ -296,14 +296,6 @@ struct ParsedCodexThreadActivity: Equatable, Sendable {
         }
     }
 
-    var isConcurrentTask: Bool {
-        switch state {
-        case .thinking, .executing, .reviewing:
-            true
-        default:
-            false
-        }
-    }
 }
 
 struct CodexActivityEventParser: Sendable {
@@ -561,15 +553,11 @@ struct CodexActivityService: Sendable {
                 ? lhs.updatedAt > rhs.updatedAt
                 : lhsPriority > rhsPriority
         }
-        let concurrent = engaged.filter(\.isConcurrentTask)
-        let visibleTasks: [ParsedCodexThreadActivity]
-        if concurrent.count > 1 {
-            visibleTasks = concurrent
-        } else if let selectedEngaged = engaged.first {
-            visibleTasks = [selectedEngaged]
-        } else {
-            visibleTasks = []
-        }
+        // Every active user thread is independently navigable. The previous
+        // fallback kept only the highest-priority thread whenever the active
+        // set mixed states (for example one executing thread plus one waiting
+        // for approval), which collapsed a same-Agent task list to 1.
+        let visibleTasks = engaged
         let selected: ParsedCodexThreadActivity
         if let selectedEngaged = engaged.first {
             selected = selectedEngaged

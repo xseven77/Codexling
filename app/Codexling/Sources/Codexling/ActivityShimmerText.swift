@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Canvas 文字流光。位移由时间轴的绝对时间决定，View 重建时不会重置动画进度。
+/// 单行文字流光。位移由时间轴的绝对时间决定，View 重建时不会重置动画进度。
 struct ActivityShimmerText: View {
     let text: String
     var font: Font = .system(size: 8.5)
@@ -11,65 +11,57 @@ struct ActivityShimmerText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // 透明文字负责参与布局并提供精确的单行文字尺寸，Canvas 只负责绘制。
+        // 使用真实 Text 参与布局和绘制，确保受限宽度下由 SwiftUI 生成尾部省略号。
+        // 流光层复用同一份截断后的 Text，避免 Canvas 直接绘制完整字符串时在边缘硬裁切。
         Text(text)
             .font(font)
             .lineLimit(1)
-            .foregroundStyle(Color.clear)
+            .truncationMode(.tail)
+            .foregroundStyle(base)
             .overlay {
-                TimelineView(
-                    .animation(
-                        minimumInterval: 1.0 / 30.0,
-                        paused: !isAnimated || reduceMotion
-                    )
-                ) { timeline in
-                    shimmerCanvas(at: timeline.date.timeIntervalSinceReferenceDate)
+                if isAnimated {
+                    TimelineView(
+                        .animation(
+                            minimumInterval: 1.0 / 30.0,
+                            paused: reduceMotion
+                        )
+                    ) { timeline in
+                        shimmerLayer(at: timeline.date.timeIntervalSinceReferenceDate)
+                    }
                 }
             }
             .accessibilityLabel(text)
     }
 
-    private func shimmerCanvas(at time: TimeInterval) -> some View {
-        Canvas { context, size in
-            let bandWidth = max(24, size.width * 0.5)
+    private func shimmerLayer(at time: TimeInterval) -> some View {
+        GeometryReader { geometry in
+            let bandWidth = max(24, geometry.size.width * 0.5)
             let offset = ActivityShimmerMotion.offset(
-                canvasWidth: size.width,
+                canvasWidth: geometry.size.width,
                 bandWidth: bandWidth,
                 at: time,
                 isAnimated: isAnimated && !reduceMotion
             )
-            let origin = CGPoint.zero
 
-            context.draw(
-                Text(text).font(font).foregroundStyle(base),
-                at: origin,
-                anchor: .topLeading
-            )
-
-            if isAnimated {
-                context.clipToLayer { layer in
-                    let bandRect = CGRect(
-                        x: offset,
-                        y: 0,
-                        width: bandWidth,
-                        height: size.height
-                    )
-                    layer.fill(
-                        Path(bandRect),
-                        with: .linearGradient(
-                            Gradient(colors: [.clear, .white, .white, .clear]),
-                            startPoint: CGPoint(x: offset, y: 0),
-                            endPoint: CGPoint(x: offset + bandWidth, y: 0)
-                        )
-                    )
-                }
-
-                context.draw(
-                    Text(text).font(font).foregroundStyle(highlight),
-                    at: origin,
-                    anchor: .topLeading
+            Text(text)
+                .font(font)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(highlight)
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height,
+                    alignment: .topLeading
                 )
-            }
+                .mask(alignment: .leading) {
+                    LinearGradient(
+                        colors: [.clear, .white, .white, .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: bandWidth)
+                    .offset(x: offset)
+                }
         }
         .allowsHitTesting(false)
     }
