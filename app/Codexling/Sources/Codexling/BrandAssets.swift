@@ -6,12 +6,25 @@ enum BrandAssetID: String, Sendable {
     case hermesAgent = "hermes-agent"
     case deepSeek = "deepseek"
     case openCode = "opencode"
+    case antigravity = "antigravity"
+    case googleGemini = "google-gemini"
+    case geminiCLI = "gemini-cli"
 
     static func agent(_ id: AgentID) -> BrandAssetID {
         switch id {
         case .codex: .codex
         case .hermes: .hermesAgent
         case .deepseekHarness: .deepSeek
+        case .antigravity: .antigravity
+        default: .codex
+        }
+    }
+
+    static func provider(_ id: ProviderID) -> BrandAssetID {
+        switch id {
+        case .deepSeek: .deepSeek
+        case .openCodeGo, .openCodeZen: .openCode
+        case .gemini: .googleGemini
         default: .codex
         }
     }
@@ -22,10 +35,9 @@ enum BrandAssetCatalog {
         guard let root = Bundle.main.resourceURL?
             .appendingPathComponent("BrandAssets/catalog", isDirectory: true)
             .appendingPathComponent(id.rawValue, isDirectory: true) else { return nil }
-        // Codex uses a raster export to avoid a CoreSVG rendering defect.
-        // Hermes uses its custom app artwork instead of the legacy line icon.
+        // Codex, Hermes, Antigravity, and Google Gemini use official raster exports
         let candidates: [String]
-        if (id == .codex || id == .hermesAgent), prefersColor {
+        if (id == .codex || id == .hermesAgent || id == .antigravity || id == .googleGemini), prefersColor {
             candidates = ["app-icon.png", "color.svg", "icon.svg"]
         } else {
             candidates = prefersColor
@@ -59,7 +71,7 @@ struct BrandIconView: View {
             }
         }
         .frame(width: size, height: size)
-        .background(Color.codexCard, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(Color.codexLine.opacity(0.75), lineWidth: 0.7)
@@ -68,12 +80,12 @@ struct BrandIconView: View {
     }
 
     private var contentInset: CGFloat {
-        // Both raster-first icons already include a white tile and optical
+        // Raster-first icons already include a white tile and optical
         // padding, so the generic inset would make their artwork too small.
         switch asset {
-        case .codex, .hermesAgent:
+        case .codex, .hermesAgent, .antigravity, .googleGemini:
             size * 0.10
-        case .deepSeek, .openCode:
+        case .deepSeek, .openCode, .geminiCLI:
             size * 0.16
         }
     }

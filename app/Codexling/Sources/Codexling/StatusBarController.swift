@@ -215,6 +215,11 @@ final class StatusBarController: NSObject {
     private let notchDetector: MenuBarNotchDetector
     private let highlightOverlay = ScreenHighlightOverlay()
     private var notchPanels: [UInt32: NotchCapsulePanelController] = [:]
+    /// `NSScreen.screens` can still be empty for a short time while an accessory
+    /// app is launching. Keep screen discovery separate from the user's mode so
+    /// that this transient state cannot switch the UI to the status-item fallback.
+    private var notchScreenDiscoveryRetry: DispatchWorkItem?
+    private var notchScreenDiscoveryAttempt = 0
     private var ticker = StatusBarTicker()
     /// 共享驱动：负责统一的 agent 轮播计时与悬停暂停/续播语义。
     private lazy var agentCarouselDriver = AgentCarouselDriver { [weak self] in
@@ -421,7 +426,8 @@ final class StatusBarController: NSObject {
 
         // 刘海面板：目标屏幕
         for screen in targetScreens {
-            notchPanel(for: screen).update(
+            let panel = notchPanel(for: screen)
+            panel.update(
                 agentTicks: agentTicks,
                 providerTicks: providerTicks,
                 agentIndex: ticker.agentIndex,
@@ -429,6 +435,9 @@ final class StatusBarController: NSObject {
                 activeAgentCount: activeAgentCount,
                 waitingCount: waitingCount
             )
+            // 数据刷新也可能是显示器枚举竞态后第一个重新创建面板的路径。
+            // 仅 update 会留下一个从未 orderFront 的默认坐标窗口；在这里自愈。
+            panel.ensureVisible(on: screen)
         }
 
         // 系统状态栏胶囊：刘海关闭时显示（降级胶囊）
@@ -491,6 +500,11 @@ final class StatusBarController: NSObject {
         }
     }
 
+    private var isNotchDisplayEnabled: Bool {
+        if case .off = settings.notchDisplayTarget { return false }
+        return true
+    }
+
     private func notchPanel(for screen: NSScreen) -> NotchCapsulePanelController {
         if let panel = notchPanels[screen.screenNumber] { return panel }
         let panel = NotchCapsulePanelController()
@@ -542,9 +556,14 @@ final class StatusBarController: NSObject {
     /// 屏幕参数变化后校验刘海目标显示器：若当前指定的显示器已断开，自动回退到内建显示器。
     private func reconcileNotchDisplayTargetAfterScreenChange() {
         guard case .specificScreen(let number) = settings.notchDisplayTarget else { return }
-        guard !NSScreen.screens.contains(where: { $0.screenNumber == number }) else { return }
+        let availableScreens = NSScreen.screens
+        // An empty launch-time snapshot does not mean that the selected display
+        // was disconnected. Wait for AppKit to finish screen discovery instead
+        // of overwriting the persisted target with a fallback.
+        guard !availableScreens.isEmpty else { return }
+        guard !availableScreens.contains(where: { $0.screenNumber == number }) else { return }
 
-        if let builtin = NSScreen.screens.first(where: \.isBuiltin) {
+        if let builtin = availableScreens.first(where: \.isBuiltin) {
             settings.notchDisplayTarget = .specificScreen(builtin.screenNumber)
         } else {
             settings.notchDisplayTarget = .allDisplays
@@ -554,10 +573,11 @@ final class StatusBarController: NSObject {
     private func applyMode() {
         reconcileNotchDisplayTargetAfterScreenChange()
 
-        let targetNumbers = Set(targetScreens.map(\.screenNumber))
+        let resolvedTargetScreens = targetScreens
+        let targetNumbers = Set(resolvedTargetScreens.map(\.screenNumber))
 
         // 刘海面板：目标屏幕（悬停屏幕顶部中央）。
-        for screen in targetScreens {
+        for screen in resolvedTargetScreens {
             notchPanel(for: screen).show(on: screen)
         }
         // 清理非目标屏幕的刘海面板。
@@ -569,7 +589,10 @@ final class StatusBarController: NSObject {
         // 菜单栏胶囊：刘海开启时全局隐藏（由刘海面板取代），关闭时显示。
         // macOS 的 NSStatusItem 会复制到每块屏且预留宽度是全局共享的，无法只从刘海屏移除空隙，
         // 因此开启刘海时选择全局隐藏菜单栏胶囊。
-        let notchEnabled = !targetScreens.isEmpty
+        // Whether the user enabled the notch is a preference, not a consequence
+        // of whether AppKit has finished enumerating screens. Treating an empty
+        // startup snapshot as "off" leaves a clipped NSStatusItem capsule behind.
+        let notchEnabled = isNotchDisplayEnabled
         statusItem.isVisible = !notchEnabled
         statusItem.button?.isHidden = notchEnabled
         if notchEnabled {
@@ -577,7 +600,35 @@ final class StatusBarController: NSObject {
             hideHoverPanel()
         }
 
+        scheduleNotchScreenDiscoveryRetryIfNeeded(
+            notchEnabled: notchEnabled,
+            resolvedTargetScreens: resolvedTargetScreens
+        )
+
         refreshStatusTitle()
+    }
+
+    private func scheduleNotchScreenDiscoveryRetryIfNeeded(
+        notchEnabled: Bool,
+        resolvedTargetScreens: [NSScreen]
+    ) {
+        notchScreenDiscoveryRetry?.cancel()
+        notchScreenDiscoveryRetry = nil
+
+        guard notchEnabled, resolvedTargetScreens.isEmpty else {
+            notchScreenDiscoveryAttempt = 0
+            return
+        }
+        guard notchScreenDiscoveryAttempt < 12 else { return }
+
+        notchScreenDiscoveryAttempt += 1
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.notchScreenDiscoveryRetry = nil
+            self.applyMode()
+        }
+        notchScreenDiscoveryRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     /// 供设置面板在选择显示器后触发红边预览。
@@ -611,6 +662,10 @@ final class StatusBarController: NSObject {
         }
         for connection in multiAgentSettings.openCodeConnections {
             let tick = StatusBarProviderTickFactory.openCodeTick(connection)
+            ticksByKey[tick.id] = tick
+        }
+        for connection in multiAgentSettings.geminiConnections {
+            let tick = StatusBarProviderTickFactory.geminiTick(connection)
             ticksByKey[tick.id] = tick
         }
         return multiAgentSettings.orderedConnectionKeys.compactMap { ticksByKey[$0] }
@@ -687,6 +742,7 @@ final class StatusBarController: NSObject {
             let connectedLabels = multiAgentSettings.deepSeekConnections.map(\.label)
                 + multiAgentSettings.codexAccounts.map(\.label)
                 + multiAgentSettings.openCodeConnections.map(\.label)
+                + multiAgentSettings.geminiConnections.map(\.label)
             if connectedLabels.isEmpty {
                 hoverPanel.update(
                     title: "尚未连接账号",

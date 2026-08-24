@@ -600,13 +600,7 @@ final class AppSettingsStore {
         if let stored = defaults.string(forKey: Keys.notchDisplayTarget) {
             notchDisplayTarget = NotchDisplayTarget.fromStorage(stored)
         } else {
-            // 首次启动：内建显示器是刘海屏则默认选中内建屏，否则默认所有显示器。
-            if let builtin = NSScreen.screens.first(where: \.isBuiltin), builtin.isNotched {
-                notchDisplayTarget = .specificScreen(builtin.screenNumber)
-            } else {
-                notchDisplayTarget = .allDisplays
-            }
-            // 首次启动的默认值也要持久化，后续启动直接读取，不再重复判定。
+            notchDisplayTarget = .allDisplays
             defaults.set(notchDisplayTarget.storageString, forKey: Keys.notchDisplayTarget)
         }
         // The status capsule now has one behavior: open the detached window.

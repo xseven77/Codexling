@@ -9,6 +9,7 @@ final class MultiAgentModelsTests: XCTestCase {
                 .init(agentID: .codex, surface: nil),
                 .init(agentID: .deepseekHarness, surface: .deepseekHarnessCLI),
                 .init(agentID: .hermes, surface: .hermesCLI),
+                .init(agentID: .antigravity, surface: .antigravityDesktop),
             ]
         )
     }

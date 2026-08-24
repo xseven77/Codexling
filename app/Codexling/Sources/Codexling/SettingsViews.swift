@@ -463,6 +463,7 @@ struct SettingsView: View {
             String(settings.availablePets.count),
             String(multiAgentSettings.codexAccounts.count),
             String(multiAgentSettings.deepSeekConnections.count),
+            String(multiAgentSettings.geminiConnections.count),
             String(multiAgentSettings.openCodeConnections.count),
             String(describing: updater.phase),
         ].joined(separator: "-")
@@ -481,6 +482,7 @@ struct SettingsView: View {
                 // 添加按钮置顶，避免数据多时需滚动到底部
                 if !multiAgentSettings.codexAccounts.isEmpty
                     || !multiAgentSettings.deepSeekConnections.isEmpty
+                    || !multiAgentSettings.geminiConnections.isEmpty
                     || !multiAgentSettings.openCodeConnections.isEmpty {
                     Button {
                         showsConnectionSheet = true
@@ -546,6 +548,30 @@ struct SettingsView: View {
                     }
                 }
 
+                if !multiAgentSettings.geminiConnections.isEmpty {
+                    accountProviderGroup(
+                        name: "Google Gemini",
+                        detail: "账号",
+                        count: multiAgentSettings.geminiConnections.count
+                    ) {
+                        ForEach(multiAgentSettings.geminiConnections) { connection in
+                            accountPoolRow(
+                                asset: .googleGemini,
+                                title: connection.label,
+                                subtitle: (connection.email ?? connection.displayName ?? "Google OAuth") + " · Generative Language",
+                                badge: geminiPoolBadge(connection),
+                                badgeColor: geminiPoolColor(connection),
+                                actionTitle: "删除"
+                            ) {
+                                pendingAccountRemoval = .gemini(connection)
+                            }
+                            if connection.id != multiAgentSettings.geminiConnections.last?.id {
+                                CodexDivider()
+                            }
+                        }
+                    }
+                }
+
                 let openCodeGoConnections = multiAgentSettings.openCodeConnections.filter { $0.plan == .go }
                 if !openCodeGoConnections.isEmpty {
                     accountProviderGroup(
@@ -602,6 +628,7 @@ struct SettingsView: View {
 
                 if multiAgentSettings.codexAccounts.isEmpty,
                    multiAgentSettings.deepSeekConnections.isEmpty,
+                   multiAgentSettings.geminiConnections.isEmpty,
                    multiAgentSettings.openCodeConnections.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "person.2.badge.plus")
@@ -745,6 +772,8 @@ struct SettingsView: View {
                     multiAgentSettings.removeDeepSeekConnection(connection)
                 case let .openCode(connection):
                     multiAgentSettings.removeOpenCodeConnection(connection)
+                case let .gemini(connection):
+                    multiAgentSettings.removeGeminiConnection(connection)
                 }
             },
             secondaryButton: .cancel(Text("取消"))
@@ -829,6 +858,19 @@ struct SettingsView: View {
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
         ).color
+    }
+
+    private func geminiPoolBadge(_ connection: GeminiAPIConnection) -> String {
+        guard connection.authenticationState == .connected else { return "未授权" }
+        if connection.rateLimitState == "rate_limited" { return "限流中" }
+        if let count = connection.availableModelCount, count > 0 { return "\(count) 个模型" }
+        return "已连接"
+    }
+
+    private func geminiPoolColor(_ connection: GeminiAPIConnection) -> Color {
+        guard connection.authenticationState == .connected else { return Color.codexAmber }
+        if connection.rateLimitState == "rate_limited" { return Color.codexAmber }
+        return Color.codexGreen
     }
 
     private func openCodePoolBadge(_ connection: OpenCodeAPIConnection) -> String {
@@ -1520,12 +1562,14 @@ private enum PendingAccountRemoval: Identifiable {
     case codex(CodexAccountConnection)
     case deepSeek(DeepSeekAPIConnection)
     case openCode(OpenCodeAPIConnection)
+    case gemini(GeminiAPIConnection)
 
     var id: ConnectionID {
         switch self {
         case let .codex(connection): connection.id
         case let .deepSeek(connection): connection.id
         case let .openCode(connection): connection.id
+        case let .gemini(connection): connection.id
         }
     }
 
@@ -1534,6 +1578,7 @@ private enum PendingAccountRemoval: Identifiable {
         case .codex: "删除 Codex 账号？"
         case .deepSeek: "删除 DeepSeek API Key？"
         case let .openCode(connection): "删除 \(connection.plan.displayName) API Key？"
+        case .gemini: "删除 Google Gemini 账号？"
         }
     }
 
@@ -1545,6 +1590,8 @@ private enum PendingAccountRemoval: Identifiable {
             "将从本机 Keychain 删除 \(connection.label) 的 API Key 和连接记录，此操作无法撤销。"
         case let .openCode(connection):
             "将从本机删除 \(connection.label) 的 API Key 和连接记录，此操作无法撤销。"
+        case let .gemini(connection):
+            "将从本机删除 \(connection.label) 的 Google OAuth 授权和连接记录，不会删除 Google 账号。"
         }
     }
 }

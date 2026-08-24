@@ -90,6 +90,7 @@ struct AccountConnectionsModalView: View {
         .accessibilityLabel("添加账号或 API Key")
         .onDisappear {
             store.cancelCurrentCodexOAuth()
+            store.cancelCurrentGeminiOAuth()
         }
         .onAppear {
             guard let editing else { return }
@@ -142,7 +143,7 @@ struct AccountConnectionsModalView: View {
 
     private var headerSubtitle: String {
         if editing != nil {
-            return "修改名称、API Key 或工作间地址，保存后会重新验证。"
+            return "修改名称或 API Key，保存后会重新验证。"
         }
         return switch page {
         case .picker: "同一种 Agent 可以登录多个账号。"
@@ -183,11 +184,28 @@ struct AccountConnectionsModalView: View {
                     asset: .codex,
                     title: "添加 Codex 账号",
                     subtitle: "通过官方 OAuth 授权，与其他供应商账号平等",
-                    supportsOAuthCancellation: true
+                    isOAuthInProgress: store.isCodexOAuthInProgress,
+                    supportsOAuthCancellation: true,
+                    onCancelOAuth: { store.cancelCurrentCodexOAuth() }
                 ) {
                     resetFields()
                     Task {
                         if await store.addCodexAccount() {
+                            onClose()
+                        }
+                    }
+                }
+                connectionOption(
+                    asset: .googleGemini,
+                    title: "添加 Google Gemini 账号",
+                    subtitle: "通过官方 Google OAuth 授权",
+                    isOAuthInProgress: store.isGeminiOAuthInProgress,
+                    supportsOAuthCancellation: true,
+                    onCancelOAuth: { store.cancelCurrentGeminiOAuth() }
+                ) {
+                    resetFields()
+                    Task {
+                        if await store.addGeminiAccount() {
                             onClose()
                         }
                     }
@@ -232,7 +250,9 @@ struct AccountConnectionsModalView: View {
         asset: BrandAssetID,
         title: String,
         subtitle: String,
+        isOAuthInProgress: Bool = false,
         supportsOAuthCancellation: Bool = false,
+        onCancelOAuth: (() -> Void)? = nil,
         action: @escaping () -> Void
     ) -> some View {
         ZStack(alignment: .trailing) {
@@ -247,7 +267,7 @@ struct AccountConnectionsModalView: View {
                             .foregroundStyle(Color.codexMuted)
                     }
                     Spacer()
-                    if supportsOAuthCancellation && store.isCodexOAuthInProgress {
+                    if supportsOAuthCancellation && isOAuthInProgress {
                         Color.clear.frame(width: 58, height: 1)
                     } else if store.isMutatingConnections {
                         ProgressView().controlSize(.small)
@@ -269,9 +289,9 @@ struct AccountConnectionsModalView: View {
             .buttonStyle(CodexPressableCardStyle(cornerRadius: 13))
             .disabled(store.isMutatingConnections)
 
-            if supportsOAuthCancellation && store.isCodexOAuthInProgress {
+            if supportsOAuthCancellation && isOAuthInProgress {
                 CancelCodexOAuthButton {
-                    store.cancelCurrentCodexOAuth()
+                    onCancelOAuth?()
                 }
                 .padding(.trailing, 9)
             }

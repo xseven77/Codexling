@@ -87,6 +87,36 @@ struct CompanionDashboardView: View {
             )
         }
 
+        if let connection = multiAgentSettings.selectedGeminiConnection {
+            let isConnected = connection.authenticationState == .connected
+            let statusText = isConnected
+                ? (connection.rateLimitState == "rate_limited" ? "限流冷却中" : "\(connection.availableModelCount ?? 0) 个可用模型")
+                : "需要登录"
+            let plan = connection.planName ?? "Google AI Pro"
+            let userName = connection.displayName ?? (connection.email?.components(separatedBy: "@").first ?? "Google 用户")
+            let userEmail = connection.email ?? "Google 账号"
+            return DashboardProviderContext(
+                asset: .googleGemini,
+                title: userName,
+                subtitle: userEmail,
+                badge: plan,
+                badgeColor: .codexBlue,
+                statusText: statusText,
+                statusColor: isConnected ? (connection.rateLimitState == "rate_limited" ? .codexAmber : .codexGreen) : .codexAmber,
+                summaryText: "Google AI Studio",
+                accountLinkTitle: "Google AI Studio",
+                accountLinkURL: DashboardProviderLinks.geminiConsole,
+                officialLinkHelp: "打开 Google AI Studio 控制台",
+                officialLinkURL: DashboardProviderLinks.geminiConsole,
+                syncState: isConnected ? "成功" : "未授权",
+                syncedAt: connection.lastValidatedAt ?? connection.createdAt,
+                isRefreshing: store.isUnifiedRefreshing,
+                emphasizesAccountLink: false,
+                syncColor: nil,
+                syncStateSymbol: nil
+            )
+        }
+
         let snapshot = displayedCodexSnapshot
         return DashboardProviderContext(
             asset: .codex,
@@ -103,9 +133,6 @@ struct CompanionDashboardView: View {
             officialLinkURL: DashboardProviderLinks.codexUsage,
             syncState: snapshot.refreshState,
             syncedAt: snapshot.fetchedAt,
-            // Unified refresh covers every vendor connection. The selected
-            // Codex snapshot is a projection and may not change its own
-            // refreshState, so drive the footer spinner from the shared flag.
             isRefreshing: store.isUnifiedRefreshing,
             emphasizesAccountLink: snapshot.showsSubscriptionExpiryReminder
         )
@@ -121,6 +148,9 @@ struct CompanionDashboardView: View {
 
     /// 是否处于「已连接 Codex」状态。
     private var isCodexConnected: Bool {
+        if multiAgentSettings.codexAccounts.isEmpty {
+            return store.isLoggedIn
+        }
         if let account = multiAgentSettings.selectedCodexAccount {
             return account.authenticationState == .connected
         }
@@ -132,11 +162,16 @@ struct CompanionDashboardView: View {
             || multiAgentSettings.selectedOpenCodeConnection != nil
     }
 
+    private var showsCompanionAccountRow: Bool {
+        (isCodexConnected || multiAgentSettings.selectedGeminiConnection != nil) && !hasSelectedAPIKeyProvider
+    }
+
     /// 订阅到期提醒来自当前选中的 Codex 快照，仅在已连接且未切到 DeepSeek 时展示。
     private var showsCodexSubscriptionExpiryReminder: Bool {
         guard isCodexConnected else { return false }
         guard multiAgentSettings.selectedDeepSeekConnection == nil,
-              multiAgentSettings.selectedOpenCodeConnection == nil else { return false }
+              multiAgentSettings.selectedOpenCodeConnection == nil,
+              multiAgentSettings.selectedGeminiConnection == nil else { return false }
         return displayedCodexSnapshot.showsSubscriptionExpiryReminder
     }
 
@@ -144,7 +179,7 @@ struct CompanionDashboardView: View {
         actions.refresh()
     }
 
-    /// 当前选中供应商是否为本地保存了 API Key 的连接（OpenCode / DeepSeek）。
+    /// 当前选中供应商是否为本地保存了 API Key 的连接（OpenCode / DeepSeek / Gemini）。
     private var selectedAPIKeyConnection: ConnectionID? {
         if let connection = multiAgentSettings.selectedOpenCodeConnection {
             return connection.id
@@ -321,7 +356,7 @@ struct CompanionDashboardView: View {
                     dashboardConnectionBar
 
                     dashboardContentFrame(fillsHeight: true) {
-                        if isCodexConnected, !hasSelectedAPIKeyProvider {
+                        if showsCompanionAccountRow {
                             CompanionAccountRow(context: selectedProviderContext)
                         }
 
@@ -369,7 +404,7 @@ struct CompanionDashboardView: View {
                 dashboardConnectionBar
 
                 dashboardContentFrame(fillsHeight: true) {
-                    if isCodexConnected, !hasSelectedAPIKeyProvider {
+                    if showsCompanionAccountRow {
                         CompanionAccountRow(context: selectedProviderContext)
                     }
 
@@ -459,6 +494,10 @@ struct CompanionDashboardView: View {
             ResetCouponSummaryView(coupons: snapshot.resetCoupons)
                 .padding(.top, 4)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Label("实时同步 OpenAI Codex 额度与速率限制", systemImage: "checkmark.shield")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
         }
         .padding(.top, 18)
     }
@@ -536,7 +575,7 @@ struct CompanionDashboardView: View {
                     // 滚动区自身不设 padding，各内部部件自带间距与内边距。
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
-                            if isCodexConnected, !hasSelectedAPIKeyProvider {
+                            if showsCompanionAccountRow {
                                 CompanionAccountRow(context: selectedProviderContext)
                             }
 
@@ -547,9 +586,9 @@ struct CompanionDashboardView: View {
                             }
                             selectedVerticalConnectionSection
                         }
-                        // Codex 页有用户信息行时顶部无需留白；OpenCode / DeepSeek 等
+                        // Codex / Gemini 页有用户信息行时顶部无需留白；OpenCode / DeepSeek 等
                         // 无该行的页面恢复顶部 18pt padding。
-                        .padding(.top, (isCodexConnected && !hasSelectedAPIKeyProvider) ? 0 : 18)
+                        .padding(.top, showsCompanionAccountRow ? 0 : 18)
                     }
                     // 在窗口布局里铺满 header 与 footer 之间的剩余空间，footer 固定在底部始终可见。
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -605,7 +644,7 @@ struct CompanionDashboardView: View {
                 // 滚动区自身不设 padding，各内部部件自带间距与内边距。
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        if isCodexConnected, !hasSelectedAPIKeyProvider {
+                        if showsCompanionAccountRow {
                             CompanionAccountRow(context: selectedProviderContext)
                         }
 
@@ -616,7 +655,7 @@ struct CompanionDashboardView: View {
                         }
                         selectedVerticalConnectionSection
                     }
-                    .padding(.top, (isCodexConnected && !hasSelectedAPIKeyProvider) ? 0 : 18)
+                    .padding(.top, showsCompanionAccountRow ? 0 : 18)
                 }
                 .frame(minHeight: DetachedWindowMetrics.verticalScrollContentHeight)
                 .scrollIndicators(.never)
@@ -695,6 +734,8 @@ struct CompanionDashboardView: View {
             multiAgentSettings.selectedDeepSeekConnection?.balance.map { String(describing: $0.total) } ?? "",
             multiAgentSettings.selectedOpenCodeConnection?.authenticationState.rawValue ?? "",
             multiAgentSettings.selectedOpenCodeConnection?.availableModelCount.map(String.init) ?? "",
+            multiAgentSettings.selectedGeminiConnection?.authenticationState.rawValue ?? "",
+            multiAgentSettings.selectedGeminiConnection?.availableModelCount.map(String.init) ?? "",
             multiAgentSettings.selectedCodexAccount?.authenticationState.rawValue ?? "",
         ].joined(separator: "-")
     }
@@ -719,6 +760,10 @@ struct CompanionDashboardView: View {
             ResetCouponSummaryView(coupons: snapshot.resetCoupons)
                 .padding(.top, 2)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Label("实时同步 OpenAI Codex 额度与速率限制", systemImage: "checkmark.shield")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
         }
     }
 
@@ -735,6 +780,12 @@ struct CompanionDashboardView: View {
             .padding(.top, 18)
         } else if let connection = multiAgentSettings.selectedOpenCodeConnection {
             OpenCodeDashboardCard(
+                connection: connection,
+                onShowModels: { openCodeModels = connection.availableModelIDs }
+            )
+            .padding(.top, 18)
+        } else if let connection = multiAgentSettings.selectedGeminiConnection {
+            GeminiDashboardCard(
                 connection: connection,
                 onShowModels: { openCodeModels = connection.availableModelIDs }
             )
@@ -760,6 +811,11 @@ struct CompanionDashboardView: View {
                 }
             } else if let connection = multiAgentSettings.selectedOpenCodeConnection {
                 OpenCodeDashboardCard(
+                    connection: connection,
+                    onShowModels: { openCodeModels = connection.availableModelIDs }
+                )
+            } else if let connection = multiAgentSettings.selectedGeminiConnection {
+                GeminiDashboardCard(
                     connection: connection,
                     onShowModels: { openCodeModels = connection.availableModelIDs }
                 )
@@ -939,6 +995,18 @@ private struct DashboardConnectionSwitcher: View {
                     action: { store.selectOpenCodeConnection(connection) }
                 )
             }
+            if let connection = store.geminiConnections.first(where: { store.connectionKey(for: $0) == key }) {
+                return ConnectionSwitcherItem(
+                    key: key,
+                    asset: .googleGemini,
+                    title: "Gemini",
+                    subtitle: connection.email ?? connection.displayName ?? connection.label,
+                    color: Color.codexGreen,
+                    selected: store.isSelected(connection),
+                    credential: .account(connection.authenticationState == .connected ? .codexGreen : .codexAmber),
+                    action: { store.selectGeminiConnection(connection) }
+                )
+            }
             return nil
         }
     }
@@ -947,6 +1015,7 @@ private struct DashboardConnectionSwitcher: View {
         HStack(alignment: .center, spacing: 0) {
             GeometryReader { geometry in
                 let rowOffset = connectionRowOffset(viewportWidth: geometry.size.width)
+                let leadingFadeVisible = showsLeadingFade(rowOffset: rowOffset)
                 let trailingFadeVisible = showsTrailingFade(
                     viewportWidth: geometry.size.width,
                     rowOffset: rowOffset
@@ -991,11 +1060,13 @@ private struct DashboardConnectionSwitcher: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .coordinateSpace(name: "connection-switcher")
                 .mask {
-                    trailingLogoMask(
+                    connectionLogoMask(
                         viewportWidth: geometry.size.width,
-                        isVisible: trailingFadeVisible
+                        leadingVisible: leadingFadeVisible,
+                        trailingVisible: trailingFadeVisible
                     )
                 }
+                .animation(.easeOut(duration: 0.18), value: leadingFadeVisible)
                 .animation(.easeOut(duration: 0.18), value: trailingFadeVisible)
             }
             .frame(maxWidth: .infinity)
@@ -1079,6 +1150,10 @@ private struct DashboardConnectionSwitcher: View {
         )
     }
 
+    private func showsLeadingFade(rowOffset: CGFloat) -> Bool {
+        rowOffset < -0.5
+    }
+
     private func showsTrailingFade(viewportWidth: CGFloat, rowOffset: CGFloat) -> Bool {
         let itemWidth: CGFloat = 42
         let spacing: CGFloat = 7
@@ -1092,25 +1167,40 @@ private struct DashboardConnectionSwitcher: View {
         return lastLogoMaxX > viewportWidth + 0.5
     }
 
-    private func trailingLogoMask(viewportWidth: CGFloat, isVisible: Bool) -> LinearGradient {
-        let fadeWidth: CGFloat = 26
-        let fadeStart = max(0, 1 - fadeWidth / max(viewportWidth, 1))
-        let middle = fadeStart + (1 - fadeStart) * 0.58
+    private func connectionLogoMask(
+        viewportWidth: CGFloat,
+        leadingVisible: Bool,
+        trailingVisible: Bool
+    ) -> LinearGradient {
+        let fadeWidth: CGFloat = 36
+        let totalWidth = max(viewportWidth, 1)
+        let leadEnd = min(0.4, fadeWidth / totalWidth)
+        let leadMid = leadEnd * 0.45
+        let trailStart = max(0.6, 1 - fadeWidth / totalWidth)
+        let trailMid = trailStart + (1 - trailStart) * 0.55
+
+        var stops: [Gradient.Stop] = []
+
+        if leadingVisible {
+            stops.append(.init(color: .clear, location: 0))
+            stops.append(.init(color: .white.opacity(0.30), location: leadMid))
+            stops.append(.init(color: .white, location: leadEnd))
+        } else {
+            stops.append(.init(color: .white, location: 0))
+            stops.append(.init(color: .white, location: leadEnd))
+        }
+
+        if trailingVisible {
+            stops.append(.init(color: .white, location: trailStart))
+            stops.append(.init(color: .white.opacity(0.30), location: trailMid))
+            stops.append(.init(color: .clear, location: 1))
+        } else {
+            stops.append(.init(color: .white, location: trailStart))
+            stops.append(.init(color: .white, location: 1))
+        }
 
         return LinearGradient(
-            stops: isVisible
-                ? [
-                    .init(color: .white, location: 0),
-                    .init(color: .white, location: fadeStart),
-                    .init(color: .white.opacity(0.48), location: middle),
-                    .init(color: .clear, location: 1),
-                ]
-                : [
-                    .init(color: .white, location: 0),
-                    .init(color: .white, location: fadeStart),
-                    .init(color: .white, location: middle),
-                    .init(color: .white, location: 1),
-                ],
+            stops: stops,
             startPoint: .leading,
             endPoint: .trailing
         )
@@ -1379,8 +1469,6 @@ private struct OpenCodeDashboardCard: View {
                 CodexDivider()
                     .padding(.top, 14)
 
-                // 前往官方页面查看额度，点击行为与 footer「前往官方页面」一致。
-                // 顶部/底部留白对称，让链接文字在分隔线与卡片底 border 之间居中。
                 HStack {
                     Spacer(minLength: 0)
                     Button {
@@ -1409,17 +1497,286 @@ private struct OpenCodeDashboardCard: View {
             Label("API Key 仅存本机，用于验证 \(connection.plan.displayName) 模型可用性；不会读取或推算账户额度。", systemImage: "checkmark.shield")
                 .font(.system(size: 9))
                 .foregroundStyle(Color.codexMuted)
-            .padding(.top, 12)
+                .padding(.top, 12)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 6)
     }
 
-    /// 与 footer「前往官方页面」一致：优先打开保存的工作间地址，未填则退回 opencode.ai。
     private func openWorkspacePage() {
         let url = connection.workspaceURL.flatMap { URL(string: $0) }
             ?? DashboardProviderLinks.openCodeConsole
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct QuotaProgressRing: View {
+    let fraction: Double
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.codexMuted.opacity(0.2), lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: CGFloat(max(0, min(1, fraction))))
+                .stroke(
+                    fraction < 0.1 ? Color.red : (fraction < 0.25 ? Color.orange : Color.codexGreen),
+                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+private struct GeminiDashboardCard: View {
+    let connection: GeminiAPIConnection
+    var onShowModels: (() -> Void)? = nil
+
+    private var planDisplayName: String {
+        connection.planName ?? connection.tier ?? "Google AI Pro"
+    }
+
+    private var fiveHourWindow: UsageWindow? {
+        guard let frac = connection.geminiFiveHourRemaining else { return nil }
+        let remaining = Int(round(frac * 100))
+        return UsageWindow(
+            label: "5小时额度",
+            remaining: remaining,
+            total: 100,
+            resetsAt: ""
+        )
+    }
+
+    private var weeklyWindow: UsageWindow? {
+        guard let frac = connection.geminiWeeklyRemaining else { return nil }
+        let remaining = Int(round(frac * 100))
+        return UsageWindow(
+            label: "本周额度",
+            remaining: remaining,
+            total: 100,
+            resetsAt: ""
+        )
+    }
+
+    private var fiveHourHealthColor: Color {
+        guard let frac = connection.geminiFiveHourRemaining else { return Color.codexGreen }
+        if frac < 0.15 { return Color.codexRed }
+        if frac < 0.30 { return Color.codexAmber }
+        return Color.codexGreen
+    }
+
+    private var weeklyHealthColor: Color {
+        guard let frac = connection.geminiWeeklyRemaining else { return Color.codexBlue }
+        if frac < 0.15 { return Color.codexRed }
+        if frac < 0.30 { return Color.codexAmber }
+        return Color.codexBlue
+    }
+
+    private var fiveHourResetText: String? {
+        formatResetCountdown(connection.geminiFiveHourResetDesc)
+    }
+
+    private var weeklyResetText: String? {
+        formatResetCountdown(connection.geminiWeeklyResetDesc)
+    }
+
+    private func formatResetCountdown(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+
+        // Days & Hours
+        if let match = raw.range(of: #"(\d+)\s*days?(?:,\s*(\d+)\s*hours?)?"#, options: .regularExpression) {
+            let matchedStr = String(raw[match])
+            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if nums.count >= 2 {
+                return "\(nums[0])天\(nums[1])小时后刷新"
+            } else if nums.count == 1 {
+                return "\(nums[0])天后刷新"
+            }
+        }
+
+        // Hours & Minutes
+        if let match = raw.range(of: #"(\d+)\s*hours?(?:,\s*(\d+)\s*minutes?)?"#, options: .regularExpression) {
+            let matchedStr = String(raw[match])
+            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if nums.count >= 2 {
+                return "\(nums[0])小时\(nums[1])分后刷新"
+            } else if nums.count == 1 {
+                return "\(nums[0])小时后刷新"
+            }
+        }
+
+        // Minutes
+        if let match = raw.range(of: #"(\d+)\s*minutes?"#, options: .regularExpression) {
+            let matchedStr = String(raw[match])
+            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if let first = nums.first {
+                return "\(first)分钟后刷新"
+            }
+        }
+
+        return raw
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Quota Section Header
+            HStack(alignment: .firstTextBaseline) {
+                Text("额度")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 6)
+                Text("5小时 / 周 双周期配额")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+            }
+
+            // Quota Ring Cards (Exact Codex style with individual reset times)
+            if let short = fiveHourWindow, let weekly = weeklyWindow {
+                HStack(spacing: 8) {
+                    QuotaRingCard(
+                        window: short,
+                        tint: fiveHourHealthColor,
+                        resetCountdown: fiveHourResetText
+                    )
+                    .frame(maxWidth: .infinity)
+
+                    QuotaRingCard(
+                        window: weekly,
+                        tint: weeklyHealthColor,
+                        resetCountdown: weeklyResetText
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.top, 6)
+
+                // Claude & GPT sub-quota
+                if let cFiveHour = connection.claudeGptFiveHourRemaining,
+                   let cWeekly = connection.claudeGptWeeklyRemaining {
+                    HStack(spacing: 8) {
+                        HStack {
+                            Text("Claude / GPT 5h")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                            Spacer()
+                            Text("\(Int(round(cFiveHour * 100)))%")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.codexMist.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+
+                        HStack {
+                            Text("Claude / GPT 周")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                            Spacer()
+                            Text("\(Int(round(cWeekly * 100)))%")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.codexMist.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .padding(.top, 6)
+                }
+            } else {
+                // Fallback GCP limits
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("每日请求上限")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                        Text(connection.dailyRequestsLimit.map { $0 > 0 ? "\($0)" : "无限制" } ?? "1,500")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
+                        Text("RPD / 天")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("分钟速率限制")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                        Text(connection.minuteRequestsLimit.map { "\($0)" } ?? "15")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
+                        Text("RPM / 分")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Token 吞吐量")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                        Text(connection.minuteTokensLimit.map { $0 >= 1000000 ? "\(Double($0) / 1000000.0, specifier: "%.1f")M" : "\($0)" } ?? "1.0M")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
+                        Text("TPM / 分")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .padding(.top, 6)
+            }
+
+            // Models discovery button
+            if let count = connection.availableModelCount,
+               !connection.availableModelIDs.isEmpty {
+                Button {
+                    onShowModels?()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("可访问 \(count) 个模型")
+                            .font(.system(size: 10, weight: .medium))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .semibold))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .foregroundStyle(Color.codexBlue)
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 6))
+                .padding(.top, 10)
+            }
+
+            // If connection is rate limited, show amber warning
+            if connection.rateLimitState == "rate_limited" {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.codexAmber).frame(width: 6, height: 6)
+                    Text("API 限流冷却中")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.codexAmber)
+                }
+                .padding(.top, 8)
+            }
+
+            Label("实时同步 Google AI Pro 额度与模型状态", systemImage: "checkmark.shield")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.codexMuted)
+                .padding(.top, 14)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2921,8 +3278,8 @@ private struct TaskStackView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(accessibilityText)
 
-            // Footer 是卡片内部独立的顶层命中区域；按钮位于 footer 的 HStack
-            // 内，不受整张任务卡的打开手势吞掉，也不会落到后层卡片偏移区。
+            // Footer 是卡片内部独立的顶层命中区域。它自身必须拥有完整的按钮命中面，
+            // 否则文字与透明 Spacer 会盖住底层 taskCard 手势并让点击落到后层视图。
             taskFooter
                 .padding(.horizontal, 13)
                 .frame(
@@ -3051,22 +3408,36 @@ private struct TaskStackView: View {
 
     private var taskFooter: some View {
         HStack(spacing: 8) {
-            Text(displayState.activityLabel)
-            Spacer()
-            if let task = displayedTask, AgentTaskOpener.canOpen(task) {
-                Text("点击打开 \(task.agentDisplayName)")
-                    .lineLimit(1)
-            } else {
-                Text("更新于\(UsageDateFormat.relative(displayUpdatedAt))")
-                    .lineLimit(1)
+            Button(action: openDisplayedTask) {
+                HStack(spacing: 8) {
+                    Text(displayState.activityLabel)
+                    Spacer(minLength: 8)
+                    if let task = displayedTask, AgentTaskOpener.canOpen(task) {
+                        Text("点击打开 \(task.agentDisplayName)")
+                            .lineLimit(1)
+                    } else {
+                        Text("更新于\(UsageDateFormat.relative(displayUpdatedAt))")
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 39, maxHeight: 39)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .simultaneousGesture(
+                codexMaterialTapGesture(in: Self.cardSpace) { location in
+                    ripples.spawnWave(at: location)
+                }
+            )
+            .accessibilityLabel(accessibilityText)
+
             if tasks.count > 1 {
                 taskAdvanceButton
             }
         }
         .font(.system(size: 10))
         .foregroundStyle(Color.codexMuted)
-        .frame(height: 39, alignment: .center)
+        .frame(maxWidth: .infinity, minHeight: 39, maxHeight: 39, alignment: .center)
         .overlay(alignment: .top) {
             CodexDivider()
         }
@@ -3202,33 +3573,58 @@ struct QuotaCardsView: View {
 private struct QuotaRingCard: View {
     let window: UsageWindow
     let tint: Color
+    var resetCountdown: String? = nil
 
     var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle().stroke(Color.codexTrack, lineWidth: 5)
-                Circle()
-                    .trim(from: 0, to: window.percent)
-                    .stroke(tint, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 39, height: 39)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().stroke(Color.codexTrack, lineWidth: 4.5)
+                    Circle()
+                        .trim(from: 0, to: window.percent)
+                        .stroke(tint, style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 38, height: 38)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(window.percentText)
-                    .font(.system(size: 18, weight: .bold))
-                    .monospacedDigit()
-                Text(window.label == "周额度" ? "本周" : window.label)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(window.percentText)
+                        .font(.system(size: 18, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.codexInk)
+                    Text(window.label == "周额度" ? "本周" : window.label)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, resetCountdown != nil ? 8 : 10)
+
+            if let resetCountdown, !resetCountdown.isEmpty {
+                CodexDivider()
+
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Color.codexMuted)
+                    Text(resetCountdown)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(Color.codexMist.opacity(0.35))
             }
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 9)
-        .frame(maxWidth: .infinity, minHeight: 61, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: resetCountdown != nil ? 78 : 61, alignment: .leading)
         .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.codexLine, lineWidth: 0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -3262,6 +3658,8 @@ private enum DashboardProviderLinks {
     static let codexUsage = URL(string: "https://chatgpt.com/codex/settings/usage")!
     static let deepSeekUsage = URL(string: "https://platform.deepseek.com/usage")!
     static let openCodeConsole = URL(string: "https://opencode.ai")!
+    static let geminiConsole = URL(string: "https://aistudio.google.com")!
+    static let geminiUsage = URL(string: "https://console.cloud.google.com/billing")!
 }
 
 private struct SyncFooterView: View {

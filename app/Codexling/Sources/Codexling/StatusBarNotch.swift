@@ -3,6 +3,23 @@ import Foundation
 
 // MARK: - 刘海屏检测与屏幕度量
 
+/// 从 WindowServer 的菜单栏窗口中匹配指定显示器。外接屏启用独立 Spaces 时，
+/// `visibleFrame` 可能仍等于完整 `frame`，不能据此判断菜单栏不存在。
+enum MenuBarWindowGeometry {
+    static func matchingHeight(
+        displayBounds: CGRect,
+        menuBarBounds: [CGRect]
+    ) -> CGFloat? {
+        let tolerance: CGFloat = 1
+        return menuBarBounds.first { bounds in
+            abs(bounds.minX - displayBounds.minX) <= tolerance
+                && abs(bounds.minY - displayBounds.minY) <= tolerance
+                && abs(bounds.width - displayBounds.width) <= tolerance
+                && bounds.height > 0
+        }?.height
+    }
+}
+
 extension NSScreen {
     /// 是否为 MacBook 内建显示器。
     var isBuiltin: Bool {
@@ -31,12 +48,19 @@ extension NSScreen {
     ///
     /// 关键点：不能用 `frame.maxY - visibleFrame.maxY` 去遍历所有屏幕取第一个非零值，
     /// 因为不同屏幕的顶部内缩各不相同（刘海屏是刘海内缩 ≈38pt，外接屏是它自己的菜单栏高度），
-    /// 套用别屏的值会导致外接屏胶囊偏高或偏矮。每块屏的 `frame` 与 `visibleFrame` 顶部差，
-    /// 恰恰就是「本屏」顶部被状态栏/Dock 让出的真实高度（用户开启“显示器具有独立 Spaces”
-    /// 后每块屏都有自己的菜单栏，此差值会正确反映各自的高度），因此要逐屏就地读取。
+    /// 套用别屏的值会导致外接屏胶囊偏高或偏矮。优先读取本屏 `frame` 与
+    /// `visibleFrame` 的顶部差；独立 Spaces 下外接屏可能错误上报为 0，此时再按
+    /// Quartz 显示器坐标匹配 WindowServer 中属于本屏的 Menubar 窗口。
     private static func menuBarHeight(on screen: NSScreen) -> CGFloat {
         let top = screen.frame.maxY - screen.visibleFrame.maxY
         if top > 0 { return top }
+        // With separate Spaces, an external screen can report no visibleFrame
+        // inset even while WindowServer owns a 30pt menu bar on that display.
+        // Match the actual main-menu-level window against this display's
+        // Quartz bounds before falling back to the process-global thickness.
+        if let windowHeight = menuBarWindowHeightFromWindowServer(on: screen) {
+            return windowHeight
+        }
         // 兜底：本屏顶部无内缩（例如全屏/自动隐藏菜单栏）时，退回系统菜单栏厚度。
         let thickness = NSStatusBar.system.thickness
         if thickness > 0 { return thickness }
@@ -46,6 +70,28 @@ extension NSScreen {
             if inset > 0 { return inset }
         }
         return 24
+    }
+
+    private static func menuBarWindowHeightFromWindowServer(on screen: NSScreen) -> CGFloat? {
+        let displayBounds = CGDisplayBounds(screen.screenNumber)
+        let menuBarLevel = Int(CGWindowLevelForKey(.mainMenuWindow))
+        guard let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+        let menuBarBounds = windows.compactMap { window -> CGRect? in
+            guard window[kCGWindowLayer as String] as? Int == menuBarLevel,
+                  let dictionary = window[kCGWindowBounds as String] as? NSDictionary else {
+                return nil
+            }
+            return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
+        }
+        return MenuBarWindowGeometry.matchingHeight(
+            displayBounds: displayBounds,
+            menuBarBounds: menuBarBounds
+        )
     }
 
     /// 物理刘海宽度：内建刘海屏用屏幕宽减去两侧辅助区（+ 少量补偿），其余用基础值 104pt。
@@ -152,18 +198,26 @@ extension CodexActivitySnapshot {
     }
 }
 
+/// 供应商额度的分段多色项（如 周 81% 与 5h 90% 各自独立根据余量着色）。
+struct StatusBarQuotaSegment: Equatable, Sendable {
+    let text: String
+    let health: QuotaHealthLevel
+}
+
 /// 右区 tick：某个账号 / API Key 的额度（与 Agent 独立，API Key 型无对应 Agent）。
 struct StatusBarProviderTick: Identifiable, Equatable, Sendable {
     let id: String
     let providerName: String
     let accountName: String
     let asset: BrandAssetID
-    /// 胶囊短文本，如 "5h 82% · 周76%" 或 "¥42.80"
+    /// 胶囊短文本，如 "5h 82% · 周 76%" 或 "¥42.80"
     let quotaText: String
     /// 展开面板副值，如 "周 76%" 或 "API Key"
     let detailText: String
     /// 与主界面额度状态共用的红 / 黄 / 绿颜色等级。
     let quotaHealth: QuotaHealthLevel
+    /// 分段额度彩色项（若非空则优先按项着色）
+    var quotaSegments: [StatusBarQuotaSegment] = []
     /// 该供应商账号对应的工作间跳转地址（例如 OpenCode 的 workspace 页面）。
     /// nil 时面板不展示「工作区跳转」按钮。
     var workspaceURL: String?
@@ -201,6 +255,13 @@ extension BrandAssetID {
         for descriptor in BuiltInAgentCatalog.prioritized where descriptor.displayName == name {
             return agent(descriptor.id)
         }
+        let lower = name.lowercased()
+        if lower.contains("codex") { return .codex }
+        if lower.contains("gemini") { return .googleGemini }
+        if lower.contains("antigravity") { return .antigravity }
+        if lower.contains("hermes") { return .hermesAgent }
+        if lower.contains("deepseek") { return .deepSeek }
+        if lower.contains("opencode") { return .openCode }
         return .codex
     }
 }
@@ -208,6 +269,22 @@ extension BrandAssetID {
 // MARK: - 额度 tick 提取
 
 enum StatusBarProviderTickFactory {
+    private static func percentageSegment(
+        label: String,
+        ratio: Double,
+        isConnected: Bool
+    ) -> StatusBarQuotaSegment {
+        let normalizedRatio = min(max(ratio, 0), 1)
+        return StatusBarQuotaSegment(
+            text: "\(label) \(Int(round(normalizedRatio * 100)))%",
+            health: isConnected ? QuotaHealthLevel.from(ratio: normalizedRatio) : .gray
+        )
+    }
+
+    private static func joinedQuotaText(_ segments: [StatusBarQuotaSegment]) -> String {
+        segments.map(\.text).joined(separator: " · ")
+    }
+
     /// Codex 连接额度：主值优先周额度（语义清晰稳定），5h 作为副值。
     static func codexTick(
         id: String,
@@ -217,26 +294,35 @@ enum StatusBarProviderTickFactory {
         isConnected: Bool = true
     ) -> StatusBarProviderTick? {
         guard let usage, usage.hasShortWindow || usage.hasWeeklyWindow else { return nil }
-        var quotaText: String
-        var detailText = ""
+        var segments: [StatusBarQuotaSegment] = []
         if usage.hasWeeklyWindow {
-            quotaText = "\(statusBarWindowLabel(usage.weekly.label)) \(usage.weekly.percentText)"
-            if usage.hasShortWindow, let short = usage.shortWindow {
-                detailText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
-            }
-        } else if let short = usage.shortWindow {
-            quotaText = "\(statusBarWindowLabel(short.label)) \(short.percentText)"
-        } else {
-            quotaText = "无额度"
+            segments.append(percentageSegment(
+                label: statusBarWindowLabel(usage.weekly.label),
+                ratio: usage.weekly.percent,
+                isConnected: isConnected
+            ))
         }
+        if usage.hasShortWindow, let short = usage.shortWindow {
+            segments.append(percentageSegment(
+                label: statusBarWindowLabel(short.label),
+                ratio: short.percent,
+                isConnected: isConnected
+            ))
+        }
+        let quotaText = segments.isEmpty ? "无额度" : joinedQuotaText(segments)
+        if segments.isEmpty {
+            segments = [StatusBarQuotaSegment(text: quotaText, health: .gray)]
+        }
+        let primaryHealth = segments.first?.health ?? .gray
         return StatusBarProviderTick(
             id: id,
             providerName: "Codex",
             accountName: accountName.isEmpty ? "Codex" : accountName,
             asset: .codex,
             quotaText: quotaText,
-            detailText: detailText,
-            quotaHealth: QuotaHealthLevel.from(window: usage.primaryWindow, isLoggedIn: isConnected)
+            detailText: "",
+            quotaHealth: primaryHealth,
+            quotaSegments: segments
         )
     }
 
@@ -260,7 +346,8 @@ enum StatusBarProviderTickFactory {
             asset: .deepSeek,
             quotaText: text,
             detailText: "API Key",
-            quotaHealth: quotaHealth
+            quotaHealth: quotaHealth,
+            quotaSegments: [StatusBarQuotaSegment(text: text, health: quotaHealth)]
         )
     }
 
@@ -275,6 +362,7 @@ enum StatusBarProviderTickFactory {
         case .zen:
             detailText = connection.availableModelCount.map { "已验证 \($0) 个模型" } ?? "API Key"
         }
+        let health: QuotaHealthLevel = connected ? .green : .yellow
         return StatusBarProviderTick(
             id: connection.plan == .go
                 ? "opencode-go.\(connection.id.rawValue.uuidString.lowercased())"
@@ -284,8 +372,62 @@ enum StatusBarProviderTickFactory {
             asset: .openCode,
             quotaText: quotaText,
             detailText: detailText,
-            quotaHealth: connected ? .green : .yellow,
+            quotaHealth: health,
+            quotaSegments: [StatusBarQuotaSegment(text: quotaText, health: health)],
             workspaceURL: connection.workspaceURL
+        )
+    }
+
+    /// Google Gemini 账号连接。
+    static func geminiTick(_ connection: GeminiAccountConnection) -> StatusBarProviderTick {
+        let connected = connection.authenticationState == .connected
+        let isRateLimited = connection.rateLimitState == "rate_limited"
+        var segments: [StatusBarQuotaSegment] = []
+        let quotaText: String
+        if isRateLimited {
+            quotaText = "限流中"
+            segments = [StatusBarQuotaSegment(text: "限流中", health: .yellow)]
+        } else if let weekly = connection.geminiWeeklyRemaining, let fiveHour = connection.geminiFiveHourRemaining {
+            segments = [
+                percentageSegment(label: "周", ratio: weekly, isConnected: connected),
+                percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)
+            ]
+            quotaText = joinedQuotaText(segments)
+        } else if let weekly = connection.geminiWeeklyRemaining {
+            segments = [percentageSegment(label: "周", ratio: weekly, isConnected: connected)]
+            quotaText = joinedQuotaText(segments)
+        } else if let fiveHour = connection.geminiFiveHourRemaining {
+            segments = [percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)]
+            quotaText = joinedQuotaText(segments)
+        } else {
+            quotaText = connection.planName ?? (connection.isBillingEnabled == true ? "按量付费" : "Free Tier")
+            segments = [StatusBarQuotaSegment(text: quotaText, health: connected ? .green : .yellow)]
+        }
+        let detailText: String = if isRateLimited {
+            "API 限流冷却"
+        } else if let count = connection.availableModelCount, count > 0 {
+            "已验证 \(count) 个模型"
+        } else {
+            connection.email ?? (connection.isBillingEnabled == true ? "Google AI 订阅" : "Google 账号")
+        }
+        let health: QuotaHealthLevel = if !connected {
+            .yellow
+        } else if isRateLimited {
+            .yellow
+        } else if let weekly = connection.geminiWeeklyRemaining, weekly < 0.15 {
+            .yellow
+        } else {
+            .green
+        }
+        return StatusBarProviderTick(
+            id: "gemini.\(connection.id.rawValue.uuidString.lowercased())",
+            providerName: connection.planName ?? "Google Gemini",
+            accountName: connection.label,
+            asset: .googleGemini,
+            quotaText: quotaText,
+            detailText: detailText,
+            quotaHealth: health,
+            quotaSegments: segments
         )
     }
 }

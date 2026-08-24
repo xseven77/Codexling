@@ -53,6 +53,17 @@ enum CodexActivityState: String, CaseIterable, Sendable {
         }
     }
 
+    var arbitrationPriority: Int {
+        switch self {
+        case .waitingForUser: 5
+        case .executing: 4
+        case .reviewing: 3
+        case .thinking: 2
+        case .interrupted: 1
+        case .completed, .idle, .unavailable: 0
+        }
+    }
+
     var hoverTitle: String {
         switch self {
         case .unavailable:
@@ -742,6 +753,7 @@ final class CodexActivityStore {
     private let codexService: CodexActivityService
     private let dshService: DSHActivityService
     private let hermesService: HermesActivityService
+    private let antigravityService: AntigravityActivityService
     private var baseSnapshot = CodexActivitySnapshot.unavailable
     private var agentEventReducer = AgentEventActivityReducer()
     private var timer: Timer?
@@ -751,11 +763,13 @@ final class CodexActivityStore {
     init(
         codexService: CodexActivityService = CodexActivityService(),
         dshService: DSHActivityService = DSHActivityService(),
-        hermesService: HermesActivityService = HermesActivityService()
+        hermesService: HermesActivityService = HermesActivityService(),
+        antigravityService: AntigravityActivityService = AntigravityActivityService()
     ) {
         self.codexService = codexService
         self.dshService = dshService
         self.hermesService = hermesService
+        self.antigravityService = antigravityService
     }
 
     func start() {
@@ -785,12 +799,14 @@ final class CodexActivityStore {
         let codexService = self.codexService
         let dshService = self.dshService
         let hermesService = self.hermesService
+        let antigravityService = self.antigravityService
         refreshTask = Task { [weak self] in
             let next = await Task.detached {
                 CodexActivitySnapshot.merged([
                     codexService.loadSnapshot(),
                     dshService.loadSnapshot(),
                     hermesService.loadSnapshot(),
+                    antigravityService.loadSnapshot(),
                 ])
             }.value
             guard !Task.isCancelled, let self else { return }

@@ -3,14 +3,14 @@ import XCTest
 @testable import Codexling
 
 final class AgentHookManagerTests: XCTestCase {
-    func testIntegrationStatusesListsThreeSessionReadAgents() {
+    func testIntegrationStatusesListsFourSessionReadAgents() {
         let manager = AgentHookManager(homeDirectory: FileManager.default.temporaryDirectory)
         let statuses = manager.integrationStatuses()
 
-        XCTAssertEqual(statuses.map(\.name), ["Codex", "Deepseek Harness", "Hermes"])
+        XCTAssertEqual(statuses.map(\.name), ["Codex", "Deepseek Harness", "Hermes", "Antigravity"])
         XCTAssertEqual(
             statuses.map(\.detail),
-            ["App Server · 本地活动", "Session JSONL · 会话读取", "Gateway JSON-RPC · 会话读取"]
+            ["App Server · 本地活动", "Session JSONL · 会话读取", "Gateway JSON-RPC · 会话读取", "Transcript JSONL · 本地活动"]
         )
     }
 

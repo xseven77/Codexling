@@ -100,6 +100,16 @@ final class NotchHitTestView: NSView {
     }
 }
 
+/// A notch is intentionally attached to the physical top edge, inside the area
+/// AppKit normally reserves for the menu bar. Plain NSPanel silently constrains
+/// `setFrame` to `visibleFrame`, which pushes the surface down by one menu-bar
+/// height and leaves it looking like a detached, clipped capsule.
+final class NotchOverlayPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+}
+
 /// 刘海屏伴侣面板：固定尺寸透明 NSPanel 顶部贴主屏顶边，内容在窗口内顶部居中。
 /// 收起态只拦截顶部胶囊的点击（点击展开），展开态拦截整个面板；鼠标移出或 Esc 收起。
 @MainActor
@@ -133,13 +143,13 @@ final class NotchCapsulePanelController {
 
     init() {
         hosting = NSHostingController(rootView: NotchCapsuleView(viewModel: viewModel))
-        panel = NSPanel(
+        panel = NotchOverlayPanel(
             contentRect: NSRect(origin: .zero, size: Self.windowSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        collapsedHitPanel = NSPanel(
+        collapsedHitPanel = NotchOverlayPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -153,8 +163,10 @@ final class NotchCapsulePanelController {
 
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
-        // 始终置顶（高于菜单栏）：收起态的假刘海也要盖住物理刘海两侧的 app icon，不能沉到菜单栏下面。
-        panel.level = .mainMenu + 3
+        // macOS 26 can place menu-bar/status-item windows above `.mainMenu + n`.
+        // The notch is a screen-edge surface and must remain above that system
+        // chrome on every display, including when another app is active.
+        panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -169,7 +181,7 @@ final class NotchCapsulePanelController {
 
         collapsedHitPanel.isFloatingPanel = true
         collapsedHitPanel.becomesKeyOnlyIfNeeded = true
-        collapsedHitPanel.level = .mainMenu + 4
+        collapsedHitPanel.level = .screenSaver + 1
         collapsedHitPanel.isOpaque = false
         collapsedHitPanel.backgroundColor = .clear
         collapsedHitPanel.hasShadow = false
@@ -183,6 +195,10 @@ final class NotchCapsulePanelController {
         collapsedHitView.wantsLayer = true
         // 极低 alpha 保证 Window Server 保留命中层；它叠在黑色胶囊上，不产生可见变化。
         collapsedHitView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
+        collapsedHitView.setAccessibilityElement(true)
+        collapsedHitView.setAccessibilityRole(.button)
+        collapsedHitView.setAccessibilityLabel("Codexling 刘海面板")
+        collapsedHitView.setAccessibilityHelp("点击展开 Codexling 刘海面板")
         collapsedHitPanel.contentView = collapsedHitView
 
         // self 完全初始化后再注入回调，转发到公开属性。
@@ -227,12 +243,16 @@ final class NotchCapsulePanelController {
     }
 
     func show(on screen: NSScreen? = nil) {
-        self.screen = screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let resolvedScreen = screen ?? NSScreen.main ?? NSScreen.screens.first else {
+            hide()
+            return
+        }
+        self.screen = resolvedScreen
         // 动态计算：收起态高度 = 刘海/状态栏高度，宽度 = 刘海宽度 + 左右翼。
         let notchWidth = self.screen?.notchWidth ?? 104
-        let safeTop = self.screen?.notchHeight ?? 24
+        let safeTop = self.screen?.notchHeight ?? NSStatusBar.system.thickness
         viewModel.notchWidth = notchWidth
-        viewModel.closedWidth = notchWidth + 230
+        viewModel.closedWidth = notchWidth + 280
         viewModel.closedHeight = safeTop
         viewModel.screenName = self.screen?.displayName ?? "显示器"
         viewModel.isExpanded = false
@@ -243,6 +263,14 @@ final class NotchCapsulePanelController {
         panel.orderFrontRegardless()
         collapsedHitPanel.orderFrontRegardless()
         installMonitors()
+    }
+
+    /// 数据刷新可能在显示器重建之后先于 `applyMode` 创建一个新控制器。
+    /// 如果窗口尚未真正进入 WindowServer，就立即用目标屏幕恢复，而不是留下
+    /// 初始化时的默认坐标/零尺寸点击层。
+    func ensureVisible(on screen: NSScreen) {
+        guard !panel.isVisible else { return }
+        show(on: screen)
     }
 
     func hide() {
@@ -528,13 +556,12 @@ private struct NotchCapsuleView: View {
             // 右翼：供应商 logo + 额度，贴右
             HStack(spacing: 6) {
                 if let provider {
-                    Text(provider.quotaText)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(
-                            provider.quotaText.contains("暂不可查")
-                                ? Color.gray : provider.quotaHealth.color
-                        )
-                        .lineLimit(1)
+                    ProviderQuotaTextView(
+                        provider: provider,
+                        font: .system(size: 11, weight: .semibold, design: .rounded),
+                        separatorColor: .white.opacity(0.4)
+                    )
+                    .lineLimit(1)
                     StatusBarBrandBadge(asset: provider.asset, size: 14)
                 } else {
                     Text("未登录")
@@ -751,14 +778,13 @@ private struct NotchCapsuleView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.45))
                     .padding(.top, 12)
-                Text(provider.quotaText)
-                    .font(.system(size: 18, weight: .bold, design: .monospaced))
-                    .foregroundStyle(
-                        provider.quotaText.contains("暂不可查")
-                            ? Color.gray : provider.quotaHealth.color
-                    )
-                    .lineLimit(1)
-                    .padding(.top, 8)
+                ProviderQuotaTextView(
+                    provider: provider,
+                    font: .system(size: 17, weight: .bold, design: .rounded),
+                    separatorColor: .white.opacity(0.4)
+                )
+                .lineLimit(1)
+                .padding(.top, 8)
                 if !provider.detailText.isEmpty {
                     HStack(spacing: 8) {
                         Text(provider.detailText)
@@ -1024,5 +1050,41 @@ private struct StatusBarBrandBadge: View {
         }
         .frame(width: size, height: size)
         .background(Color.white, in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+    }
+}
+
+/// 供应商额度文本（支持分段按各自余量彩色渲染，如 周 81% 绿 · 5h 90% 绿 / 5h 3% 红）。
+private struct ProviderQuotaTextView: View {
+    let provider: StatusBarProviderTick
+    let font: Font
+    var separatorColor: Color = .white.opacity(0.4)
+
+    var body: some View {
+        if provider.quotaSegments.count > 1 {
+            HStack(spacing: 5) {
+                ForEach(Array(provider.quotaSegments.enumerated()), id: \.offset) { index, segment in
+                    if index > 0 {
+                        Text("·")
+                            .font(font)
+                            .foregroundStyle(separatorColor)
+                    }
+                    Text(segment.text)
+                        .font(font)
+                        .foregroundStyle(segment.health.color)
+                }
+            }
+        } else if let single = provider.quotaSegments.first {
+            Text(single.text)
+                .font(font)
+                .foregroundStyle(
+                    single.text.contains("暂不可查") ? Color.gray : single.health.color
+                )
+        } else {
+            Text(provider.quotaText)
+                .font(font)
+                .foregroundStyle(
+                    provider.quotaText.contains("暂不可查") ? Color.gray : provider.quotaHealth.color
+                )
+        }
     }
 }

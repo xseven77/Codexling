@@ -43,11 +43,19 @@ struct AgentHookManager {
     }
 
     private func locateExecutable(for agentID: AgentID) -> URL? {
+        if agentID == .antigravity {
+            let candidate = homeDirectory.appendingPathComponent(".gemini/antigravity/bin/agentapi")
+            if fileManager.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
         let executable: String
         switch agentID {
         case .codex: executable = "codex"
         case .hermes: executable = "hermes"
         case .deepseekHarness: executable = "dsh"
+        case .antigravity: executable = "agy"
         default: return nil
         }
 
@@ -56,6 +64,7 @@ struct AgentHookManager {
             "/usr/local/bin",
             homeDirectory.appendingPathComponent(".local/bin").path,
             homeDirectory.appendingPathComponent(".nvm/current/bin").path,
+            homeDirectory.appendingPathComponent(".gemini/antigravity/bin").path,
         ]
         for prefix in prefixes {
             let candidate = URL(fileURLWithPath: prefix).appendingPathComponent(executable)
@@ -94,6 +103,11 @@ struct AgentHookManager {
                 "/Applications/Hermes.app",
                 homeDirectory.appendingPathComponent("Applications/Hermes.app").path,
             ]
+        case .antigravity:
+            paths = [
+                "/Applications/Antigravity.app",
+                homeDirectory.appendingPathComponent("Applications/Antigravity.app").path,
+            ]
         case .deepseekHarness:
             // Deepseek Harness 是 npx 分发的 CLI，无桌面 App。
             paths = []
@@ -108,6 +122,7 @@ struct AgentHookManager {
         case .codex: "App Server · 本地活动"
         case .hermes: "Gateway JSON-RPC · 会话读取"
         case .deepseekHarness: "Session JSONL · 会话读取"
+        case .antigravity: "Transcript JSONL · 本地活动"
         default: ""
         }
     }

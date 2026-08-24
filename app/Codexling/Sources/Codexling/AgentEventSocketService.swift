@@ -203,6 +203,9 @@ struct AgentEventActivityReducer {
         case .codexDesktop: "Desktop"
         case .hermesCLI: "CLI"
         case .deepseekHarnessCLI: "CLI"
+        case .antigravityDesktop: "Desktop"
+        case .antigravityIDE: "IDE"
+        case .antigravityCLI: "CLI"
         }
         let state = codexState(from: entry.state)
         let title = "\(agentName) · \(surfaceName)"

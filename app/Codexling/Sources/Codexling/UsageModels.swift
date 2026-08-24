@@ -420,6 +420,18 @@ enum QuotaHealthLevel: Equatable, Sendable {
             return .red
         }
     }
+
+    static func from(ratio: Double?) -> QuotaHealthLevel {
+        guard let ratio else { return .gray }
+        switch ratio {
+        case 0.5...:
+            return .green
+        case 0.2..<0.5:
+            return .yellow
+        default:
+            return .red
+        }
+    }
 }
 
 extension QuotaHealthLevel {

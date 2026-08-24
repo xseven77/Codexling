@@ -5,6 +5,67 @@ import XCTest
 @testable import Codexling
 
 final class CodexlingTests: XCTestCase {
+    func testMenuBarGeometryUsesTheMatchingExternalDisplayHeight() {
+        let externalDisplay = CGRect(x: -2560, y: -122, width: 2560, height: 1440)
+        let menuBars = [
+            CGRect(x: 0, y: 0, width: 1800, height: 39),
+            CGRect(x: -5120, y: -30, width: 2560, height: 30),
+            CGRect(x: -2560, y: -122, width: 2560, height: 30)
+        ]
+
+        XCTAssertEqual(
+            MenuBarWindowGeometry.matchingHeight(
+                displayBounds: externalDisplay,
+                menuBarBounds: menuBars
+            ),
+            30
+        )
+    }
+
+    func testMenuBarGeometryDoesNotBorrowAnotherDisplaysHeight() {
+        let externalDisplay = CGRect(x: -2560, y: -122, width: 2560, height: 1440)
+        let otherDisplayMenuBars = [
+            CGRect(x: 0, y: 0, width: 1800, height: 39),
+            CGRect(x: -5120, y: -30, width: 2560, height: 30)
+        ]
+
+        XCTAssertNil(
+            MenuBarWindowGeometry.matchingHeight(
+                displayBounds: externalDisplay,
+                menuBarBounds: otherDisplayMenuBars
+            )
+        )
+    }
+
+    @MainActor
+    func testNotchOverlayPanelKeepsRequestedPhysicalTopEdge() {
+        let panel = NotchOverlayPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        let requested = NSRect(x: 550, y: 839, width: 700, height: 330)
+
+        XCTAssertEqual(panel.constrainFrameRect(requested, to: NSScreen.main), requested)
+    }
+
+    @MainActor
+    func testNotchPanelRecoversWhenARefreshFindsItHidden() throws {
+        let screen = try XCTUnwrap(NSScreen.main)
+        let controller = NotchCapsulePanelController()
+        defer { controller.hide() }
+
+        controller.show(on: screen)
+        XCTAssertTrue(controller.isVisible)
+
+        controller.hide()
+        XCTAssertFalse(controller.isVisible)
+
+        controller.ensureVisible(on: screen)
+        XCTAssertTrue(controller.isVisible)
+    }
+
     @MainActor
     func testThemePreferencesMapToLightDarkAndSystemColorSchemes() {
         XCTAssertNil(AppThemePreference.system.preferredColorScheme)
@@ -745,6 +806,46 @@ final class CodexlingTests: XCTestCase {
             ),
             .red
         )
+    }
+
+    func testGeminiNotchQuotaSegmentsUseIndependentHealthColors() {
+        let connection = GeminiAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Gemini Test",
+            credentialHandle: "gemini-test",
+            authenticationState: .connected,
+            geminiWeeklyRemaining: 0.70,
+            geminiFiveHourRemaining: 0.10,
+            createdAt: Date()
+        )
+
+        let tick = StatusBarProviderTickFactory.geminiTick(connection)
+
+        XCTAssertEqual(tick.quotaText, "周 70% · 5h 10%")
+        XCTAssertEqual(tick.quotaSegments, [
+            StatusBarQuotaSegment(text: "周 70%", health: .green),
+            StatusBarQuotaSegment(text: "5h 10%", health: .red)
+        ])
+    }
+
+    func testCodexNotchQuotaSegmentsUseIndependentHealthColors() throws {
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.weekly = UsageWindow(label: "周额度", remaining: 70, total: 100, resetsAt: "")
+        snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 10, total: 100, resetsAt: "")
+
+        let tick = try XCTUnwrap(StatusBarProviderTickFactory.codexTick(
+            id: "codex.test",
+            label: "Codex Test",
+            accountName: "Codex Test",
+            usage: snapshot,
+            isConnected: true
+        ))
+
+        XCTAssertEqual(tick.quotaText, "周 70% · 5h 10%")
+        XCTAssertEqual(tick.quotaSegments, [
+            StatusBarQuotaSegment(text: "周 70%", health: .green),
+            StatusBarQuotaSegment(text: "5h 10%", health: .red)
+        ])
     }
 
     func testUsageParserReadsRateLimitInsideUsageAndOmitsMissingSecondaryWindow() throws {

@@ -491,11 +491,24 @@ private struct ResetCouponGrantAvatar: View {
 
     private var fallbackIcon: some View {
         ZStack {
-            Color.codexGreen.opacity(isDark ? 0.16 : 0.1)
-            Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.codexGreen)
+            LinearGradient(
+                colors: [
+                    Color.codexGreen.opacity(isDark ? 0.22 : 0.14),
+                    Color.codexGreen.opacity(isDark ? 0.10 : 0.05)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Image(systemName: "ticket.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.codexGreen.opacity(isDark ? 0.88 : 0.82))
+
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 7, weight: .black))
+                .foregroundStyle(isDark ? Color.black.opacity(0.72) : Color.white)
         }
+        .accessibilityHidden(true)
     }
 }
 

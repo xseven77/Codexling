@@ -29,23 +29,28 @@ final class MultiAgentSettingsStore {
     private let deepSeekBalanceService: any DeepSeekBalanceFetching
     private let openCodeCredentialStore: any OpenCodeCredentialStoring
     private let openCodeModelsService: any OpenCodeModelsFetching
+    private let geminiOAuthTokenStore: any GeminiOAuthTokenStoring
+    private let geminiOAuthService: any GeminiOAuthServicing
 
     private(set) var integrations: [AgentIntegrationStatus] = []
     private(set) var codexAccounts: [CodexAccountConnection] = []
     private(set) var deepSeekConnections: [DeepSeekAPIConnection] = []
     private(set) var openCodeConnections: [OpenCodeAPIConnection] = []
+    private(set) var geminiConnections: [GeminiAccountConnection] = []
     private(set) var connectionOrder: [String] = []
     private(set) var isMutatingConnections = false
     private(set) var isRefreshingConnections = false
     /// 正在单独请求中的连接 id（按账号分开加载：完成一个移除一个）。
     private(set) var refreshingConnectionIDs: Set<ConnectionID> = []
     private(set) var isCodexOAuthInProgress = false
+    private(set) var isGeminiOAuthInProgress = false
     private(set) var lastMessage: String?
     private(set) var isAccountCarouselPaused = false
     private var accountCarouselPauseSources: Set<AccountCarouselPauseSource> = []
     var onSelectedConnectionChanged: (() -> Void)?
     var onAccountCarouselPauseChanged: ((Bool) -> Void)?
     private var activeCodexOAuthService: CodexUsageService?
+    private var activeGeminiOAuthService: (any GeminiOAuthServicing)?
     var selectedConnectionKey: String {
         didSet {
             guard selectedConnectionKey != oldValue else { return }
@@ -63,6 +68,8 @@ final class MultiAgentSettingsStore {
         deepSeekBalanceService: any DeepSeekBalanceFetching = DeepSeekBalanceService(),
         openCodeCredentialStore: any OpenCodeCredentialStoring = OpenCodeCredentialStore(),
         openCodeModelsService: any OpenCodeModelsFetching = OpenCodeModelsService(),
+        geminiOAuthTokenStore: any GeminiOAuthTokenStoring = GeminiOAuthTokenStore(),
+        geminiOAuthService: any GeminiOAuthServicing = GeminiOAuthService(),
         startsAutomaticRefresh: Bool = true,
         migratesLegacyAccount: Bool = true
     ) {
@@ -74,12 +81,15 @@ final class MultiAgentSettingsStore {
         self.deepSeekBalanceService = deepSeekBalanceService
         self.openCodeCredentialStore = openCodeCredentialStore
         self.openCodeModelsService = openCodeModelsService
+        self.geminiOAuthTokenStore = geminiOAuthTokenStore
+        self.geminiOAuthService = geminiOAuthService
         selectedConnectionKey = UserDefaults.standard.string(forKey: Self.selectedConnectionDefaultsKey)
             ?? ""
         let registry = registryStorage.load()
         codexAccounts = registry.codexAccounts
         deepSeekConnections = registry.deepSeekConnections
         openCodeConnections = registry.openCodeConnections
+        geminiConnections = registry.geminiConnections
         if migratesLegacyAccount {
             migrateLegacyCodexAccountIfNeeded()
         }
@@ -140,6 +150,8 @@ final class MultiAgentSettingsStore {
             selectDeepSeekConnection(connection)
         } else if let connection = openCodeConnections.first(where: { connectionKey(for: $0) == nextKey }) {
             selectOpenCodeConnection(connection)
+        } else if let connection = geminiConnections.first(where: { connectionKey(for: $0) == nextKey }) {
+            selectGeminiConnection(connection)
         }
     }
 
@@ -155,6 +167,10 @@ final class MultiAgentSettingsStore {
         selectedConnectionKey == connectionKey(for: connection)
     }
 
+    func isSelected(_ connection: GeminiAPIConnection) -> Bool {
+        selectedConnectionKey == connectionKey(for: connection)
+    }
+
     var selectedCodexAccount: CodexAccountConnection? {
         codexAccounts.first(where: isSelected)
     }
@@ -165,6 +181,14 @@ final class MultiAgentSettingsStore {
 
     var selectedOpenCodeConnection: OpenCodeAPIConnection? {
         openCodeConnections.first(where: isSelected)
+    }
+
+    var selectedGeminiConnection: GeminiAPIConnection? {
+        geminiConnections.first(where: isSelected)
+    }
+
+    func selectGeminiConnection(_ connection: GeminiAPIConnection) {
+        selectedConnectionKey = connectionKey(for: connection)
     }
 
     @discardableResult
@@ -200,11 +224,13 @@ final class MultiAgentSettingsStore {
         let codexAccounts = self.codexAccounts
         let deepSeekConnections = self.deepSeekConnections
         let openCodeConnections = self.openCodeConnections
+        let geminiConnections = self.geminiConnections
         // 先登记全部账号为「加载中」，各自完成后逐个移除，
         // 让界面可以按账号单独展示加载 / 完成状态。
         refreshingConnectionIDs.formUnion(codexAccounts.map(\.id))
         refreshingConnectionIDs.formUnion(deepSeekConnections.map(\.id))
         refreshingConnectionIDs.formUnion(openCodeConnections.map(\.id))
+        refreshingConnectionIDs.formUnion(geminiConnections.map(\.id))
 
         var tasks: [Task<RefreshOutcome, Never>] = []
         for connection in codexAccounts {
@@ -225,6 +251,14 @@ final class MultiAgentSettingsStore {
         for connection in openCodeConnections {
             tasks.append(Task { @MainActor [weak self] in
                 let outcome = await self?.refreshOpenCodeConnectionWithoutLock(connection, publishesMessage: false)
+                    ?? RefreshOutcome()
+                self?.refreshingConnectionIDs.remove(connection.id)
+                return outcome
+            })
+        }
+        for connection in geminiConnections {
+            tasks.append(Task { @MainActor [weak self] in
+                let outcome = await self?.refreshGeminiConnectionWithoutLock(connection, publishesMessage: false)
                     ?? RefreshOutcome()
                 self?.refreshingConnectionIDs.remove(connection.id)
                 return outcome
@@ -776,6 +810,203 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    // MARK: - Google Gemini
+
+    func cancelCurrentGeminiOAuth() {
+        guard isGeminiOAuthInProgress, let service = activeGeminiOAuthService else { return }
+        lastMessage = "正在取消 Google 账号登录…"
+        service.cancelOAuthAuthorization()
+    }
+
+    func addGeminiAccount() async -> Bool {
+        guard !isMutatingConnections else { return false }
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        let id = ConnectionID(rawValue: UUID())
+        let handle = id.rawValue.uuidString.lowercased()
+        do {
+            activeGeminiOAuthService = geminiOAuthService
+            isGeminiOAuthInProgress = true
+            defer {
+                activeGeminiOAuthService = nil
+                isGeminiOAuthInProgress = false
+            }
+            let token = try await geminiOAuthService.startOAuth(forceLogin: true)
+            try geminiOAuthTokenStore.save(token, handle: handle)
+            let snapshot = await geminiOAuthService.fetchQuotaSnapshot(accessToken: token.accessToken)
+            let label = token.email ?? token.displayName ?? "Google 账号 \(geminiConnections.count + 1)"
+            let connection = GeminiAccountConnection(
+                id: id,
+                label: label,
+                email: token.email,
+                displayName: token.displayName,
+                avatarURL: token.avatarURL,
+                credentialHandle: handle,
+                authenticationState: .connected,
+                availableModelCount: snapshot.availableModelCount,
+                availableModelIDs: snapshot.availableModels,
+                projectId: snapshot.projectId,
+                projectName: snapshot.projectName,
+                tier: snapshot.tier,
+                isBillingEnabled: snapshot.isBillingEnabled,
+                dailyRequestsLimit: snapshot.dailyRequestsLimit,
+                minuteRequestsLimit: snapshot.minuteRequestsLimit,
+                minuteTokensLimit: snapshot.minuteTokensLimit,
+                planName: snapshot.planName,
+                geminiWeeklyRemaining: snapshot.geminiWeeklyRemaining,
+                geminiWeeklyResetDesc: snapshot.geminiWeeklyResetDesc,
+                geminiFiveHourRemaining: snapshot.geminiFiveHourRemaining,
+                geminiFiveHourResetDesc: snapshot.geminiFiveHourResetDesc,
+                claudeGptWeeklyRemaining: snapshot.claudeGptWeeklyRemaining,
+                claudeGptFiveHourRemaining: snapshot.claudeGptFiveHourRemaining,
+                lastValidatedAt: Date(),
+                rateLimitState: "normal",
+                createdAt: Date()
+            )
+            geminiConnections.append(connection)
+            selectGeminiConnection(connection)
+            try saveRegistry()
+            lastMessage = "已通过 Google 账号登录 \(label)"
+            return true
+        } catch {
+            try? geminiOAuthTokenStore.delete(handle: handle)
+            if case GeminiOAuthError.oauthCancelled = error {
+                lastMessage = "已取消 Google 账号登录"
+            } else {
+                lastMessage = "Google 账号登录失败：\(error.localizedDescription)"
+            }
+            return false
+        }
+    }
+
+    func authenticateGeminiAccount(_ connection: GeminiAccountConnection) async -> Bool {
+        guard !isMutatingConnections else { return false }
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        do {
+            activeGeminiOAuthService = geminiOAuthService
+            isGeminiOAuthInProgress = true
+            defer {
+                activeGeminiOAuthService = nil
+                isGeminiOAuthInProgress = false
+            }
+            let token = try await geminiOAuthService.startOAuth(forceLogin: true)
+            try geminiOAuthTokenStore.save(token, handle: connection.credentialHandle)
+            let modelIDs = (try? await geminiOAuthService.validateModels(accessToken: token.accessToken)) ?? []
+            guard let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) else {
+                return false
+            }
+            let label = token.email ?? token.displayName ?? connection.label
+            geminiConnections[index].label = label
+            geminiConnections[index].email = token.email
+            geminiConnections[index].displayName = token.displayName
+            geminiConnections[index].avatarURL = token.avatarURL
+            geminiConnections[index].authenticationState = .connected
+            geminiConnections[index].availableModelCount = modelIDs.count
+            geminiConnections[index].availableModelIDs = modelIDs
+            geminiConnections[index].lastValidatedAt = Date()
+            geminiConnections[index].rateLimitState = "normal"
+            try saveRegistry()
+            lastMessage = "已重新连接 Google 账号 \(label)"
+            return true
+        } catch {
+            if case GeminiOAuthError.oauthCancelled = error {
+                lastMessage = "已取消 Google 账号重新登录"
+            } else {
+                lastMessage = "Google 账号重新连接失败：\(error.localizedDescription)"
+            }
+            return false
+        }
+    }
+
+    func refreshGeminiConnection(_ connection: GeminiAccountConnection) async {
+        guard !isRefreshingConnections, !isMutatingConnections else { return }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        refreshingConnectionIDs.insert(connection.id)
+        _ = await refreshGeminiConnectionWithoutLock(connection, publishesMessage: true)
+        refreshingConnectionIDs.remove(connection.id)
+    }
+
+    private func refreshGeminiConnectionWithoutLock(
+        _ connection: GeminiAccountConnection,
+        publishesMessage: Bool
+    ) async -> RefreshOutcome {
+        guard var token = geminiOAuthTokenStore.load(handle: connection.credentialHandle) else {
+            if let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) {
+                geminiConnections[index].authenticationState = .invalid
+                try? saveRegistry()
+            }
+            let message = "\(connection.label)：本地 Google OAuth Token 缺失，请重新登录"
+            if publishesMessage { lastMessage = message }
+            return RefreshOutcome(failures: [message])
+        }
+
+        if token.isExpired, let _ = token.refreshToken {
+            do {
+                token = try await geminiOAuthService.refreshToken(token)
+                try geminiOAuthTokenStore.save(token, handle: connection.credentialHandle)
+            } catch {
+                if let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) {
+                    geminiConnections[index].authenticationState = .invalid
+                    try? saveRegistry()
+                }
+                let message = "\(connection.label)：Google 账号 Token 续期失败，请重新登录"
+                if publishesMessage { lastMessage = message }
+                return RefreshOutcome(failures: [message])
+            }
+        }
+
+        let snapshot = await geminiOAuthService.fetchQuotaSnapshot(accessToken: token.accessToken)
+        guard let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) else {
+            return RefreshOutcome(failures: ["\(connection.label)：连接已不存在"])
+        }
+        if let name = snapshot.userName, !name.isEmpty {
+            geminiConnections[index].displayName = name
+        }
+        if let email = snapshot.userEmail, !email.isEmpty {
+            geminiConnections[index].email = email
+        }
+        geminiConnections[index].availableModelCount = snapshot.availableModelCount
+        geminiConnections[index].availableModelIDs = snapshot.availableModels
+        geminiConnections[index].projectId = snapshot.projectId
+        geminiConnections[index].projectName = snapshot.projectName
+        geminiConnections[index].tier = snapshot.tier
+        geminiConnections[index].isBillingEnabled = snapshot.isBillingEnabled
+        geminiConnections[index].dailyRequestsLimit = snapshot.dailyRequestsLimit
+        geminiConnections[index].minuteRequestsLimit = snapshot.minuteRequestsLimit
+        geminiConnections[index].minuteTokensLimit = snapshot.minuteTokensLimit
+        geminiConnections[index].planName = snapshot.planName
+        geminiConnections[index].geminiWeeklyRemaining = snapshot.geminiWeeklyRemaining
+        geminiConnections[index].geminiWeeklyResetDesc = snapshot.geminiWeeklyResetDesc
+        geminiConnections[index].geminiFiveHourRemaining = snapshot.geminiFiveHourRemaining
+        geminiConnections[index].geminiFiveHourResetDesc = snapshot.geminiFiveHourResetDesc
+        geminiConnections[index].claudeGptWeeklyRemaining = snapshot.claudeGptWeeklyRemaining
+        geminiConnections[index].claudeGptFiveHourRemaining = snapshot.claudeGptFiveHourRemaining
+        geminiConnections[index].lastValidatedAt = Date()
+        geminiConnections[index].authenticationState = .connected
+        geminiConnections[index].rateLimitState = "normal"
+        try? saveRegistry()
+        if publishesMessage { lastMessage = "\(connection.label) 额度与项目信息已更新" }
+        return RefreshOutcome(successCount: 1)
+    }
+
+    func removeGeminiConnection(_ connection: GeminiAccountConnection) {
+        guard !isMutatingConnections else { return }
+        isMutatingConnections = true
+        defer { isMutatingConnections = false }
+        do {
+            try geminiOAuthTokenStore.delete(handle: connection.credentialHandle)
+            geminiConnections.removeAll { $0.id == connection.id }
+            connectionOrder.removeAll { $0 == connectionKey(for: connection) }
+            validateSelectedConnection()
+            try saveRegistry()
+            lastMessage = "已从本机移除 \(connection.label) 的 Google 账号连接"
+        } catch {
+            lastMessage = "移除失败：\(error.localizedDescription)"
+        }
+    }
+
     // MARK: - API Key Reveal
 
     /// 读取某个连接保存的 API Key 明文。调用方必须在调用前完成系统认证；
@@ -805,6 +1036,10 @@ final class MultiAgentSettingsStore {
         return "\(prefix).\(connection.id.rawValue.uuidString.lowercased())"
     }
 
+    func connectionKey(for connection: GeminiAPIConnection) -> String {
+        "gemini.\(connection.id.rawValue.uuidString.lowercased())"
+    }
+
     /// 已保存的顺序优先；新连接追加到末尾，已删除或重复的 key 会被忽略。
     var orderedConnectionKeys: [String] {
         var seen: Set<String> = []
@@ -820,6 +1055,7 @@ final class MultiAgentSettingsStore {
         codexAccounts.forEach { appendIfNeeded(connectionKey(for: $0)) }
         deepSeekConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
         openCodeConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
+        geminiConnections.forEach { appendIfNeeded(connectionKey(for: $0)) }
         return result
     }
 
@@ -875,6 +1111,10 @@ final class MultiAgentSettingsStore {
         refreshingConnectionIDs.contains(connection.id)
     }
 
+    func isRefreshingConnection(_ connection: GeminiAPIConnection) -> Bool {
+        refreshingConnectionIDs.contains(connection.id)
+    }
+
     private func connectionExists(_ key: String) -> Bool {
         if key.hasPrefix("codex."),
            let uuid = UUID(uuidString: String(key.dropFirst("codex.".count))) {
@@ -883,6 +1123,10 @@ final class MultiAgentSettingsStore {
         if key.hasPrefix("deepseek."),
            let uuid = UUID(uuidString: String(key.dropFirst("deepseek.".count))) {
             return deepSeekConnections.contains { $0.id.rawValue == uuid }
+        }
+        if key.hasPrefix("gemini."),
+           let uuid = UUID(uuidString: String(key.dropFirst("gemini.".count))) {
+            return geminiConnections.contains { $0.id.rawValue == uuid }
         }
         for prefix in ["opencode-go.", "opencode-zen."] {
             if key.hasPrefix(prefix),
@@ -904,6 +1148,7 @@ final class MultiAgentSettingsStore {
             codexAccounts: codexAccounts,
             deepSeekConnections: deepSeekConnections,
             openCodeConnections: openCodeConnections,
+            geminiConnections: geminiConnections,
             connectionOrder: orderedConnectionKeys
         ))
     }
@@ -954,6 +1199,7 @@ final class MultiAgentSettingsStore {
         let valid = codexAccounts.contains(where: isSelected)
             || deepSeekConnections.contains(where: isSelected)
             || openCodeConnections.contains(where: isSelected)
+            || geminiConnections.contains(where: isSelected)
         if !valid { selectedConnectionKey = orderedConnectionKeys.first ?? "" }
     }
 

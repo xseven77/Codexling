@@ -8,6 +8,7 @@ struct AgentID: RawRepresentable, Hashable, Codable, Sendable {
     static let codex = Self(rawValue: "agent.codex")
     static let hermes = Self(rawValue: "agent.hermes")
     static let deepseekHarness = Self(rawValue: "agent.deepseek-harness")
+    static let antigravity = Self(rawValue: "agent.antigravity")
 }
 
 enum AgentSurfaceID: String, Hashable, Codable, Sendable {
@@ -15,6 +16,9 @@ enum AgentSurfaceID: String, Hashable, Codable, Sendable {
     case codexDesktop = "surface.codex-desktop"
     case hermesCLI = "surface.hermes-cli"
     case deepseekHarnessCLI = "surface.deepseek-harness-cli"
+    case antigravityDesktop = "surface.antigravity-desktop"
+    case antigravityIDE = "surface.antigravity-ide"
+    case antigravityCLI = "surface.antigravity-cli"
 }
 
 struct AgentDescriptor: Hashable, Codable, Sendable {
@@ -43,6 +47,12 @@ enum BuiltInAgentCatalog {
             displayName: "Hermes",
             priority: 2,
             surfaces: [.hermesCLI]
+        ),
+        AgentDescriptor(
+            id: .antigravity,
+            displayName: "Antigravity",
+            priority: 3,
+            surfaces: [.antigravityDesktop, .antigravityIDE, .antigravityCLI]
         )
     ]
 
@@ -57,6 +67,7 @@ enum BuiltInAgentCatalog {
         DevelopmentTarget(agentID: .codex, surface: nil),
         DevelopmentTarget(agentID: .deepseekHarness, surface: .deepseekHarnessCLI),
         DevelopmentTarget(agentID: .hermes, surface: .hermesCLI),
+        DevelopmentTarget(agentID: .antigravity, surface: .antigravityDesktop),
     ]
 }
 
@@ -93,6 +104,7 @@ struct ProviderID: RawRepresentable, Hashable, Codable, Sendable {
     static let deepSeek = Self(rawValue: "provider.deepseek")
     static let openCodeGo = Self(rawValue: "provider.opencode-go")
     static let openCodeZen = Self(rawValue: "provider.opencode-zen")
+    static let gemini = Self(rawValue: "provider.gemini")
 }
 
 struct ProviderConnection: Identifiable, Hashable, Codable, Sendable {
@@ -311,6 +323,171 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
         try container.encode(createdAt, forKey: .createdAt)
     }
 }
+
+/// An authenticated Google Gemini Account connection via Google OAuth 2.0.
+/// Supports zero-cost model probing (/v1beta/models) and rate limit tracking with Bearer token.
+struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
+    let id: ConnectionID
+    var label: String
+    var email: String?
+    var displayName: String?
+    var avatarURL: String?
+    let credentialHandle: String
+    var authenticationState: ConnectionAuthenticationState
+    var availableModelCount: Int?
+    var availableModelIDs: [String] = []
+    var projectId: String?
+    var projectName: String?
+    var tier: String?
+    var isBillingEnabled: Bool?
+    var dailyRequestsLimit: Int?
+    var minuteRequestsLimit: Int?
+    var minuteTokensLimit: Int?
+    var planName: String?
+    var geminiWeeklyRemaining: Double?
+    var geminiWeeklyResetDesc: String?
+    var geminiFiveHourRemaining: Double?
+    var geminiFiveHourResetDesc: String?
+    var claudeGptWeeklyRemaining: Double?
+    var claudeGptFiveHourRemaining: Double?
+    var lastValidatedAt: Date?
+    var rateLimitState: String?
+    var cooldownResetsAt: Date?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, email, displayName, avatarURL, credentialHandle
+        case authenticationState, availableModelCount, availableModelIDs
+        case projectId, projectName, tier, isBillingEnabled
+        case dailyRequestsLimit, minuteRequestsLimit, minuteTokensLimit
+        case planName, geminiWeeklyRemaining, geminiWeeklyResetDesc
+        case geminiFiveHourRemaining, geminiFiveHourResetDesc
+        case claudeGptWeeklyRemaining, claudeGptFiveHourRemaining
+        case lastValidatedAt, rateLimitState, cooldownResetsAt, createdAt
+    }
+
+    init(
+        id: ConnectionID,
+        label: String,
+        email: String? = nil,
+        displayName: String? = nil,
+        avatarURL: String? = nil,
+        credentialHandle: String,
+        authenticationState: ConnectionAuthenticationState,
+        availableModelCount: Int? = nil,
+        availableModelIDs: [String] = [],
+        projectId: String? = nil,
+        projectName: String? = nil,
+        tier: String? = nil,
+        isBillingEnabled: Bool? = nil,
+        dailyRequestsLimit: Int? = nil,
+        minuteRequestsLimit: Int? = nil,
+        minuteTokensLimit: Int? = nil,
+        planName: String? = nil,
+        geminiWeeklyRemaining: Double? = nil,
+        geminiWeeklyResetDesc: String? = nil,
+        geminiFiveHourRemaining: Double? = nil,
+        geminiFiveHourResetDesc: String? = nil,
+        claudeGptWeeklyRemaining: Double? = nil,
+        claudeGptFiveHourRemaining: Double? = nil,
+        lastValidatedAt: Date? = nil,
+        rateLimitState: String? = nil,
+        cooldownResetsAt: Date? = nil,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.label = label
+        self.email = email
+        self.displayName = displayName
+        self.avatarURL = avatarURL
+        self.credentialHandle = credentialHandle
+        self.authenticationState = authenticationState
+        self.availableModelCount = availableModelCount
+        self.availableModelIDs = availableModelIDs
+        self.projectId = projectId
+        self.projectName = projectName
+        self.tier = tier
+        self.isBillingEnabled = isBillingEnabled
+        self.dailyRequestsLimit = dailyRequestsLimit
+        self.minuteRequestsLimit = minuteRequestsLimit
+        self.minuteTokensLimit = minuteTokensLimit
+        self.planName = planName
+        self.geminiWeeklyRemaining = geminiWeeklyRemaining
+        self.geminiWeeklyResetDesc = geminiWeeklyResetDesc
+        self.geminiFiveHourRemaining = geminiFiveHourRemaining
+        self.geminiFiveHourResetDesc = geminiFiveHourResetDesc
+        self.claudeGptWeeklyRemaining = claudeGptWeeklyRemaining
+        self.claudeGptFiveHourRemaining = claudeGptFiveHourRemaining
+        self.lastValidatedAt = lastValidatedAt
+        self.rateLimitState = rateLimitState
+        self.cooldownResetsAt = cooldownResetsAt
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ConnectionID.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        avatarURL = try container.decodeIfPresent(String.self, forKey: .avatarURL)
+        credentialHandle = try container.decode(String.self, forKey: .credentialHandle)
+        authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        availableModelCount = try container.decodeIfPresent(Int.self, forKey: .availableModelCount)
+        availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
+        projectId = try container.decodeIfPresent(String.self, forKey: .projectId)
+        projectName = try container.decodeIfPresent(String.self, forKey: .projectName)
+        tier = try container.decodeIfPresent(String.self, forKey: .tier)
+        isBillingEnabled = try container.decodeIfPresent(Bool.self, forKey: .isBillingEnabled)
+        dailyRequestsLimit = try container.decodeIfPresent(Int.self, forKey: .dailyRequestsLimit)
+        minuteRequestsLimit = try container.decodeIfPresent(Int.self, forKey: .minuteRequestsLimit)
+        minuteTokensLimit = try container.decodeIfPresent(Int.self, forKey: .minuteTokensLimit)
+        planName = try container.decodeIfPresent(String.self, forKey: .planName)
+        geminiWeeklyRemaining = try container.decodeIfPresent(Double.self, forKey: .geminiWeeklyRemaining)
+        geminiWeeklyResetDesc = try container.decodeIfPresent(String.self, forKey: .geminiWeeklyResetDesc)
+        geminiFiveHourRemaining = try container.decodeIfPresent(Double.self, forKey: .geminiFiveHourRemaining)
+        geminiFiveHourResetDesc = try container.decodeIfPresent(String.self, forKey: .geminiFiveHourResetDesc)
+        claudeGptWeeklyRemaining = try container.decodeIfPresent(Double.self, forKey: .claudeGptWeeklyRemaining)
+        claudeGptFiveHourRemaining = try container.decodeIfPresent(Double.self, forKey: .claudeGptFiveHourRemaining)
+        lastValidatedAt = try container.decodeIfPresent(Date.self, forKey: .lastValidatedAt)
+        rateLimitState = try container.decodeIfPresent(String.self, forKey: .rateLimitState)
+        cooldownResetsAt = try container.decodeIfPresent(Date.self, forKey: .cooldownResetsAt)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(displayName, forKey: .displayName)
+        try container.encodeIfPresent(avatarURL, forKey: .avatarURL)
+        try container.encode(credentialHandle, forKey: .credentialHandle)
+        try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encodeIfPresent(availableModelCount, forKey: .availableModelCount)
+        try container.encode(availableModelIDs, forKey: .availableModelIDs)
+        try container.encodeIfPresent(projectId, forKey: .projectId)
+        try container.encodeIfPresent(projectName, forKey: .projectName)
+        try container.encodeIfPresent(tier, forKey: .tier)
+        try container.encodeIfPresent(isBillingEnabled, forKey: .isBillingEnabled)
+        try container.encodeIfPresent(dailyRequestsLimit, forKey: .dailyRequestsLimit)
+        try container.encodeIfPresent(minuteRequestsLimit, forKey: .minuteRequestsLimit)
+        try container.encodeIfPresent(minuteTokensLimit, forKey: .minuteTokensLimit)
+        try container.encodeIfPresent(planName, forKey: .planName)
+        try container.encodeIfPresent(geminiWeeklyRemaining, forKey: .geminiWeeklyRemaining)
+        try container.encodeIfPresent(geminiWeeklyResetDesc, forKey: .geminiWeeklyResetDesc)
+        try container.encodeIfPresent(geminiFiveHourRemaining, forKey: .geminiFiveHourRemaining)
+        try container.encodeIfPresent(geminiFiveHourResetDesc, forKey: .geminiFiveHourResetDesc)
+        try container.encodeIfPresent(claudeGptWeeklyRemaining, forKey: .claudeGptWeeklyRemaining)
+        try container.encodeIfPresent(claudeGptFiveHourRemaining, forKey: .claudeGptFiveHourRemaining)
+        try container.encodeIfPresent(lastValidatedAt, forKey: .lastValidatedAt)
+        try container.encodeIfPresent(rateLimitState, forKey: .rateLimitState)
+        try container.encodeIfPresent(cooldownResetsAt, forKey: .cooldownResetsAt)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
+}
+
+typealias GeminiAPIConnection = GeminiAccountConnection
 
 enum AgentActivityState: String, CaseIterable, Codable, Sendable {
     case offline

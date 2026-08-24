@@ -152,11 +152,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         petSelectionMonitor.start()
         codexPetSelectionMonitor = petSelectionMonitor
+        // AppSettings is constructed while the delegate itself is being
+        // initialized, which can be too early for bundle-backed pet discovery.
+        // Refresh once the application has finished launching so the first
+        // click is interactive without requiring the user to re-select a pet.
+        settingsStore.reloadPets(notify: false)
+        settingsStore.syncPetSelectionFromCodex()
         syncCompanionState()
         applyStandalonePetVisibility()
         syncSelectedCodexProjection()
         if settingsStore.shouldOpenMainWindowAtLaunch {
             openDetachedWindow()
+        }
+        // WindowServer may still be rebuilding nonactivating panels after the
+        // launch/activation sequence. Re-assert the persisted independent-Pet
+        // preference once startup has settled, regardless of whether the main
+        // window opened or an activation-policy branch was needed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.applyStandalonePetVisibility()
         }
         autoRefreshUsage()
     }
@@ -308,7 +321,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, self.windowController != nil else { return }
             NSApp.setActivationPolicy(.regular)
             self.windowController?.show(on: screen)
+            // Switching from the menu-bar accessory policy to a regular app
+            // makes WindowServer re-register the app's panels. The detached
+            // window is presented again above; restore the independent Pet for
+            // the same reason so launch does not require toggling its setting.
+            self.applyStandalonePetVisibility()
             NSApp.activate(ignoringOtherApps: true)
+            // setActivationPolicy returns before WindowServer has necessarily
+            // finished rebuilding every nonactivating panel. Re-order the Pet
+            // once more on the next main-loop turn, after that registration.
+            DispatchQueue.main.async { [weak self] in
+                self?.applyStandalonePetVisibility()
+            }
         }
     }
 

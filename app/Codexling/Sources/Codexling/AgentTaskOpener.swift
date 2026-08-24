@@ -7,9 +7,9 @@ import AppKit
 /// 由「独立 Pet 任务条」、主窗口顶部任务卡、刘海展开态任务共用同一套逻辑，
 /// 保证三处点击进入 Agent 应用的行为完全一致。
 enum AgentTaskOpener {
-    /// 是否支持打开该名称的 Agent（当前仅 Codex）。
+    /// 是否支持打开该名称的 Agent（Codex / Antigravity）。
     static func canOpen(agentDisplayName: String) -> Bool {
-        agentDisplayName == "Codex"
+        agentDisplayName == "Codex" || agentDisplayName == "Antigravity"
     }
 
     /// 便捷入口：由 CodexTaskActivity 判断是否可打开。
@@ -31,6 +31,8 @@ enum AgentTaskOpener {
             let opened = openCodexApplication()
             NSLog("[AgentTaskOpener] 回退打开 ChatGPT.app: %@", opened ? "成功" : "失败")
             return opened
+        case "Antigravity":
+            return openAntigravityApplication()
         case "Hermes":
             return openHermes()
         case "Deepseek Harness":
@@ -58,6 +60,22 @@ enum AgentTaskOpener {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("Contents/Info.plist").path)
         }) else {
             NSLog("[AgentTaskOpener] 未找到 ChatGPT.app / Codex.app")
+            return false
+        }
+        NSLog("[AgentTaskOpener] 打开应用: %@", appURL.path)
+        return NSWorkspace.shared.open(appURL)
+    }
+
+    private static func openAntigravityApplication() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            URL(fileURLWithPath: "/Applications/Antigravity.app"),
+            home.appendingPathComponent("Applications/Antigravity.app"),
+        ]
+        guard let appURL = candidates.first(where: {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("Contents/Info.plist").path)
+        }) else {
+            NSLog("[AgentTaskOpener] 未找到 Antigravity.app")
             return false
         }
         NSLog("[AgentTaskOpener] 打开应用: %@", appURL.path)

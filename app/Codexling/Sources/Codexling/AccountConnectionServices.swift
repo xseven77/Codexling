@@ -1,12 +1,13 @@
 import Foundation
 
 struct ConnectionRegistrySnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     var schemaVersion = currentSchemaVersion
     var codexAccounts: [CodexAccountConnection] = []
     var deepSeekConnections: [DeepSeekAPIConnection] = []
     var openCodeConnections: [OpenCodeAPIConnection] = []
+    var geminiConnections: [GeminiAPIConnection] = []
     /// 用户拖拽后的连接顺序。旧配置没有此字段时按默认顺序补齐。
     var connectionOrder: [String] = []
 
@@ -15,12 +16,14 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
         codexAccounts: [CodexAccountConnection] = [],
         deepSeekConnections: [DeepSeekAPIConnection] = [],
         openCodeConnections: [OpenCodeAPIConnection] = [],
+        geminiConnections: [GeminiAPIConnection] = [],
         connectionOrder: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.codexAccounts = codexAccounts
         self.deepSeekConnections = deepSeekConnections
         self.openCodeConnections = openCodeConnections
+        self.geminiConnections = geminiConnections
         self.connectionOrder = connectionOrder
     }
 
@@ -30,6 +33,7 @@ struct ConnectionRegistrySnapshot: Codable, Sendable {
         codexAccounts = try container.decodeIfPresent([CodexAccountConnection].self, forKey: .codexAccounts) ?? []
         deepSeekConnections = try container.decodeIfPresent([DeepSeekAPIConnection].self, forKey: .deepSeekConnections) ?? []
         openCodeConnections = try container.decodeIfPresent([OpenCodeAPIConnection].self, forKey: .openCodeConnections) ?? []
+        geminiConnections = try container.decodeIfPresent([GeminiAPIConnection].self, forKey: .geminiConnections) ?? []
         connectionOrder = try container.decodeIfPresent([String].self, forKey: .connectionOrder) ?? []
     }
 }
@@ -409,5 +413,120 @@ struct OpenCodeModelsService: OpenCodeModelsFetching {
         let decoded = try JSONDecoder().decode(Response.self, from: data)
         guard !decoded.data.isEmpty else { throw OpenCodeValidationError.unavailable }
         return decoded.data.map(\.id)
+    }
+}
+
+protocol GeminiCredentialStoring: Sendable {
+    func save(apiKey: String, handle: String) throws
+    func read(handle: String) throws -> String
+    func delete(handle: String) throws
+}
+
+struct GeminiCredentialStore: GeminiCredentialStoring {
+    private let credentialsDir: URL
+
+    init(credentialsDir: URL? = nil) {
+        self.credentialsDir = credentialsDir ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/gemini_credentials")
+    }
+
+    private func fileURL(for handle: String) -> URL {
+        credentialsDir.appendingPathComponent("\(handle).json")
+    }
+
+    func save(apiKey: String, handle: String) throws {
+        try FileManager.default.createDirectory(at: credentialsDir, withIntermediateDirectories: true)
+        let url = fileURL(for: handle)
+        try Data(apiKey.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    func read(handle: String) throws -> String {
+        let data = try Data(contentsOf: fileURL(for: handle))
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw DeepSeekCredentialError.missing
+        }
+        return value
+    }
+
+    func delete(handle: String) throws {
+        let url = fileURL(for: handle)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+}
+
+enum GeminiValidationError: LocalizedError, Equatable {
+    case invalidResponse
+    case unauthorized
+    case rateLimited(retryAfterSeconds: Int?)
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "Google Gemini 返回了无法识别的数据"
+        case .unauthorized:
+            return "Google Gemini API Key 无效或未启用 Generative Language API"
+        case .rateLimited(let seconds):
+            if let seconds {
+                return "Google Gemini API 调用已触发限流，请在 \(seconds) 秒后重试"
+            }
+            return "Google Gemini API 调用已触发限流，请稍后重试"
+        case .unavailable:
+            return "Google Gemini 服务暂时不可用"
+        }
+    }
+}
+
+protocol GeminiValidationFetching: Sendable {
+    func validate(apiKey: String) async throws -> [String]
+}
+
+struct GeminiValidationService: GeminiValidationFetching {
+    private struct Response: Decodable {
+        let models: [Model]?
+        struct Model: Decodable {
+            let name: String
+            let displayName: String?
+            let supportedGenerationMethods: [String]?
+        }
+    }
+
+    let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func validate(apiKey: String) async throws -> [String] {
+        guard var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models") else {
+            throw GeminiValidationError.invalidResponse
+        }
+        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        guard let url = components.url else { throw GeminiValidationError.invalidResponse }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw GeminiValidationError.invalidResponse }
+        if http.statusCode == 400 || http.statusCode == 401 || http.statusCode == 403 {
+            throw GeminiValidationError.unauthorized
+        }
+        if http.statusCode == 429 {
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init)
+            throw GeminiValidationError.rateLimited(retryAfterSeconds: retryAfter)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GeminiValidationError.unavailable
+        }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard let models = decoded.models, !models.isEmpty else {
+            throw GeminiValidationError.unavailable
+        }
+        return models
+            .map { $0.name.replacingOccurrences(of: "models/", with: "") }
+            .filter { !$0.isEmpty }
     }
 }

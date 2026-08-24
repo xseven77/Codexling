@@ -99,4 +99,33 @@ final class StandalonePetWindowTests: XCTestCase {
         XCTAssertEqual(bottomRight.maxX, visible.maxX - gap)
         XCTAssertEqual(bottomRight.minY, visible.minY + gap)
     }
+
+    func testShowRestoresPetPanelAfterItWasOrderedOut() {
+        let suiteName = "StandalonePetWindowTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("无法创建隔离的 UserDefaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(
+            defaults: defaults,
+            codexPetSelectionSync: CodexPetSelectionSync(
+                configURL: URL(fileURLWithPath: "/dev/null")
+            )
+        )
+        let controller = StandalonePetWindowController(
+            activityStore: CodexActivityStore(),
+            frameStore: PetFrameStore(),
+            settings: settings
+        )
+
+        controller.show()
+        XCTAssertTrue(controller.isVisible)
+        controller.hide()
+        XCTAssertFalse(controller.isVisible)
+        controller.show()
+        XCTAssertTrue(controller.isVisible, "应用模式切换后再次 show 应恢复独立 Pet")
+        controller.hide()
+    }
 }
