@@ -821,10 +821,10 @@ final class CodexlingTests: XCTestCase {
 
         let tick = StatusBarProviderTickFactory.geminiTick(connection)
 
-        XCTAssertEqual(tick.quotaText, "周 70% · 5h 10%")
+        XCTAssertEqual(tick.quotaText, "5h 10% · 周 70%")
         XCTAssertEqual(tick.quotaSegments, [
-            StatusBarQuotaSegment(text: "周 70%", health: .green),
-            StatusBarQuotaSegment(text: "5h 10%", health: .red)
+            StatusBarQuotaSegment(text: "5h 10%", health: .red),
+            StatusBarQuotaSegment(text: "周 70%", health: .green)
         ])
     }
 

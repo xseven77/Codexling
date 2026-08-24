@@ -389,8 +389,8 @@ enum StatusBarProviderTickFactory {
             segments = [StatusBarQuotaSegment(text: "限流中", health: .yellow)]
         } else if let weekly = connection.geminiWeeklyRemaining, let fiveHour = connection.geminiFiveHourRemaining {
             segments = [
-                percentageSegment(label: "周", ratio: weekly, isConnected: connected),
-                percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)
+                percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected),
+                percentageSegment(label: "周", ratio: weekly, isConnected: connected)
             ]
             quotaText = joinedQuotaText(segments)
         } else if let weekly = connection.geminiWeeklyRemaining {
