@@ -10,9 +10,15 @@ struct GeminiOAuthToken: Codable, Sendable {
     let email: String?
     let displayName: String?
     let avatarURL: String?
+    /// 用于区分旧版 GCloud OAuth 凭证与 Antigravity 专用凭证。
+    let authorizationProfile: String?
 
     var isExpired: Bool {
         expiresAt.timeIntervalSinceNow < 60
+    }
+
+    var usesAntigravityAuthorization: Bool {
+        authorizationProfile == "antigravity"
     }
 }
 
@@ -62,6 +68,7 @@ struct GeminiOAuthTokenStore: GeminiOAuthTokenStoring {
 }
 
 enum GeminiOAuthError: LocalizedError, Sendable {
+    case configurationMissing
     case oauthCancelled
     case oauthTimedOut
     case oauthCallbackInvalid
@@ -73,6 +80,8 @@ enum GeminiOAuthError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .configurationMissing:
+            return "Gemini OAuth 尚未配置，请在构建时注入客户端配置"
         case .oauthCancelled:
             return "Google 账号授权已取消"
         case .oauthTimedOut:
@@ -96,6 +105,50 @@ enum GeminiOAuthError: LocalizedError, Sendable {
     }
 }
 
+struct GeminiOAuthConfiguration: Equatable, Sendable {
+    static let clientIDEnvironmentKey = "CODEXLING_GEMINI_OAUTH_CLIENT_ID"
+    static let clientSecretEnvironmentKey = "CODEXLING_GEMINI_OAUTH_CLIENT_SECRET"
+    static let resourceName = "GeminiOAuthConfig"
+
+    let clientID: String
+    let clientSecret: String?
+
+    var isConfigured: Bool { !clientID.isEmpty }
+
+    static func load(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundle: Bundle = .main
+    ) -> Self {
+        let plist: [String: String]
+        if let url = bundle.url(forResource: resourceName, withExtension: "plist"),
+           let data = try? Data(contentsOf: url),
+           let decoded = try? PropertyListSerialization.propertyList(from: data, format: nil),
+           let dictionary = decoded as? [String: String] {
+            plist = dictionary
+        } else {
+            plist = [:]
+        }
+        return resolve(environment: environment, plist: plist)
+    }
+
+    static func resolve(environment: [String: String], plist: [String: String]) -> Self {
+        let clientID = normalized(environment[clientIDEnvironmentKey])
+            ?? normalized(plist["clientID"])
+            ?? ""
+        let clientSecret = normalized(environment[clientSecretEnvironmentKey])
+            ?? normalized(plist["clientSecret"])
+        return Self(clientID: clientID, clientSecret: clientSecret)
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+}
+
 struct GeminiQuotaSnapshot: Equatable, Codable, Sendable {
     var projectId: String?
     var projectName: String?
@@ -115,6 +168,9 @@ struct GeminiQuotaSnapshot: Equatable, Codable, Sendable {
     var claudeGptFiveHourRemaining: Double?
     var availableModels: [String]
     var availableModelCount: Int
+    var quotaFetchState: String = "normal"
+    var accountEligibilityMessage: String? = nil
+    var accountValidationURL: String? = nil
 }
 
 protocol GeminiOAuthServicing: Sendable {
@@ -128,16 +184,18 @@ protocol GeminiOAuthServicing: Sendable {
 final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     private let clientID: String
     private let clientSecret: String?
-    private let redirectURI = "http://127.0.0.1:1456/oauth/callback"
+    private let redirectURI = "http://localhost:51121/oauth-callback"
     private let authorizationURL = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     private let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
     private let userInfoURL = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
-    private let modelsURL = URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!
+    private let cloudCodeBaseURL = URL(string: "https://cloudcode-pa.googleapis.com")!
 
     private let scopes = [
-        "openid",
+        "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/cloud-platform"
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/cclog",
+        "https://www.googleapis.com/auth/experimentsandconfigs"
     ]
 
     private let session: URLSession
@@ -145,12 +203,11 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     private var cancellationRequested = false
 
     init(
-        clientID: String = "32555940559.apps.googleusercontent.com",
-        clientSecret: String? = "ZmssLNjJy2998hD4CTg2ejr2",
+        configuration: GeminiOAuthConfiguration = .load(),
         session: URLSession = .shared
     ) {
-        self.clientID = clientID
-        self.clientSecret = clientSecret
+        clientID = configuration.clientID
+        clientSecret = configuration.clientSecret
         self.session = session
     }
 
@@ -163,6 +220,9 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     }
 
     func startOAuth(forceLogin: Bool = false) async throws -> GeminiOAuthToken {
+        guard !clientID.isEmpty else {
+            throw GeminiOAuthError.configurationMissing
+        }
         if cancellationRequested {
             cancellationRequested = false
             throw GeminiOAuthError.oauthCancelled
@@ -172,7 +232,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         let verifier = randomBase64URL(byteCount: 32)
         let challenge = sha256Base64URL(verifier)
 
-        let server = GoogleOAuthCallbackServer(expectedState: state)
+        let server = GoogleOAuthCallbackServer(expectedState: state, port: 51121, callbackPath: "/oauth-callback")
         activeCallbackServer = server
         defer {
             if activeCallbackServer === server {
@@ -211,11 +271,15 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             expiresAt: Date().addingTimeInterval(TimeInterval(tokenData.expiresIn ?? 3600)),
             email: userInfo?.email,
             displayName: userInfo?.name,
-            avatarURL: userInfo?.picture
+            avatarURL: userInfo?.picture,
+            authorizationProfile: "antigravity"
         )
     }
 
     func refreshToken(_ token: GeminiOAuthToken) async throws -> GeminiOAuthToken {
+        guard !clientID.isEmpty else {
+            throw GeminiOAuthError.configurationMissing
+        }
         guard let refreshToken = token.refreshToken else {
             throw GeminiOAuthError.unauthorized
         }
@@ -256,7 +320,8 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             expiresAt: Date().addingTimeInterval(TimeInterval(tokenResponse.expiresIn ?? 3600)),
             email: userInfo?.email ?? token.email,
             displayName: userInfo?.name ?? token.displayName,
-            avatarURL: userInfo?.picture ?? token.avatarURL
+            avatarURL: userInfo?.picture ?? token.avatarURL,
+            authorizationProfile: token.authorizationProfile ?? "antigravity"
         )
     }
 
@@ -306,255 +371,193 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     }
 
     func validateModels(accessToken: String) async throws -> [String] {
-        var request = URLRequest(url: modelsURL)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiOAuthError.unavailable
-        }
-
-        switch http.statusCode {
-        case 200:
-            let decoded = try JSONDecoder().decode(GeminiModelsListResponse.self, from: data)
-            return (decoded.models ?? [])
-                .map(\.name)
-                .filter { $0.contains("gemini") }
-                .sorted()
-        case 401, 403:
-            throw GeminiOAuthError.unauthorized
-        case 429:
-            let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init)
-            throw GeminiOAuthError.rateLimited(retryAfter)
-        case 500...599:
-            throw GeminiOAuthError.unavailable
-        default:
-            throw GeminiOAuthError.oauthCallbackInvalid
-        }
+        let account = try await loadAntigravityAccount(accessToken: accessToken)
+        guard let projectID = account.projectID else { throw GeminiOAuthError.unavailable }
+        return try await fetchAntigravityModels(accessToken: accessToken, project: projectID)
     }
 
     func fetchQuotaSnapshot(accessToken: String) async -> GeminiQuotaSnapshot {
-        var projectId: String?
-        var projectName: String?
-        if let projects = try? await fetchProjects(accessToken: accessToken),
-           let active = projects.first(where: { $0.lifecycleState == "ACTIVE" }) ?? projects.first {
-            projectId = active.projectId
-            projectName = active.name
-        }
-
-        var isBillingEnabled = false
-        if let pid = projectId, let billing = try? await fetchBillingInfo(accessToken: accessToken, projectId: pid) {
-            isBillingEnabled = billing.billingEnabled == true
-        }
-
-        var discoveredModels: [String] = []
-        if let pid = projectId, let quotas = try? await fetchQuotas(accessToken: accessToken, projectId: pid) {
-            var modelSet = Set<String>()
-            for info in quotas.quotaInfos ?? [] {
-                for dim in info.dimensionsInfos ?? [] {
-                    if let model = dim.dimensions?["model"], (model.contains("gemini") || model.contains("gemma")) {
-                        modelSet.insert(model)
-                    }
-                }
+        do {
+            let account = try await loadAntigravityAccount(accessToken: accessToken)
+            guard let projectID = account.projectID else {
+                return GeminiQuotaSnapshot(
+                    projectId: nil,
+                    projectName: nil,
+                    tier: account.planName,
+                    isBillingEnabled: false,
+                    dailyRequestsLimit: 0,
+                    minuteRequestsLimit: 0,
+                    minuteTokensLimit: 0,
+                    planName: account.planName,
+                    geminiWeeklyRemaining: nil,
+                    geminiWeeklyResetDesc: nil,
+                    geminiFiveHourRemaining: nil,
+                    geminiFiveHourResetDesc: nil,
+                    claudeGptWeeklyRemaining: nil,
+                    claudeGptFiveHourRemaining: nil,
+                    availableModels: [],
+                    availableModelCount: 0,
+                    quotaFetchState: account.eligibilityState,
+                    accountEligibilityMessage: account.eligibilityMessage,
+                    accountValidationURL: account.validationURL
+                )
             }
-            discoveredModels = modelSet.sorted()
-        }
+            async let quotaTask = fetchAntigravityQuota(accessToken: accessToken, project: projectID)
+            async let modelsTask = try? fetchAntigravityModels(accessToken: accessToken, project: projectID)
+            let quota = try await quotaTask
+            let models = await modelsTask ?? []
+            let hasQuota = quota.geminiWeekly != nil || quota.geminiFiveHour != nil
+                || quota.claudeGptWeekly != nil || quota.claudeGptFiveHour != nil
 
-        if let agQuota = await fetchAntigravityLocalQuota() {
             return GeminiQuotaSnapshot(
-                projectId: projectId ?? "Antigravity",
-                projectName: projectName ?? "Google AI",
-                userName: agQuota.userName,
-                userEmail: agQuota.userEmail,
-                tier: agQuota.plan,
-                isBillingEnabled: true,
+                projectId: projectID,
+                projectName: "Cloud AI Companion",
+                tier: account.planName,
+                isBillingEnabled: account.isPaid,
                 dailyRequestsLimit: 0,
-                minuteRequestsLimit: 1500,
-                minuteTokensLimit: 4000000,
-                planName: agQuota.plan,
-                geminiWeeklyRemaining: agQuota.weekly,
-                geminiWeeklyResetDesc: agQuota.weeklyDesc,
-                geminiFiveHourRemaining: agQuota.fiveHour,
-                geminiFiveHourResetDesc: agQuota.fiveHourDesc,
-                claudeGptWeeklyRemaining: agQuota.claudeWeekly,
-                claudeGptFiveHourRemaining: agQuota.claudeFiveHour,
-                availableModels: agQuota.models.isEmpty ? discoveredModels : agQuota.models,
-                availableModelCount: agQuota.models.isEmpty ? discoveredModels.count : agQuota.models.count
+                minuteRequestsLimit: 0,
+                minuteTokensLimit: 0,
+                planName: account.planName,
+                geminiWeeklyRemaining: quota.geminiWeekly,
+                geminiWeeklyResetDesc: quota.geminiWeeklyReset,
+                geminiFiveHourRemaining: quota.geminiFiveHour,
+                geminiFiveHourResetDesc: quota.geminiFiveHourReset,
+                claudeGptWeeklyRemaining: quota.claudeGptWeekly,
+                claudeGptFiveHourRemaining: quota.claudeGptFiveHour,
+                availableModels: models,
+                availableModelCount: models.count,
+                quotaFetchState: hasQuota ? "normal" : "quota_unavailable"
             )
+        } catch let error as GeminiOAuthError {
+            return unavailableQuotaSnapshot(state: quotaState(for: error))
+        } catch {
+            return unavailableQuotaSnapshot(state: "quota_unavailable")
         }
+    }
 
-        if discoveredModels.isEmpty {
-            discoveredModels = [
-                "gemini-2.0-flash",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "gemini-3.7-flash"
-            ]
+    private func loadAntigravityAccount(accessToken: String) async throws -> AntigravityRemoteAccount {
+        let data = try await postCloudCode(
+            method: "loadCodeAssist",
+            accessToken: accessToken,
+            body: ["metadata": ["ideType": "ANTIGRAVITY"]]
+        )
+        let decoded = try JSONDecoder().decode(AntigravityLoadCodeAssistResponse.self, from: data)
+        let rawProjectID = decoded.cloudaicompanionProject?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectID = rawProjectID?.isEmpty == false ? rawProjectID : nil
+        let tier = decoded.paidTier ?? decoded.currentTier
+        let ineligible = decoded.ineligibleTiers?.first
+        let eligibilityState = ineligible?.reasonCode == "VALIDATION_REQUIRED"
+            ? "account_validation_required"
+            : (projectID == nil ? "quota_unavailable" : "normal")
+        let planName = displayPlanName(tier: tier, eligibilityState: eligibilityState)
+        return AntigravityRemoteAccount(
+            projectID: projectID,
+            planName: planName,
+            isPaid: decoded.paidTier != nil,
+            eligibilityState: eligibilityState,
+            eligibilityMessage: ineligible?.reasonCode == "VALIDATION_REQUIRED"
+                ? "Google 要求验证此账号后才能使用 Antigravity。"
+                : ineligible?.reasonMessage,
+            validationURL: ineligible?.validationURL
+        )
+    }
+
+    private func displayPlanName(
+        tier: AntigravityLoadCodeAssistResponse.Tier?,
+        eligibilityState: String
+    ) -> String {
+        if eligibilityState == "account_validation_required" { return "无 Antigravity 权限" }
+        switch tier?.id {
+        case "g1-pro-tier": return "Google AI Pro"
+        case "g1-ultra-tier": return "Google AI Ultra"
+        case "free-tier": return "Antigravity Free"
+        case "standard-tier": return "Antigravity"
+        default: return tier?.name ?? tier?.id ?? "套餐状态未知"
         }
+    }
 
-        let tier = isBillingEnabled ? "Pay-as-you-go" : "Free Tier"
-        let dailyLimit = isBillingEnabled ? 0 : 1500
-        let minuteLimit = isBillingEnabled ? 1000 : 15
-        let tokenLimit = isBillingEnabled ? 4000000 : 1000000
+    private func fetchAntigravityModels(accessToken: String, project: String) async throws -> [String] {
+        let data = try await postCloudCode(
+            method: "fetchAvailableModels",
+            accessToken: accessToken,
+            body: ["project": project]
+        )
+        let decoded = try JSONDecoder().decode(AntigravityAvailableModelsResponse.self, from: data)
+        return decoded.models.compactMap { id, model in
+            guard model.isInternal != true, !(model.displayName ?? "").isEmpty else { return nil }
+            return model.model ?? id
+        }.sorted()
+    }
 
-        return GeminiQuotaSnapshot(
-            projectId: projectId,
-            projectName: projectName,
-            tier: tier,
-            isBillingEnabled: isBillingEnabled,
-            dailyRequestsLimit: dailyLimit,
-            minuteRequestsLimit: minuteLimit,
-            minuteTokensLimit: tokenLimit,
-            planName: tier,
+    private func fetchAntigravityQuota(accessToken: String, project: String) async throws -> AntigravityRemoteQuota {
+        let data = try await postCloudCode(
+            method: "retrieveUserQuotaSummary",
+            accessToken: accessToken,
+            body: ["project": project]
+        )
+        return try AntigravityRemoteQuota.parse(data: data)
+    }
+
+    private func postCloudCode(
+        method: String,
+        accessToken: String,
+        body: [String: Any]
+    ) async throws -> Data {
+        let url = cloudCodeBaseURL.appendingPathComponent("v1internal:\(method)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("antigravity", forHTTPHeaderField: "User-Agent")
+        request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw GeminiOAuthError.unavailable }
+        switch http.statusCode {
+        case 200...299:
+            return data
+        case 401:
+            throw GeminiOAuthError.unauthorized
+        case 403:
+            // 有效登录也可能因账号方案、地区或私有接口授权返回 403；不要误导用户反复登录。
+            throw GeminiOAuthError.unavailable
+        case 429:
+            throw GeminiOAuthError.rateLimited(http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init))
+        default:
+            throw GeminiOAuthError.unavailable
+        }
+    }
+
+    private func unavailableQuotaSnapshot(state: String) -> GeminiQuotaSnapshot {
+        GeminiQuotaSnapshot(
+            projectId: nil,
+            projectName: nil,
+            tier: "额度暂不可用",
+            isBillingEnabled: false,
+            dailyRequestsLimit: 0,
+            minuteRequestsLimit: 0,
+            minuteTokensLimit: 0,
+            planName: nil,
             geminiWeeklyRemaining: nil,
             geminiWeeklyResetDesc: nil,
             geminiFiveHourRemaining: nil,
             geminiFiveHourResetDesc: nil,
             claudeGptWeeklyRemaining: nil,
             claudeGptFiveHourRemaining: nil,
-            availableModels: discoveredModels,
-            availableModelCount: discoveredModels.count
+            availableModels: [],
+            availableModelCount: 0,
+            quotaFetchState: state
         )
     }
 
-    private func fetchAntigravityLocalQuota() async -> (plan: String, userName: String?, userEmail: String?, weekly: Double, weeklyDesc: String?, fiveHour: Double, fiveHourDesc: String?, claudeWeekly: Double?, claudeFiveHour: Double?, models: [String])? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-
-        // 1. Extract CSRF token from ~/Library/Logs/Antigravity/main.log
-        let mainLogURL = home.appendingPathComponent("Library/Logs/Antigravity/main.log")
-        guard let mainLogContent = try? String(contentsOf: mainLogURL, encoding: .utf8) else { return nil }
-
-        let csrfPattern = #"--csrf_token\s+([a-zA-Z0-9-]+)"#
-        guard let csrfRegex = try? NSRegularExpression(pattern: csrfPattern) else { return nil }
-        let csrfMatches = csrfRegex.matches(in: mainLogContent, range: NSRange(mainLogContent.startIndex..., in: mainLogContent))
-        guard let lastCsrfMatch = csrfMatches.last, let csrfRange = Range(lastCsrfMatch.range(at: 1), in: mainLogContent) else {
-            return nil
+    private func quotaState(for error: GeminiOAuthError) -> String {
+        switch error {
+        case .unauthorized: "unauthorized"
+        case .rateLimited: "rate_limited"
+        default: "quota_unavailable"
         }
-        let csrf = String(mainLogContent[csrfRange])
-        guard !csrf.isEmpty else { return nil }
-
-        // 2. Extract port from ~/Library/Logs/Antigravity/language_server.log
-        let lsLogURL = home.appendingPathComponent("Library/Logs/Antigravity/language_server.log")
-        guard let lsLogContent = try? String(contentsOf: lsLogURL, encoding: .utf8) else { return nil }
-
-        let portPattern = #"Language server listening on random port at (\d+) for HTTP\b"#
-        guard let portRegex = try? NSRegularExpression(pattern: portPattern) else { return nil }
-        let portMatches = portRegex.matches(in: lsLogContent, range: NSRange(lsLogContent.startIndex..., in: lsLogContent))
-        guard let lastPortMatch = portMatches.last, let portRange = Range(lastPortMatch.range(at: 1), in: lsLogContent) else {
-            return nil
-        }
-        let port = String(lsLogContent[portRange])
-        guard let portInt = Int(port), portInt > 0 else { return nil }
-
-        // 3. Call GetUserStatus
-        guard let statusURL = URL(string: "http://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/GetUserStatus") else { return nil }
-        var statusReq = URLRequest(url: statusURL)
-        statusReq.httpMethod = "POST"
-        statusReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        statusReq.setValue(csrf, forHTTPHeaderField: "x-codeium-csrf-token")
-        statusReq.httpBody = "{}".data(using: .utf8)
-
-        var planName = "Google AI Pro"
-        var userName: String?
-        var userEmail: String?
-        var models: [String] = []
-        if let (statusData, statusResp) = try? await session.data(for: statusReq),
-           (statusResp as? HTTPURLResponse)?.statusCode == 200,
-           let statusDecoded = try? JSONDecoder().decode(AntigravityUserStatusResponse.self, from: statusData) {
-            if let name = statusDecoded.resolvedUserTier?.name, !name.isEmpty {
-                planName = name
-            }
-            userName = statusDecoded.resolvedName
-            userEmail = statusDecoded.resolvedEmail
-            models = statusDecoded.resolvedModels.compactMap { $0.label ?? $0.modelId }
-        }
-
-        // 4. Call RetrieveUserQuotaSummary
-        guard let quotaURL = URL(string: "http://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary") else { return nil }
-        var quotaReq = URLRequest(url: quotaURL)
-        quotaReq.httpMethod = "POST"
-        quotaReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        quotaReq.setValue(csrf, forHTTPHeaderField: "x-codeium-csrf-token")
-        quotaReq.httpBody = #"{"force_refresh": true}"#.data(using: .utf8)
-
-        guard let (quotaData, quotaResp) = try? await session.data(for: quotaReq),
-              (quotaResp as? HTTPURLResponse)?.statusCode == 200,
-              let quotaDecoded = try? JSONDecoder().decode(AntigravityQuotaSummaryResponse.self, from: quotaData),
-              let groups = quotaDecoded.response?.groups else {
-            return nil
-        }
-
-        var weeklyRemaining: Double = 1.0
-        var weeklyDesc: String?
-        var fiveHourRemaining: Double = 1.0
-        var fiveHourDesc: String?
-        var claudeWeekly: Double?
-        var claudeFiveHour: Double?
-
-        for group in groups {
-            let name = group.displayName ?? ""
-            if name.contains("Gemini") {
-                for bucket in group.buckets ?? [] {
-                    let bId = bucket.bucketId ?? ""
-                    let w = bucket.window ?? ""
-                    if bId.contains("weekly") || w == "weekly" {
-                        weeklyRemaining = bucket.remainingFraction ?? 1.0
-                        weeklyDesc = bucket.description
-                    } else if bId.contains("5h") || w == "5h" {
-                        fiveHourRemaining = bucket.remainingFraction ?? 1.0
-                        fiveHourDesc = bucket.description
-                    }
-                }
-            } else if name.contains("Claude") || name.contains("GPT") {
-                for bucket in group.buckets ?? [] {
-                    let bId = bucket.bucketId ?? ""
-                    let w = bucket.window ?? ""
-                    if bId.contains("weekly") || w == "weekly" {
-                        claudeWeekly = bucket.remainingFraction ?? 1.0
-                    } else if bId.contains("5h") || w == "5h" {
-                        claudeFiveHour = bucket.remainingFraction ?? 1.0
-                    }
-                }
-            }
-        }
-
-        return (
-            plan: planName,
-            userName: userName,
-            userEmail: userEmail,
-            weekly: weeklyRemaining,
-            weeklyDesc: weeklyDesc,
-            fiveHour: fiveHourRemaining,
-            fiveHourDesc: fiveHourDesc,
-            claudeWeekly: claudeWeekly,
-            claudeFiveHour: claudeFiveHour,
-            models: models
-        )
-    }
-
-    private func fetchProjects(accessToken: String) async throws -> [GCPProjectItem] {
-        var request = URLRequest(url: URL(string: "https://cloudresourcemanager.googleapis.com/v1/projects")!)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
-        return (try? JSONDecoder().decode(GCPProjectsResponse.self, from: data))?.projects ?? []
-    }
-
-    private func fetchBillingInfo(accessToken: String, projectId: String) async throws -> GCPBillingInfoResponse? {
-        var request = URLRequest(url: URL(string: "https://cloudbilling.googleapis.com/v1/projects/\(projectId)/billingInfo")!)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-        return try? JSONDecoder().decode(GCPBillingInfoResponse.self, from: data)
-    }
-
-    private func fetchQuotas(accessToken: String, projectId: String) async throws -> GCPQuotaInfosResponse? {
-        var request = URLRequest(url: URL(string: "https://cloudquotas.googleapis.com/v1/projects/\(projectId)/locations/global/services/generativelanguage.googleapis.com/quotaInfos")!)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-        return try? JSONDecoder().decode(GCPQuotaInfosResponse.self, from: data)
     }
 
     private func randomBase64URL(byteCount: Int) -> String {
@@ -572,16 +575,6 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-    }
-}
-
-struct GeminiModelsListResponse: Decodable, Sendable {
-    let models: [Model]?
-
-    struct Model: Decodable, Sendable {
-        let name: String
-        let displayName: String?
-        let supportedGenerationMethods: [String]?
     }
 }
 
@@ -603,44 +596,138 @@ private struct GoogleUserInfo: Decodable {
     let picture: String?
 }
 
-private struct GCPProjectsResponse: Decodable {
-    let projects: [GCPProjectItem]?
+private struct AntigravityRemoteAccount {
+    let projectID: String?
+    let planName: String
+    let isPaid: Bool
+    let eligibilityState: String
+    let eligibilityMessage: String?
+    let validationURL: String?
 }
 
-private struct GCPProjectItem: Decodable {
-    let projectId: String?
-    let projectNumber: String?
-    let name: String?
-    let lifecycleState: String?
+private struct AntigravityLoadCodeAssistResponse: Decodable {
+    let cloudaicompanionProject: String?
+    let currentTier: Tier?
+    let paidTier: Tier?
+    let allowedTiers: [Tier]?
+    let ineligibleTiers: [IneligibleTier]?
+
+    struct Tier: Decodable {
+        let id: String?
+        let name: String?
+    }
+
+    struct IneligibleTier: Decodable {
+        let reasonCode: String?
+        let reasonMessage: String?
+        let tierId: String?
+        let tierName: String?
+        let validationErrorMessage: String?
+        let validationUrl: String?
+
+        var validationURL: String? { validationUrl }
+    }
 }
 
-private struct GCPBillingInfoResponse: Decodable {
-    let projectId: String?
-    let billingAccountName: String?
-    let billingEnabled: Bool?
+private struct AntigravityAvailableModelsResponse: Decodable {
+    let models: [String: Model]
+
+    struct Model: Decodable {
+        let displayName: String?
+        let model: String?
+        let isInternal: Bool?
+    }
 }
 
-private struct GCPQuotaInfosResponse: Decodable {
-    let quotaInfos: [GCPQuotaInfoItem]?
-}
+private struct AntigravityRemoteQuota {
+    var geminiWeekly: Double?
+    var geminiWeeklyReset: String?
+    var geminiFiveHour: Double?
+    var geminiFiveHourReset: String?
+    var claudeGptWeekly: Double?
+    var claudeGptFiveHour: Double?
 
-private struct GCPQuotaInfoItem: Decodable {
-    let quotaId: String?
-    let dimensionsInfos: [GCPDimensionInfo]?
-}
+    static func parse(data: Data) throws -> Self {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GeminiOAuthError.unavailable
+        }
+        let payload = (root["response"] as? [String: Any]) ?? root
+        guard let groups = payload["groups"] as? [[String: Any]] else {
+            throw GeminiOAuthError.unavailable
+        }
 
-private struct GCPDimensionInfo: Decodable {
-    let dimensions: [String: String]?
+        var result = Self()
+        for group in groups {
+            let groupName = string(group, keys: ["displayName", "display_name", "description"])
+                .lowercased()
+            guard let buckets = group["buckets"] as? [[String: Any]] else { continue }
+            for bucket in buckets {
+                let identity = [
+                    groupName,
+                    string(bucket, keys: ["bucketId", "bucket_id"]),
+                    string(bucket, keys: ["displayName", "display_name"]),
+                    string(bucket, keys: ["window"])
+                ].joined(separator: " ").lowercased()
+                guard let remaining = remainingFraction(bucket) else { continue }
+                let reset = string(bucket, keys: ["description", "resetTime", "reset_time"])
+                let isWeekly = identity.contains("weekly") || identity.contains("week") || identity.contains("周")
+                let isFiveHour = identity.contains("5h") || identity.contains("5 hour")
+                    || identity.contains("session") || identity.contains("5小时")
+                let isThirdParty = identity.contains("3p") || identity.contains("claude")
+                    || identity.contains("gpt") || identity.contains("third party")
+
+                if isThirdParty && isWeekly {
+                    result.claudeGptWeekly = remaining
+                } else if isThirdParty && isFiveHour {
+                    result.claudeGptFiveHour = remaining
+                } else if isWeekly {
+                    result.geminiWeekly = remaining
+                    result.geminiWeeklyReset = reset.isEmpty ? nil : reset
+                } else if isFiveHour {
+                    result.geminiFiveHour = remaining
+                    result.geminiFiveHourReset = reset.isEmpty ? nil : reset
+                }
+            }
+        }
+        return result
+    }
+
+    private static func remainingFraction(_ bucket: [String: Any]) -> Double? {
+        let nested = (bucket["remaining"] as? [String: Any]) ?? [:]
+        let value = bucket["remainingFraction"] ?? bucket["remaining_fraction"]
+            ?? nested["remainingFraction"] ?? nested["remaining_fraction"]
+        let fraction: Double?
+        if let number = value as? NSNumber {
+            fraction = number.doubleValue
+        } else if let text = value as? String {
+            fraction = Double(text)
+        } else {
+            fraction = nil
+        }
+        guard let fraction, (0...1).contains(fraction) else { return nil }
+        return fraction
+    }
+
+    private static func string(_ dictionary: [String: Any], keys: [String]) -> String {
+        for key in keys {
+            if let value = dictionary[key] as? String { return value }
+        }
+        return ""
+    }
 }
 
 private final class GoogleOAuthCallbackServer: @unchecked Sendable {
     private let expectedState: String
+    private let port: UInt16
+    private let callbackPath: String
     private let stateLock = NSLock()
     private var listener: NWListener?
     private var continuation: CheckedContinuation<String, Error>?
 
-    init(expectedState: String) {
+    init(expectedState: String, port: UInt16, callbackPath: String) {
         self.expectedState = expectedState
+        self.port = port
+        self.callbackPath = callbackPath
     }
 
     func waitForCode(timeoutSeconds: TimeInterval) async throws -> String {
@@ -662,8 +749,7 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
 
     private func startListener() {
         do {
-            let port = NWEndpoint.Port(rawValue: 1456)!
-            let listener = try NWListener(using: .tcp, on: port)
+            let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
             stateLock.lock()
             guard continuation != nil else {
                 stateLock.unlock()
@@ -697,9 +783,9 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
 
             let firstLine = request.components(separatedBy: "\r\n").first ?? ""
             let path = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
-            let components = URLComponents(string: "http://127.0.0.1:1456\(path)")
+            let components = URLComponents(string: "http://127.0.0.1:\(port)\(path)")
 
-            guard components?.path == "/oauth/callback" else {
+            guard components?.path == callbackPath else {
                 self.send("Not found", status: 404, on: connection)
                 return
             }
@@ -728,27 +814,7 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
         var html: String {
             switch self {
             case .success:
-                return """
-                <!doctype html>
-                <html lang="zh-CN">
-                <head>
-                  <meta charset="utf-8" />
-                  <title>Google 账号连接成功 · Codexling</title>
-                  <style>
-                    body { font-family: -apple-system, sans-serif; background: #f3f5f8; text-align: center; padding: 80px 20px; }
-                    .card { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
-                    h2 { color: #1f6d4a; margin-bottom: 8px; }
-                    p { color: #555; font-size: 14px; }
-                  </style>
-                </head>
-                <body>
-                  <div class="card">
-                    <h2>Google 账号连接成功</h2>
-                    <p>已完成 Google Gemini 授权，你现在可以关闭此标签页并返回 Codexling。</p>
-                  </div>
-                </body>
-                </html>
-                """
+                return OAuthCallbackHTML.success(provider: .gemini)
             case .error(let msg):
                 return """
                 <!doctype html>
@@ -813,77 +879,5 @@ private final class GoogleOAuthCallbackServer: @unchecked Sendable {
         case .failure(let error):
             continuation.resume(throwing: error)
         }
-    }
-}
-
-private struct AntigravityUserStatusResponse: Decodable {
-    let name: String?
-    let email: String?
-    let userStatus: UserStatusPayload?
-    let userTier: AntigravityUserTier?
-    let clientModelConfigs: AntigravityClientModelConfigs?
-
-    struct UserStatusPayload: Decodable {
-        let name: String?
-        let email: String?
-        let userTier: AntigravityUserTier?
-        let clientModelConfigs: AntigravityClientModelConfigs?
-    }
-
-    struct AntigravityUserTier: Decodable {
-        let id: String?
-        let name: String?
-        let description: String?
-        let upgradeSubscriptionUri: String?
-        let upgradeSubscriptionText: String?
-    }
-
-    struct AntigravityClientModelConfigs: Decodable {
-        let models: [AntigravityModelItem]?
-    }
-
-    struct AntigravityModelItem: Decodable {
-        let label: String?
-        let modelId: String?
-    }
-
-    var resolvedName: String? {
-        userStatus?.name ?? name
-    }
-
-    var resolvedEmail: String? {
-        userStatus?.email ?? email
-    }
-
-    var resolvedUserTier: AntigravityUserTier? {
-        userStatus?.userTier ?? userTier
-    }
-
-    var resolvedModels: [AntigravityModelItem] {
-        userStatus?.clientModelConfigs?.models ?? clientModelConfigs?.models ?? []
-    }
-}
-
-private struct AntigravityQuotaSummaryResponse: Decodable {
-    let response: QuotaPayload?
-
-    struct QuotaPayload: Decodable {
-        let groups: [QuotaGroup]?
-        let description: String?
-    }
-
-    struct QuotaGroup: Decodable {
-        let displayName: String?
-        let description: String?
-        let buckets: [QuotaBucket]?
-    }
-
-    struct QuotaBucket: Decodable {
-        let bucketId: String?
-        let displayName: String?
-        let description: String?
-        let window: String?
-        let remainingFraction: Double?
-        let resetTime: String?
     }
 }

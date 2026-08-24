@@ -56,6 +56,32 @@ cd app/Codexling
 
 其中 `hdiutil` 和 `codesign` 是 macOS 自带命令。
 
+## Gemini OAuth 构建配置
+
+Gemini OAuth Client ID 和 Client Secret 不保存在 Git 仓库中。打包前请在仓库外准备私有 plist：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>clientID</key>
+  <string>YOUR_CLIENT_ID</string>
+  <key>clientSecret</key>
+  <string>YOUR_CLIENT_SECRET</string>
+</dict>
+</plist>
+```
+
+通过环境变量把文件路径交给打包脚本：
+
+```bash
+export CODEXLING_GEMINI_OAUTH_CONFIG_PLIST=/absolute/private/path/GeminiOAuthConfig.plist
+./release_app.sh
+```
+
+本地开发也可以将文件放在 `Resources/GeminiOAuthConfig.plist`；该路径已被 `.gitignore` 排除。未提供配置时仍可构建和使用其他功能，但 Gemini 新账号登录会给出“尚未配置”的明确提示。
+
 如果缺少 GitHub CLI，先安装：
 
 ```bash

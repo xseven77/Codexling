@@ -859,14 +859,18 @@ final class MultiAgentSettingsStore {
                 geminiFiveHourResetDesc: snapshot.geminiFiveHourResetDesc,
                 claudeGptWeeklyRemaining: snapshot.claudeGptWeeklyRemaining,
                 claudeGptFiveHourRemaining: snapshot.claudeGptFiveHourRemaining,
+                accountEligibilityMessage: snapshot.accountEligibilityMessage,
+                accountValidationURL: snapshot.accountValidationURL,
                 lastValidatedAt: Date(),
-                rateLimitState: "normal",
+                rateLimitState: snapshot.quotaFetchState,
                 createdAt: Date()
             )
             geminiConnections.append(connection)
             selectGeminiConnection(connection)
             try saveRegistry()
-            lastMessage = "已通过 Google 账号登录 \(label)"
+            lastMessage = snapshot.quotaFetchState == "account_validation_required"
+                ? "已连接 \(label)，请完成 Google 账号验证"
+                : "已通过 Google 账号登录 \(label)"
             return true
         } catch {
             try? geminiOAuthTokenStore.delete(handle: handle)
@@ -892,7 +896,7 @@ final class MultiAgentSettingsStore {
             }
             let token = try await geminiOAuthService.startOAuth(forceLogin: true)
             try geminiOAuthTokenStore.save(token, handle: connection.credentialHandle)
-            let modelIDs = (try? await geminiOAuthService.validateModels(accessToken: token.accessToken)) ?? []
+            let snapshot = await geminiOAuthService.fetchQuotaSnapshot(accessToken: token.accessToken)
             guard let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) else {
                 return false
             }
@@ -902,12 +906,27 @@ final class MultiAgentSettingsStore {
             geminiConnections[index].displayName = token.displayName
             geminiConnections[index].avatarURL = token.avatarURL
             geminiConnections[index].authenticationState = .connected
-            geminiConnections[index].availableModelCount = modelIDs.count
-            geminiConnections[index].availableModelIDs = modelIDs
+            geminiConnections[index].availableModelCount = snapshot.availableModelCount
+            geminiConnections[index].availableModelIDs = snapshot.availableModels
+            geminiConnections[index].projectId = snapshot.projectId
+            geminiConnections[index].projectName = snapshot.projectName
+            geminiConnections[index].tier = snapshot.tier
+            geminiConnections[index].isBillingEnabled = snapshot.isBillingEnabled
+            geminiConnections[index].planName = snapshot.planName
+            geminiConnections[index].geminiWeeklyRemaining = snapshot.geminiWeeklyRemaining
+            geminiConnections[index].geminiWeeklyResetDesc = snapshot.geminiWeeklyResetDesc
+            geminiConnections[index].geminiFiveHourRemaining = snapshot.geminiFiveHourRemaining
+            geminiConnections[index].geminiFiveHourResetDesc = snapshot.geminiFiveHourResetDesc
+            geminiConnections[index].claudeGptWeeklyRemaining = snapshot.claudeGptWeeklyRemaining
+            geminiConnections[index].claudeGptFiveHourRemaining = snapshot.claudeGptFiveHourRemaining
+            geminiConnections[index].accountEligibilityMessage = snapshot.accountEligibilityMessage
+            geminiConnections[index].accountValidationURL = snapshot.accountValidationURL
             geminiConnections[index].lastValidatedAt = Date()
-            geminiConnections[index].rateLimitState = "normal"
+            geminiConnections[index].rateLimitState = snapshot.quotaFetchState
             try saveRegistry()
-            lastMessage = "已重新连接 Google 账号 \(label)"
+            lastMessage = snapshot.quotaFetchState == "account_validation_required"
+                ? "已重新连接 \(label)，请完成 Google 账号验证"
+                : "已重新连接 Google 账号 \(label)"
             return true
         } catch {
             if case GeminiOAuthError.oauthCancelled = error {
@@ -938,6 +957,21 @@ final class MultiAgentSettingsStore {
                 try? saveRegistry()
             }
             let message = "\(connection.label)：本地 Google OAuth Token 缺失，请重新登录"
+            if publishesMessage { lastMessage = message }
+            return RefreshOutcome(failures: [message])
+        }
+
+        guard token.usesAntigravityAuthorization else {
+            if let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) {
+                geminiConnections[index].authenticationState = .needsLogin
+                geminiConnections[index].rateLimitState = "unauthorized"
+                geminiConnections[index].geminiWeeklyRemaining = nil
+                geminiConnections[index].geminiFiveHourRemaining = nil
+                geminiConnections[index].claudeGptWeeklyRemaining = nil
+                geminiConnections[index].claudeGptFiveHourRemaining = nil
+                try? saveRegistry()
+            }
+            let message = "\(connection.label)：旧版 Google 凭证无法读取 Antigravity 额度，请重新登录"
             if publishesMessage { lastMessage = message }
             return RefreshOutcome(failures: [message])
         }
@@ -983,11 +1017,26 @@ final class MultiAgentSettingsStore {
         geminiConnections[index].geminiFiveHourResetDesc = snapshot.geminiFiveHourResetDesc
         geminiConnections[index].claudeGptWeeklyRemaining = snapshot.claudeGptWeeklyRemaining
         geminiConnections[index].claudeGptFiveHourRemaining = snapshot.claudeGptFiveHourRemaining
+        geminiConnections[index].accountEligibilityMessage = snapshot.accountEligibilityMessage
+        geminiConnections[index].accountValidationURL = snapshot.accountValidationURL
         geminiConnections[index].lastValidatedAt = Date()
-        geminiConnections[index].authenticationState = .connected
-        geminiConnections[index].rateLimitState = "normal"
+        geminiConnections[index].authenticationState = snapshot.quotaFetchState == "unauthorized" ? .needsLogin : .connected
+        geminiConnections[index].rateLimitState = snapshot.quotaFetchState
         try? saveRegistry()
-        if publishesMessage { lastMessage = "\(connection.label) 额度与项目信息已更新" }
+        if snapshot.quotaFetchState == "unauthorized" {
+            let message = "\(connection.label)：需要重新登录以启用 Antigravity 直连额度"
+            if publishesMessage { lastMessage = message }
+            return RefreshOutcome(failures: [message])
+        }
+        if publishesMessage {
+            if snapshot.quotaFetchState == "normal" {
+                lastMessage = "\(connection.label) 额度与模型信息已更新"
+            } else if snapshot.quotaFetchState == "account_validation_required" {
+                lastMessage = "\(connection.label) 需要先完成 Google 账号验证"
+            } else {
+                lastMessage = "\(connection.label) 已连接，但远端暂未返回额度"
+            }
+        }
         return RefreshOutcome(successCount: 1)
     }
 

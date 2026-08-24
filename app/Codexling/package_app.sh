@@ -64,6 +64,17 @@ mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Helpers" "${APP_
 cp ".build/release/${BINARY_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 cp ".build/release/${BRIDGE_BINARY_NAME}" "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
 cp "Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
+
+# Gemini OAuth 凭证不进入 Git。发布环境通过变量指定私有 plist；本地开发也可使用
+# 被 .gitignore 排除的 Resources/GeminiOAuthConfig.plist。
+GEMINI_OAUTH_CONFIG_SOURCE="${CODEXLING_GEMINI_OAUTH_CONFIG_PLIST:-Resources/GeminiOAuthConfig.plist}"
+if [[ -f "${GEMINI_OAUTH_CONFIG_SOURCE}" ]]; then
+  plutil -lint "${GEMINI_OAUTH_CONFIG_SOURCE}" >/dev/null
+  cp "${GEMINI_OAUTH_CONFIG_SOURCE}" "${APP_BUNDLE}/Contents/Resources/GeminiOAuthConfig.plist"
+else
+  echo "Warning: Gemini OAuth config not supplied; account login will be unavailable in this build." >&2
+fi
+
 cp "Resources/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 cp "../landing/public/brand/codexling-logo.webp" "${APP_BUNDLE}/Contents/Resources/codexling-logo.webp"
 cp "Resources/github-mark.svg" "${APP_BUNDLE}/Contents/Resources/github-mark.svg"

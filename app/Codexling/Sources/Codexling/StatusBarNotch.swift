@@ -382,15 +382,21 @@ enum StatusBarProviderTickFactory {
     static func geminiTick(_ connection: GeminiAccountConnection) -> StatusBarProviderTick {
         let connected = connection.authenticationState == .connected
         let isRateLimited = connection.rateLimitState == "rate_limited"
+        let isQuotaUnavailable = connection.rateLimitState == "quota_unavailable"
+            || connection.rateLimitState == "unauthorized"
+            || connection.rateLimitState == "account_validation_required"
         var segments: [StatusBarQuotaSegment] = []
         let quotaText: String
         if isRateLimited {
             quotaText = "限流中"
             segments = [StatusBarQuotaSegment(text: "限流中", health: .yellow)]
+        } else if isQuotaUnavailable {
+            quotaText = connection.rateLimitState == "account_validation_required" ? "需要验证账号" : "额度暂不可用"
+            segments = [StatusBarQuotaSegment(text: quotaText, health: .yellow)]
         } else if let weekly = connection.geminiWeeklyRemaining, let fiveHour = connection.geminiFiveHourRemaining {
             segments = [
-                percentageSegment(label: "周", ratio: weekly, isConnected: connected),
-                percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)
+                percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected),
+                percentageSegment(label: "周", ratio: weekly, isConnected: connected)
             ]
             quotaText = joinedQuotaText(segments)
         } else if let weekly = connection.geminiWeeklyRemaining {
@@ -400,13 +406,17 @@ enum StatusBarProviderTickFactory {
             segments = [percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)]
             quotaText = joinedQuotaText(segments)
         } else {
-            quotaText = connection.planName ?? (connection.isBillingEnabled == true ? "按量付费" : "Free Tier")
+            quotaText = connection.resolvedPlanDisplayName
             segments = [StatusBarQuotaSegment(text: quotaText, health: connected ? .green : .yellow)]
         }
         let detailText: String = if isRateLimited {
             "API 限流冷却"
-        } else if let count = connection.availableModelCount, count > 0 {
-            "已验证 \(count) 个模型"
+        } else if connection.rateLimitState == "unauthorized" {
+            "需要重新登录"
+        } else if connection.rateLimitState == "account_validation_required" {
+            "完成 Google 账号验证后可读取额度"
+        } else if isQuotaUnavailable {
+            "Antigravity 远端未返回额度"
         } else {
             connection.email ?? (connection.isBillingEnabled == true ? "Google AI 订阅" : "Google 账号")
         }
@@ -414,14 +424,16 @@ enum StatusBarProviderTickFactory {
             .yellow
         } else if isRateLimited {
             .yellow
-        } else if let weekly = connection.geminiWeeklyRemaining, weekly < 0.15 {
+        } else if isQuotaUnavailable {
+            .yellow
+        } else if min(connection.geminiWeeklyRemaining ?? 1, connection.geminiFiveHourRemaining ?? 1) < 0.15 {
             .yellow
         } else {
             .green
         }
         return StatusBarProviderTick(
             id: "gemini.\(connection.id.rawValue.uuidString.lowercased())",
-            providerName: connection.planName ?? "Google Gemini",
+            providerName: connection.resolvedPlanDisplayName,
             accountName: connection.label,
             asset: .googleGemini,
             quotaText: quotaText,

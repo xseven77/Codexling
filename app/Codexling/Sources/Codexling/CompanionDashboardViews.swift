@@ -89,10 +89,29 @@ struct CompanionDashboardView: View {
 
         if let connection = multiAgentSettings.selectedGeminiConnection {
             let isConnected = connection.authenticationState == .connected
-            let statusText = isConnected
-                ? (connection.rateLimitState == "rate_limited" ? "限流冷却中" : "\(connection.availableModelCount ?? 0) 个可用模型")
-                : "需要登录"
-            let plan = connection.planName ?? "Google AI Pro"
+            let statusText: String = if !isConnected {
+                "需要登录"
+            } else if connection.rateLimitState == "account_validation_required" {
+                "需要验证 Google 账号"
+            } else if connection.rateLimitState == "rate_limited" {
+                "限流冷却中"
+            } else if connection.rateLimitState == "quota_unavailable" {
+                "额度暂不可用"
+            } else {
+                "额度已同步"
+            }
+            let plan = connection.resolvedPlanDisplayName
+            let planBadgeColor: Color = if connection.rateLimitState == "account_validation_required" {
+                .codexAmber
+            } else if plan == "Google AI Ultra" {
+                .purple
+            } else if plan == "Antigravity Free" {
+                .codexGreen
+            } else if plan == "套餐状态未知" {
+                .codexMuted
+            } else {
+                .codexBlue
+            }
             let userName = connection.displayName ?? (connection.email?.components(separatedBy: "@").first ?? "Google 用户")
             let userEmail = connection.email ?? "Google 账号"
             return DashboardProviderContext(
@@ -100,9 +119,9 @@ struct CompanionDashboardView: View {
                 title: userName,
                 subtitle: userEmail,
                 badge: plan,
-                badgeColor: .codexBlue,
+                badgeColor: planBadgeColor,
                 statusText: statusText,
-                statusColor: isConnected ? (connection.rateLimitState == "rate_limited" ? .codexAmber : .codexGreen) : .codexAmber,
+                statusColor: isConnected && connection.rateLimitState == "normal" ? .codexGreen : .codexAmber,
                 summaryText: "Google AI Studio",
                 accountLinkTitle: "Google AI Studio",
                 accountLinkURL: DashboardProviderLinks.geminiConsole,
@@ -735,7 +754,6 @@ struct CompanionDashboardView: View {
             multiAgentSettings.selectedOpenCodeConnection?.authenticationState.rawValue ?? "",
             multiAgentSettings.selectedOpenCodeConnection?.availableModelCount.map(String.init) ?? "",
             multiAgentSettings.selectedGeminiConnection?.authenticationState.rawValue ?? "",
-            multiAgentSettings.selectedGeminiConnection?.availableModelCount.map(String.init) ?? "",
             multiAgentSettings.selectedCodexAccount?.authenticationState.rawValue ?? "",
         ].joined(separator: "-")
     }
@@ -785,10 +803,7 @@ struct CompanionDashboardView: View {
             )
             .padding(.top, 18)
         } else if let connection = multiAgentSettings.selectedGeminiConnection {
-            GeminiDashboardCard(
-                connection: connection,
-                onShowModels: { openCodeModels = connection.availableModelIDs }
-            )
+            GeminiDashboardCard(connection: connection)
             .padding(.top, 18)
         } else if isCodexConnected {
             quotaSection
@@ -815,10 +830,7 @@ struct CompanionDashboardView: View {
                     onShowModels: { openCodeModels = connection.availableModelIDs }
                 )
             } else if let connection = multiAgentSettings.selectedGeminiConnection {
-                GeminiDashboardCard(
-                    connection: connection,
-                    onShowModels: { openCodeModels = connection.availableModelIDs }
-                )
+                GeminiDashboardCard(connection: connection)
             } else if isCodexConnected {
                 verticalQuotaSection
             } else {
@@ -1059,12 +1071,19 @@ private struct DashboardConnectionSwitcher: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .coordinateSpace(name: "connection-switcher")
-                .mask {
-                    connectionLogoMask(
-                        viewportWidth: geometry.size.width,
-                        leadingVisible: leadingFadeVisible,
-                        trailingVisible: trailingFadeVisible
-                    )
+                .overlay(alignment: .leading) {
+                    if leadingFadeVisible {
+                        connectionEdgeFade(leadingEdge: true)
+                            .frame(width: connectionFadeWidth(viewportWidth: geometry.size.width))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if trailingFadeVisible {
+                        connectionEdgeFade(leadingEdge: false)
+                            .frame(width: connectionFadeWidth(viewportWidth: geometry.size.width))
+                            .allowsHitTesting(false)
+                    }
                 }
                 .animation(.easeOut(duration: 0.18), value: leadingFadeVisible)
                 .animation(.easeOut(duration: 0.18), value: trailingFadeVisible)
@@ -1167,42 +1186,19 @@ private struct DashboardConnectionSwitcher: View {
         return lastLogoMaxX > viewportWidth + 0.5
     }
 
-    private func connectionLogoMask(
-        viewportWidth: CGFloat,
-        leadingVisible: Bool,
-        trailingVisible: Bool
-    ) -> LinearGradient {
-        let fadeWidth: CGFloat = 36
-        let totalWidth = max(viewportWidth, 1)
-        let leadEnd = min(0.4, fadeWidth / totalWidth)
-        let leadMid = leadEnd * 0.45
-        let trailStart = max(0.6, 1 - fadeWidth / totalWidth)
-        let trailMid = trailStart + (1 - trailStart) * 0.55
+    private func connectionFadeWidth(viewportWidth: CGFloat) -> CGFloat {
+        min(36, max(0, viewportWidth / 2))
+    }
 
-        var stops: [Gradient.Stop] = []
-
-        if leadingVisible {
-            stops.append(.init(color: .clear, location: 0))
-            stops.append(.init(color: .white.opacity(0.30), location: leadMid))
-            stops.append(.init(color: .white, location: leadEnd))
-        } else {
-            stops.append(.init(color: .white, location: 0))
-            stops.append(.init(color: .white, location: leadEnd))
-        }
-
-        if trailingVisible {
-            stops.append(.init(color: .white, location: trailStart))
-            stops.append(.init(color: .white.opacity(0.30), location: trailMid))
-            stops.append(.init(color: .clear, location: 1))
-        } else {
-            stops.append(.init(color: .white, location: trailStart))
-            stops.append(.init(color: .white, location: 1))
-        }
-
+    private func connectionEdgeFade(leadingEdge: Bool) -> LinearGradient {
         return LinearGradient(
-            stops: stops,
-            startPoint: .leading,
-            endPoint: .trailing
+            stops: [
+                .init(color: Color.codexCard, location: 0),
+                .init(color: Color.codexCard.opacity(0.82), location: 0.38),
+                .init(color: Color.codexCard.opacity(0), location: 1),
+            ],
+            startPoint: leadingEdge ? .leading : .trailing,
+            endPoint: leadingEdge ? .trailing : .leading
         )
     }
 
@@ -1532,11 +1528,6 @@ private struct QuotaProgressRing: View {
 
 private struct GeminiDashboardCard: View {
     let connection: GeminiAPIConnection
-    var onShowModels: (() -> Void)? = nil
-
-    private var planDisplayName: String {
-        connection.planName ?? connection.tier ?? "Google AI Pro"
-    }
 
     private var fiveHourWindow: UsageWindow? {
         guard let frac = connection.geminiFiveHourRemaining else { return nil }
@@ -1575,48 +1566,19 @@ private struct GeminiDashboardCard: View {
     }
 
     private var fiveHourResetText: String? {
-        formatResetCountdown(connection.geminiFiveHourResetDesc)
+        GeminiQuotaResetFormatter.displayText(connection.geminiFiveHourResetDesc)
     }
 
     private var weeklyResetText: String? {
-        formatResetCountdown(connection.geminiWeeklyResetDesc)
+        GeminiQuotaResetFormatter.displayText(connection.geminiWeeklyResetDesc)
     }
 
-    private func formatResetCountdown(_ raw: String?) -> String? {
-        guard let raw, !raw.isEmpty else { return nil }
+    private var fiveHourResetTooltip: String? {
+        GeminiQuotaResetFormatter.absoluteText(connection.geminiFiveHourResetDesc)
+    }
 
-        // Days & Hours
-        if let match = raw.range(of: #"(\d+)\s*days?(?:,\s*(\d+)\s*hours?)?"#, options: .regularExpression) {
-            let matchedStr = String(raw[match])
-            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
-            if nums.count >= 2 {
-                return "\(nums[0])天\(nums[1])小时后刷新"
-            } else if nums.count == 1 {
-                return "\(nums[0])天后刷新"
-            }
-        }
-
-        // Hours & Minutes
-        if let match = raw.range(of: #"(\d+)\s*hours?(?:,\s*(\d+)\s*minutes?)?"#, options: .regularExpression) {
-            let matchedStr = String(raw[match])
-            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
-            if nums.count >= 2 {
-                return "\(nums[0])小时\(nums[1])分后刷新"
-            } else if nums.count == 1 {
-                return "\(nums[0])小时后刷新"
-            }
-        }
-
-        // Minutes
-        if let match = raw.range(of: #"(\d+)\s*minutes?"#, options: .regularExpression) {
-            let matchedStr = String(raw[match])
-            let nums = matchedStr.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
-            if let first = nums.first {
-                return "\(first)分钟后刷新"
-            }
-        }
-
-        return raw
+    private var weeklyResetTooltip: String? {
+        GeminiQuotaResetFormatter.absoluteText(connection.geminiWeeklyResetDesc)
     }
 
     var body: some View {
@@ -1638,14 +1600,16 @@ private struct GeminiDashboardCard: View {
                     QuotaRingCard(
                         window: short,
                         tint: fiveHourHealthColor,
-                        resetCountdown: fiveHourResetText
+                        resetCountdown: fiveHourResetText,
+                        resetTooltip: fiveHourResetTooltip
                     )
                     .frame(maxWidth: .infinity)
 
                     QuotaRingCard(
                         window: weekly,
                         tint: weeklyHealthColor,
-                        resetCountdown: weeklyResetText
+                        resetCountdown: weeklyResetText,
+                        resetTooltip: weeklyResetTooltip
                     )
                     .frame(maxWidth: .infinity)
                 }
@@ -1686,78 +1650,38 @@ private struct GeminiDashboardCard: View {
                     .padding(.top, 6)
                 }
             } else {
-                // Fallback GCP limits
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("每日请求上限")
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 7) {
+                        Image(systemName: connection.rateLimitState == "account_validation_required"
+                            ? "person.crop.circle.badge.exclamationmark"
+                            : (connection.rateLimitState == "unauthorized" ? "person.crop.circle.badge.exclamationmark" : "exclamationmark.circle"))
+                        Text(connection.rateLimitState == "account_validation_required"
+                            ? "此账号需要先完成 Google 验证"
+                            : (connection.rateLimitState == "unauthorized"
+                                ? "请重新登录以读取 Antigravity 额度"
+                                : "Antigravity 远端额度暂不可用"))
+                    }
+                    if connection.rateLimitState == "account_validation_required",
+                       let message = connection.accountEligibilityMessage, !message.isEmpty {
+                        Text(message)
                             .font(.system(size: 9))
                             .foregroundStyle(Color.codexMuted)
-                        Text(connection.dailyRequestsLimit.map { $0 > 0 ? "\($0)" : "无限制" } ?? "1,500")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.codexInk)
-                        Text("RPD / 天")
-                            .font(.system(size: 8))
-                            .foregroundStyle(Color.codexMuted)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("分钟速率限制")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.codexMuted)
-                        Text(connection.minuteRequestsLimit.map { "\($0)" } ?? "15")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.codexInk)
-                        Text("RPM / 分")
-                            .font(.system(size: 8))
-                            .foregroundStyle(Color.codexMuted)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Token 吞吐量")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.codexMuted)
-                        Text(connection.minuteTokensLimit.map { $0 >= 1000000 ? "\(Double($0) / 1000000.0, specifier: "%.1f")M" : "\($0)" } ?? "1.0M")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.codexInk)
-                        Text("TPM / 分")
-                            .font(.system(size: 8))
-                            .foregroundStyle(Color.codexMuted)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.codexBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
-                }
-                .padding(.top, 6)
-            }
-
-            // Models discovery button
-            if let count = connection.availableModelCount,
-               !connection.availableModelIDs.isEmpty {
-                Button {
-                    onShowModels?()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "sparkles")
+                    if connection.rateLimitState == "account_validation_required",
+                       let rawURL = connection.accountValidationURL,
+                       let url = URL(string: rawURL) {
+                        Button("验证 Google 账号") { NSWorkspace.shared.open(url) }
+                            .buttonStyle(CodexPressableStyle(cornerRadius: 6))
                             .font(.system(size: 10, weight: .semibold))
-                        Text("可访问 \(count) 个模型")
-                            .font(.system(size: 10, weight: .medium))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .semibold))
-                            .foregroundStyle(Color.codexMuted)
                     }
-                    .foregroundStyle(Color.codexBlue)
                 }
-                .buttonStyle(CodexPressableStyle(cornerRadius: 6))
-                .padding(.top, 10)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.codexAmber)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 12)
+                .background(Color.codexAmber.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.top, 6)
             }
 
             // If connection is rate limited, show amber warning
@@ -1771,12 +1695,95 @@ private struct GeminiDashboardCard: View {
                 .padding(.top, 8)
             }
 
-            Label("实时同步 Google AI Pro 额度与模型状态", systemImage: "checkmark.shield")
+            Label(
+                connection.rateLimitState == "normal"
+                    ? "通过账号 OAuth 直连同步 Antigravity 额度与套餐状态"
+                    : "额度数据仅来自账号 OAuth 远端接口，不读取 Antigravity Desktop",
+                systemImage: connection.rateLimitState == "normal" ? "checkmark.shield" : "exclamationmark.shield"
+            )
                 .font(.system(size: 9))
                 .foregroundStyle(Color.codexMuted)
                 .padding(.top, 14)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+enum GeminiQuotaResetFormatter {
+    static func displayText(_ raw: String?, now: Date = Date()) -> String? {
+        guard let resetDate = resetDate(raw, now: now) else { return raw?.isEmpty == false ? "刷新时间待更新" : nil }
+        return adaptiveCountdown(resetDate.timeIntervalSince(now))
+    }
+
+    static func absoluteText(
+        _ raw: String?,
+        now: Date = Date(),
+        timeZone: TimeZone = .current
+    ) -> String? {
+        guard let resetDate = resetDate(raw, now: now) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy年MM月dd日 HH:mm:ss"
+        return formatter.string(from: resetDate)
+    }
+
+    private static func resetDate(_ raw: String?, now: Date) -> Date? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if let date = isoDate(raw) { return date }
+        guard let duration = duration(in: raw) else { return nil }
+        return now.addingTimeInterval(duration)
+    }
+
+    private static func duration(in raw: String) -> TimeInterval? {
+        let days = component(in: raw, pattern: #"(\d+)\s*(?:days?|天)"#)
+        let hours = component(in: raw, pattern: #"(\d+)\s*(?:hours?|小时)"#)
+        let minutes = component(in: raw, pattern: #"(\d+)\s*(?:minutes?|分钟|分)"#)
+        let seconds = component(in: raw, pattern: #"(\d+)\s*(?:seconds?|秒)"#)
+        guard days != nil || hours != nil || minutes != nil || seconds != nil else { return nil }
+        return TimeInterval(days ?? 0) * 86_400
+            + TimeInterval(hours ?? 0) * 3_600
+            + TimeInterval(minutes ?? 0) * 60
+            + TimeInterval(seconds ?? 0)
+    }
+
+    private static func adaptiveCountdown(_ interval: TimeInterval) -> String {
+        guard interval > 0 else { return "即将刷新" }
+        let totalSeconds = max(1, Int(ceil(interval)))
+        let days = totalSeconds / 86_400
+        let hours = (totalSeconds % 86_400) / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        let parts = [
+            (days, "天"),
+            (hours, "小时"),
+            (minutes, "分"),
+            (seconds, "秒")
+        ]
+            .filter { $0.0 > 0 }
+            .prefix(2)
+            .map { "\($0.0)\($0.1)" }
+        return parts.joined() + "后刷新"
+    }
+
+    private static func isoDate(_ raw: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: raw) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: raw)
+    }
+
+    private static func component(in raw: String, pattern: String) -> Int? {
+        guard let match = raw.range(of: pattern, options: [.regularExpression, .caseInsensitive]) else {
+            return nil
+        }
+        return String(raw[match])
+            .components(separatedBy: CharacterSet.decimalDigits.inverted)
+            .first(where: { !$0.isEmpty })
+            .flatMap(Int.init)
     }
 }
 
@@ -3574,6 +3581,7 @@ private struct QuotaRingCard: View {
     let window: UsageWindow
     let tint: Color
     var resetCountdown: String? = nil
+    var resetTooltip: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3614,6 +3622,7 @@ private struct QuotaRingCard: View {
                         .font(.system(size: 10))
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
+                        .help(resetTooltip ?? "")
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 10)

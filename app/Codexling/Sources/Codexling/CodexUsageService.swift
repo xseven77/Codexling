@@ -961,7 +961,7 @@ final class OAuthCallbackServer: @unchecked Sendable {
         var html: String {
             switch self {
             case .success:
-                OAuthCallbackHTML.success
+                OAuthCallbackHTML.success(provider: .codex)
             case .error(let message):
                 OAuthCallbackHTML.error(message: htmlEscape(message))
             }
@@ -1010,25 +1010,56 @@ final class OAuthCallbackServer: @unchecked Sendable {
     }
 }
 
-private enum OAuthCallbackHTML {
-    static let success = """
+enum OAuthCallbackProvider {
+    case codex
+    case gemini
+
+    var assetDirectory: String {
+        switch self {
+        case .codex: "codex"
+        case .gemini: "google-gemini"
+        }
+    }
+
+    var pageTitle: String {
+        switch self {
+        case .codex: "Codex 连接成功 · Codexling"
+        case .gemini: "Gemini 连接成功 · Codexling"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .codex: "Codexling 已连接你的 OpenAI Codex 账号。"
+        case .gemini: "Codexling 已连接你的 Google Gemini 账号。"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .codex: "你可以关闭此页面，返回菜单栏查看 5 小时额度、周额度和重置券。"
+        case .gemini: "你可以关闭此页面，返回 Codexling 查看 5 小时额度、周额度和可用模型。"
+        }
+    }
+}
+
+enum OAuthCallbackHTML {
+    static func success(provider: OAuthCallbackProvider) -> String {
+        let logoSource = brandLogoDataURL(provider: provider)
+        return """
     <!doctype html>
     <html lang="zh-CN">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>连接成功 · Codexling</title>
+      <title>\(provider.pageTitle)</title>
       <style>
         :root {
           color-scheme: light;
           --ink: #171717;
           --muted: #3d4350;
           --line: rgba(23, 23, 23, 0.14);
-          --blue: #0038ff;
-          --red: #e1382b;
-          --green: #1f6d4a;
           --surface: #f8f9fb;
-          --mist: #e5ebf2;
         }
         * { box-sizing: border-box; }
         body {
@@ -1048,16 +1079,19 @@ private enum OAuthCallbackHTML {
           box-shadow: 0 18px 50px rgba(40, 33, 20, 0.12);
           text-align: center;
         }
-        .success-badge {
-          width: 56px;
-          height: 56px;
+        .brand-badge {
+          width: 64px;
+          height: 64px;
           margin: 0 auto 16px;
-          border-radius: 999px;
-          background: rgba(31, 109, 74, 0.10);
+          padding: 6px;
+          border: 1px solid var(--line);
+          border-radius: 16px;
+          background: #fff;
           display: grid;
           place-items: center;
+          box-shadow: 0 8px 20px rgba(23, 23, 23, 0.08);
         }
-        .success-badge svg { width: 28px; height: 28px; stroke: var(--green); fill: none; stroke-width: 2.2; }
+        .brand-badge img { width: 100%; height: 100%; object-fit: contain; border-radius: 11px; }
         h1 {
           margin: 0 0 8px;
           font-size: 24px;
@@ -1080,36 +1114,33 @@ private enum OAuthCallbackHTML {
           font-size: 13px;
           line-height: 1.5;
         }
-        button {
-          margin-top: 20px;
-          min-width: 148px;
-          height: 40px;
-          padding: 0 18px;
-          border: none;
-          border-radius: 10px;
-          background: var(--blue);
-          color: white;
-          font: inherit;
-          font-size: 14px;
-          font-weight: 600;
-          cursor: pointer;
-        }
-        button:hover { filter: brightness(0.95); }
       </style>
     </head>
     <body>
       <main class="card">
-        <div class="success-badge" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+        <div class="brand-badge" aria-hidden="true">
+          <img src="\(logoSource)" alt="" />
         </div>
         <h1>连接成功</h1>
-        <p class="subtitle">Codexling 已连接你的 OpenAI 账号。</p>
-        <p class="hint">你可以关闭此页面，返回菜单栏查看 5 小时额度、周额度和重置券。</p>
-        <button type="button" onclick="window.close()">关闭页面</button>
+        <p class="subtitle">\(provider.subtitle)</p>
+        <p class="hint">\(provider.hint)</p>
       </main>
     </body>
     </html>
     """
+    }
+
+    private static func brandLogoDataURL(provider: OAuthCallbackProvider) -> String {
+        let url = Bundle.main.resourceURL?
+            .appendingPathComponent("BrandAssets/catalog", isDirectory: true)
+            .appendingPathComponent(provider.assetDirectory, isDirectory: true)
+            .appendingPathComponent("app-icon.png")
+        guard let url, let data = try? Data(contentsOf: url) else {
+            // 仅用于未打包的开发运行；正式 App 会从 BrandAssets 嵌入官方图标。
+            return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f3f5f8'/%3E%3Cpath d='M20 32h24M32 20v24' stroke='%23171717' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E"
+        }
+        return "data:image/png;base64,\(data.base64EncodedString())"
+    }
 
     static func error(message: String) -> String {
         """

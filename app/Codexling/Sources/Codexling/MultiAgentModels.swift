@@ -350,6 +350,8 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
     var geminiFiveHourResetDesc: String?
     var claudeGptWeeklyRemaining: Double?
     var claudeGptFiveHourRemaining: Double?
+    var accountEligibilityMessage: String?
+    var accountValidationURL: String?
     var lastValidatedAt: Date?
     var rateLimitState: String?
     var cooldownResetsAt: Date?
@@ -363,6 +365,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         case planName, geminiWeeklyRemaining, geminiWeeklyResetDesc
         case geminiFiveHourRemaining, geminiFiveHourResetDesc
         case claudeGptWeeklyRemaining, claudeGptFiveHourRemaining
+        case accountEligibilityMessage, accountValidationURL
         case lastValidatedAt, rateLimitState, cooldownResetsAt, createdAt
     }
 
@@ -390,6 +393,8 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         geminiFiveHourResetDesc: String? = nil,
         claudeGptWeeklyRemaining: Double? = nil,
         claudeGptFiveHourRemaining: Double? = nil,
+        accountEligibilityMessage: String? = nil,
+        accountValidationURL: String? = nil,
         lastValidatedAt: Date? = nil,
         rateLimitState: String? = nil,
         cooldownResetsAt: Date? = nil,
@@ -418,6 +423,8 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         self.geminiFiveHourResetDesc = geminiFiveHourResetDesc
         self.claudeGptWeeklyRemaining = claudeGptWeeklyRemaining
         self.claudeGptFiveHourRemaining = claudeGptFiveHourRemaining
+        self.accountEligibilityMessage = accountEligibilityMessage
+        self.accountValidationURL = accountValidationURL
         self.lastValidatedAt = lastValidatedAt
         self.rateLimitState = rateLimitState
         self.cooldownResetsAt = cooldownResetsAt
@@ -449,6 +456,8 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         geminiFiveHourResetDesc = try container.decodeIfPresent(String.self, forKey: .geminiFiveHourResetDesc)
         claudeGptWeeklyRemaining = try container.decodeIfPresent(Double.self, forKey: .claudeGptWeeklyRemaining)
         claudeGptFiveHourRemaining = try container.decodeIfPresent(Double.self, forKey: .claudeGptFiveHourRemaining)
+        accountEligibilityMessage = try container.decodeIfPresent(String.self, forKey: .accountEligibilityMessage)
+        accountValidationURL = try container.decodeIfPresent(String.self, forKey: .accountValidationURL)
         lastValidatedAt = try container.decodeIfPresent(Date.self, forKey: .lastValidatedAt)
         rateLimitState = try container.decodeIfPresent(String.self, forKey: .rateLimitState)
         cooldownResetsAt = try container.decodeIfPresent(Date.self, forKey: .cooldownResetsAt)
@@ -480,6 +489,8 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         try container.encodeIfPresent(geminiFiveHourResetDesc, forKey: .geminiFiveHourResetDesc)
         try container.encodeIfPresent(claudeGptWeeklyRemaining, forKey: .claudeGptWeeklyRemaining)
         try container.encodeIfPresent(claudeGptFiveHourRemaining, forKey: .claudeGptFiveHourRemaining)
+        try container.encodeIfPresent(accountEligibilityMessage, forKey: .accountEligibilityMessage)
+        try container.encodeIfPresent(accountValidationURL, forKey: .accountValidationURL)
         try container.encodeIfPresent(lastValidatedAt, forKey: .lastValidatedAt)
         try container.encodeIfPresent(rateLimitState, forKey: .rateLimitState)
         try container.encodeIfPresent(cooldownResetsAt, forKey: .cooldownResetsAt)
@@ -488,6 +499,15 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
 }
 
 typealias GeminiAPIConnection = GeminiAccountConnection
+
+extension GeminiAccountConnection {
+    var resolvedPlanDisplayName: String {
+        if rateLimitState == "account_validation_required" { return "无 Antigravity 权限" }
+        if let planName, !planName.isEmpty { return planName }
+        if let tier, !tier.isEmpty, tier != "额度暂不可用" { return tier }
+        return "套餐状态未知"
+    }
+}
 
 enum AgentActivityState: String, CaseIterable, Codable, Sendable {
     case offline

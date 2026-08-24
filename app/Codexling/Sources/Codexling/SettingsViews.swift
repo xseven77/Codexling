@@ -863,7 +863,6 @@ struct SettingsView: View {
     private func geminiPoolBadge(_ connection: GeminiAPIConnection) -> String {
         guard connection.authenticationState == .connected else { return "未授权" }
         if connection.rateLimitState == "rate_limited" { return "限流中" }
-        if let count = connection.availableModelCount, count > 0 { return "\(count) 个模型" }
         return "已连接"
     }
 

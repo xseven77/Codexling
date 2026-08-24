@@ -197,8 +197,8 @@ struct AccountConnectionsModalView: View {
                 }
                 connectionOption(
                     asset: .googleGemini,
-                    title: "添加 Google Gemini 账号",
-                    subtitle: "通过官方 Google OAuth 授权",
+                    title: "添加 Gemini 账号",
+                    subtitle: "使用 Google OAuth 官方授权",
                     isOAuthInProgress: store.isGeminiOAuthInProgress,
                     supportsOAuthCancellation: true,
                     onCancelOAuth: { store.cancelCurrentGeminiOAuth() }
@@ -262,15 +262,17 @@ struct AccountConnectionsModalView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
                             .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.88)
                         Text(subtitle)
                             .font(.system(size: 9))
                             .foregroundStyle(Color.codexMuted)
+                            .lineLimit(2)
                     }
+                    .layoutPriority(1)
                     Spacer()
                     if supportsOAuthCancellation && isOAuthInProgress {
-                        Color.clear.frame(width: 58, height: 1)
-                    } else if store.isMutatingConnections {
-                        ProgressView().controlSize(.small)
+                        Color.clear.frame(width: 44, height: 1)
                     } else {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
@@ -506,7 +508,7 @@ private struct CancelCodexOAuthButton: View {
         .onHover { isHovered in
             self.isHovered = isHovered
         }
-        .accessibilityLabel("取消 Codex OAuth 登录")
+        .accessibilityLabel("取消 OAuth 登录")
     }
 }
 
