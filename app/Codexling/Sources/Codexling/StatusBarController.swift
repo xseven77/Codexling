@@ -456,6 +456,7 @@ final class StatusBarController: NSObject {
             let providerLogo = providerTicks.indices.contains(ticker.providerIndex)
                 ? BrandAssetCatalog.image(for: providerTicks[ticker.providerIndex].asset)
                 : nil
+            let hasAgentPrefix = !agentText.isEmpty
             capsuleView?.update(
                 background: .neutral,
                 text: compactText,
@@ -469,7 +470,8 @@ final class StatusBarController: NSObject {
                 showsWave: showsWave,
                 cornerRatio: cornerRatio,
                 providerLogo: providerLogo,
-                agentLogo: agentLogo
+                agentLogo: agentLogo,
+                hasAgentPrefix: hasAgentPrefix
             )
             if let capsuleView {
                 statusItem.length = capsuleView.preferredWidth
@@ -1122,6 +1124,15 @@ enum StatusPetBadgeRenderer {
     }
 }
 
+private let statusCapsuleProviderLogoPlaceholderWidth: CGFloat = 13 + 4
+
+private func statusCapsuleLogoRunDelegateDealloc(pointer: UnsafeMutableRawPointer) {}
+private func statusCapsuleLogoRunDelegateGetAscent(pointer: UnsafeMutableRawPointer) -> CGFloat { 0 }
+private func statusCapsuleLogoRunDelegateGetDescent(pointer: UnsafeMutableRawPointer) -> CGFloat { 0 }
+private func statusCapsuleLogoRunDelegateGetWidth(pointer: UnsafeMutableRawPointer) -> CGFloat {
+    statusCapsuleProviderLogoPlaceholderWidth
+}
+
 final class StatusCapsuleView: NSView {
     private static let leadingPadding: CGFloat = 7.5
     private static let indicatorTextGap: CGFloat = 8
@@ -1159,6 +1170,7 @@ final class StatusCapsuleView: NSView {
     private var cornerRatio: CGFloat = 0.5
     /// 额度前展示的供应商 logo（降级胶囊用）。
     private var providerLogo: NSImage?
+    private var hasAgentPrefix = false
     private var isTrackingPress = false
     private var lastClickTimestamp: TimeInterval = -.infinity
     private var trackingAreaReference: NSTrackingArea?
@@ -1235,7 +1247,8 @@ final class StatusCapsuleView: NSView {
         showsWave: Bool,
         cornerRatio: CGFloat,
         providerLogo: NSImage? = nil,
-        agentLogo: NSImage? = nil
+        agentLogo: NSImage? = nil,
+        hasAgentPrefix: Bool = false
     ) {
         self.background = background
         self.colorScheme = colorScheme
@@ -1248,6 +1261,7 @@ final class StatusCapsuleView: NSView {
         self.waveColor = waveColor
         self.providerLogo = providerLogo
         self.agentLogo = agentLogo
+        self.hasAgentPrefix = hasAgentPrefix
         let waveVisibilityChanged = self.showsWave != showsWave
         self.showsWave = showsWave
         self.cornerRatio = min(max(cornerRatio, 0.2), 0.5)
@@ -1327,7 +1341,9 @@ final class StatusCapsuleView: NSView {
             // CTLineDraw 不会渲染 NSTextAttachment 的图片，这里手动画供应商 logo（垂直居中）。
             if let logo = providerLogo {
                 let textStartX = textLeadingOffset
-                let offset = CTLineGetOffsetForStringIndex(line, providerLogoInsertIndex, nil)
+                let insertIndex = providerLogoInsertIndex(in: text, hasPrefix: hasAgentPrefix)
+                let safeIndex = max(0, min(insertIndex, (text as NSString).length))
+                let offset = CTLineGetOffsetForStringIndex(line, safeIndex, nil)
                 let logoRect = NSRect(
                     x: textStartX + offset,
                     y: (bounds.height - Self.providerLogoSize) / 2,
@@ -1379,14 +1395,24 @@ final class StatusCapsuleView: NSView {
     }
 
     private var attributedText: NSAttributedString {
-        attributedText(for: text)
+        attributedText(for: text, hasPrefix: hasAgentPrefix)
     }
 
     private var attributedReservedText: NSAttributedString {
-        attributedText(for: reservedText)
+        let hasReservedPrefix = reservedText.hasPrefix("思考中·")
+        return attributedText(for: reservedText, hasPrefix: hasReservedPrefix)
     }
 
-    private func attributedText(for text: String) -> NSAttributedString {
+    /// 供应商 logo 在文本中的插入位置：有 agent 前缀时在「·」之后，否则在开头。
+    private func providerLogoInsertIndex(in targetText: String, hasPrefix: Bool) -> Int {
+        guard hasPrefix else { return 0 }
+        let source = targetText as NSString
+        let separator = source.range(of: "·")
+        guard separator.location != NSNotFound else { return 0 }
+        return separator.location + 1
+    }
+
+    private func attributedText(for text: String, hasPrefix: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -1415,7 +1441,9 @@ final class StatusCapsuleView: NSView {
         // 在额度文本前插入对应供应商 logo：有 agent 前缀时插在「·」之后，否则插在开头。
         // 用 CTRunDelegate 精确预留「logo 宽度 + 右侧间距」，保证左右 margin 对称。
         if providerLogo != nil {
-            result.insert(Self.logoPlaceholderString(), at: providerLogoInsertIndex)
+            let insertIndex = providerLogoInsertIndex(in: text, hasPrefix: hasPrefix)
+            let safeIndex = max(0, min(insertIndex, result.length))
+            result.insert(Self.logoPlaceholderString(), at: safeIndex)
         }
         return result
     }
@@ -1447,38 +1475,31 @@ final class StatusCapsuleView: NSView {
         return Self.leadingPadding
     }
 
-    /// 供应商 logo 在文本中的插入位置：有 agent 前缀时在「·」之后，否则在开头。
-    private var providerLogoInsertIndex: Int {
-        let source = text as NSString
-        let separator = source.range(of: "·")
-        return separator.location != NSNotFound ? separator.location + 1 : 0
-    }
-
     /// 用 CTRunDelegate 预留 logo 占位宽度（logo 宽 + 右侧 `inlineContentGap`）。
     /// CTLine 不识别 NSTextAttachment 的宽度，必须用 run delegate 才能精确排版。
-    private static func logoPlaceholderString() -> NSAttributedString {
-        let width = providerLogoSize + inlineContentGap
-        let refCon = UnsafeMutableRawPointer.allocate(
-            byteCount: MemoryLayout<CGFloat>.size,
-            alignment: MemoryLayout<CGFloat>.alignment
-        )
-        refCon.storeBytes(of: width, as: CGFloat.self)
+    static let providerLogoPlaceholderWidth: CGFloat = providerLogoSize + inlineContentGap
 
+    private static let logoPlaceholderAttributedString: NSAttributedString = {
         var callbacks = CTRunDelegateCallbacks(
             version: kCTRunDelegateVersion1,
-            dealloc: { pointer in pointer.deallocate() },
-            getAscent: { _ in 0 },
-            getDescent: { _ in 0 },
-            getWidth: { pointer in pointer.load(as: CGFloat.self) }
+            dealloc: statusCapsuleLogoRunDelegateDealloc,
+            getAscent: statusCapsuleLogoRunDelegateGetAscent,
+            getDescent: statusCapsuleLogoRunDelegateGetDescent,
+            getWidth: statusCapsuleLogoRunDelegateGetWidth
         )
-        let runDelegate = CTRunDelegateCreate(&callbacks, refCon)!
-        let placeholder = NSMutableAttributedString(string: "\u{FFFC}")
-        placeholder.addAttribute(
-            NSAttributedString.Key(kCTRunDelegateAttributeName as String),
-            value: runDelegate,
-            range: NSRange(location: 0, length: 1)
+        guard let runDelegate = CTRunDelegateCreate(&callbacks, nil) else {
+            return NSAttributedString(string: "")
+        }
+        return NSAttributedString(
+            string: "\u{FFFC}",
+            attributes: [
+                NSAttributedString.Key(kCTRunDelegateAttributeName as String): runDelegate
+            ]
         )
-        return placeholder
+    }()
+
+    private static func logoPlaceholderString() -> NSAttributedString {
+        logoPlaceholderAttributedString
     }
 
     override func viewDidMoveToWindow() {

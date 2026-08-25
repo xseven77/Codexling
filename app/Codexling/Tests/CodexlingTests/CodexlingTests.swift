@@ -553,6 +553,117 @@ final class CodexlingTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testStatusCapsuleWithProviderLogoDoesNotCrashOnRotationAndDealloc() throws {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        let dummyImage = NSImage(size: NSSize(width: 13, height: 13))
+
+        // Measure width without logo
+        view.update(
+            background: .neutral,
+            text: "5h 90%·周 90%",
+            reservedText: "5h 99%·周 99%",
+            foregroundColor: .white,
+            showsPet: false,
+            indicatorColor: .systemGreen,
+            showsWave: false,
+            cornerRatio: 0.5,
+            providerLogo: nil
+        )
+        let widthWithoutLogo = view.preferredWidth
+
+        // Measure width with logo
+        view.update(
+            background: .neutral,
+            text: "5h 90%·周 90%",
+            reservedText: "5h 99%·周 99%",
+            foregroundColor: .white,
+            showsPet: false,
+            indicatorColor: .systemGreen,
+            showsWave: false,
+            cornerRatio: 0.5,
+            providerLogo: dummyImage
+        )
+        let widthWithLogo = view.preferredWidth
+
+        // Verify that the width increases when provider logo is present
+        XCTAssertGreaterThan(widthWithLogo, widthWithoutLogo)
+        XCTAssertEqual(widthWithLogo - widthWithoutLogo, StatusCapsuleView.providerLogoPlaceholderWidth, accuracy: 3.0)
+
+        // Simulate carousel rotation across multiple providers and autorelease pool drains
+        for i in 0..<50 {
+            autoreleasepool {
+                view.update(
+                    background: .neutral,
+                    text: "Provider \(i)·\(i * 2)%",
+                    reservedText: "Provider 99·99%",
+                    foregroundColor: .white,
+                    showsPet: false,
+                    indicatorColor: .systemGreen,
+                    showsWave: false,
+                    cornerRatio: 0.5,
+                    providerLogo: dummyImage
+                )
+                _ = view.preferredWidth
+                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+                if let rep {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testStatusCapsuleWithGeminiAndVariableQuotaTextsDoesNotCrash() throws {
+        let view = StatusCapsuleView(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        let geminiLogo = BrandAssetCatalog.image(for: .googleGemini) ?? NSImage(size: NSSize(width: 13, height: 13))
+        let agentLogo = BrandAssetCatalog.image(for: .codex)
+
+        let testCases: [(text: String, reservedText: String, hasAgentPrefix: Bool, agentLogo: NSImage?)] = [
+            // Gemini without agent task (hasAgentPrefix = false) with short/long reserved texts
+            ("5h 80%·周 90%", "无额度", false, nil),
+            ("5h 80%·周 90%", "未登录", false, nil),
+            ("5h 80%·周 90%", "5h 99%·周 99%", false, nil),
+            ("周 90%", "无额度", false, nil),
+            ("5h 80%", "无额度", false, nil),
+            ("限流中", "无额度", false, nil),
+            ("额度暂不可用", "无额度", false, nil),
+            ("需要验证账号", "无额度", false, nil),
+            ("Gemini Advanced", "无额度", false, nil),
+            ("Google One AI Premium", "5h 99%·周 99%", false, nil),
+
+            // Gemini with active agent task (hasAgentPrefix = true)
+            ("思考中·5h 80%·周 90%", "思考中·无额度", true, agentLogo),
+            ("思考中·5h 80%·周 90%", "思考中·5h 99%·周 99%", true, agentLogo),
+            ("思考中·额度暂不可用", "思考中·无额度", true, agentLogo),
+            ("工作中·限流中", "思考中·无额度", true, agentLogo),
+            ("工作中·Gemini Advanced", "思考中·5h 99%·周 99%", true, agentLogo),
+        ]
+
+        for testCase in testCases {
+            autoreleasepool {
+                view.update(
+                    background: .neutral,
+                    text: testCase.text,
+                    reservedText: testCase.reservedText,
+                    foregroundColor: .white,
+                    showsPet: false,
+                    indicatorColor: .systemGreen,
+                    showsWave: false,
+                    cornerRatio: 0.5,
+                    providerLogo: geminiLogo,
+                    agentLogo: testCase.agentLogo,
+                    hasAgentPrefix: testCase.hasAgentPrefix
+                )
+                XCTAssertGreaterThan(view.preferredWidth, 0)
+                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+                if let rep {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                }
+            }
+        }
+    }
+
     func testTaskHoverDismissalLastsUntilActiveTasksEnd() {
         var state = TaskHoverPresentationState()
         state.update(hasActiveTasks: true)
