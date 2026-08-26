@@ -942,6 +942,41 @@ final class CodexlingTests: XCTestCase {
         ])
     }
 
+    func testGeminiNotchUsesGrayUnavailableCopyInsteadOfCachedOrPartialQuota() {
+        let staleConnection = GeminiAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Gemini Stale",
+            credentialHandle: "gemini-stale",
+            authenticationState: .connected,
+            planName: "Antigravity Free",
+            geminiWeeklyRemaining: 1,
+            geminiFiveHourRemaining: 1,
+            rateLimitState: "quota_unavailable",
+            createdAt: Date()
+        )
+        let partialConnection = GeminiAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Gemini Partial",
+            credentialHandle: "gemini-partial",
+            authenticationState: .connected,
+            planName: "Antigravity Free",
+            geminiWeeklyRemaining: 1,
+            rateLimitState: "normal",
+            createdAt: Date()
+        )
+
+        for tick in [
+            StatusBarProviderTickFactory.geminiTick(staleConnection),
+            StatusBarProviderTickFactory.geminiTick(partialConnection)
+        ] {
+            XCTAssertEqual(tick.quotaText, "额度暂不可查询")
+            XCTAssertEqual(tick.quotaHealth, .gray)
+            XCTAssertEqual(tick.quotaSegments, [
+                StatusBarQuotaSegment(text: "额度暂不可查询", health: .gray)
+            ])
+        }
+    }
+
     func testCodexNotchQuotaSegmentsUseIndependentHealthColors() throws {
         var snapshot = CodexUsageSnapshot.preview
         snapshot.weekly = UsageWindow(label: "周额度", remaining: 70, total: 100, resetsAt: "")

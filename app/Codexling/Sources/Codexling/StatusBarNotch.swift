@@ -383,38 +383,40 @@ enum StatusBarProviderTickFactory {
     static func geminiTick(_ connection: GeminiAccountConnection) -> StatusBarProviderTick {
         let connected = connection.authenticationState == .connected
         let isRateLimited = connection.rateLimitState == "rate_limited"
+        let requiresAccountValidation = connection.rateLimitState == "account_validation_required"
+        let hasCompleteQuota = connection.geminiWeeklyRemaining != nil
+            && connection.geminiFiveHourRemaining != nil
         let isQuotaUnavailable = connection.rateLimitState == "quota_unavailable"
             || connection.rateLimitState == "unauthorized"
-            || connection.rateLimitState == "account_validation_required"
+            || !hasCompleteQuota
         var segments: [StatusBarQuotaSegment] = []
         let quotaText: String
         if isRateLimited {
             quotaText = "限流中"
             segments = [StatusBarQuotaSegment(text: "限流中", health: .yellow)]
-        } else if isQuotaUnavailable {
-            quotaText = connection.rateLimitState == "account_validation_required" ? "需要验证账号" : "额度暂不可用"
+        } else if requiresAccountValidation {
+            quotaText = "需要验证账号"
             segments = [StatusBarQuotaSegment(text: quotaText, health: .yellow)]
+        } else if isQuotaUnavailable {
+            quotaText = "额度暂不可查询"
+            segments = [StatusBarQuotaSegment(text: quotaText, health: .gray)]
         } else if let weekly = connection.geminiWeeklyRemaining, let fiveHour = connection.geminiFiveHourRemaining {
             segments = [
                 percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected),
                 percentageSegment(label: "周", ratio: weekly, isConnected: connected)
             ]
             quotaText = joinedQuotaText(segments)
-        } else if let weekly = connection.geminiWeeklyRemaining {
-            segments = [percentageSegment(label: "周", ratio: weekly, isConnected: connected)]
-            quotaText = joinedQuotaText(segments)
-        } else if let fiveHour = connection.geminiFiveHourRemaining {
-            segments = [percentageSegment(label: "5h", ratio: fiveHour, isConnected: connected)]
-            quotaText = joinedQuotaText(segments)
         } else {
-            quotaText = connection.resolvedPlanDisplayName
-            segments = [StatusBarQuotaSegment(text: quotaText, health: connected ? .green : .yellow)]
+            quotaText = "额度暂不可查询"
+            segments = [StatusBarQuotaSegment(text: quotaText, health: .gray)]
         }
-        let health: QuotaHealthLevel = if !connected {
-            .yellow
-        } else if isRateLimited {
+        let health: QuotaHealthLevel = if requiresAccountValidation {
             .yellow
         } else if isQuotaUnavailable {
+            .gray
+        } else if !connected {
+            .yellow
+        } else if isRateLimited {
             .yellow
         } else if min(connection.geminiWeeklyRemaining ?? 1, connection.geminiFiveHourRemaining ?? 1) < 0.15 {
             .yellow

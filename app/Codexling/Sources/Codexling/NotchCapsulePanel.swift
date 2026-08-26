@@ -562,6 +562,8 @@ private struct NotchCapsuleView: View {
                         separatorColor: .white.opacity(0.4)
                     )
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                     StatusBarBrandBadge(asset: provider.asset, size: 14)
                 } else {
                     Text("未登录")
@@ -905,7 +907,7 @@ private struct NotchCapsuleView: View {
                 .padding(.top, 16)
             }
         }
-        .frame(width: 212)
+        .frame(width: 200)
         .onHover { hovering in viewModel.onProviderHover?(hovering) }
         .onDisappear { viewModel.onProviderHover?(false) }
     }
