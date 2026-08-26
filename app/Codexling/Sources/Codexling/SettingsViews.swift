@@ -1356,7 +1356,7 @@ struct SettingsView: View {
                         )
                     }
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
-                    .help("在 Finder 中打开 ~/.codex/pets")
+                    .help("在 Finder 中打开 Codexling Pets 文件夹（支持与 Codex 双向同步）")
                     Button {
                         settings.reloadPets()
                         let builtIn = settings.availablePets.filter { $0.source == .codexBuiltIn }.count
@@ -1390,7 +1390,7 @@ struct SettingsView: View {
     private var thirdPartyPetResourcesSection: some View {
         SettingsSection(
             title: "Pet 资源",
-            subtitle: "下载后放入 ~/.codex/pets，再返回上方重新扫描。"
+            subtitle: "下载后放入 Pets 文件夹，再返回上方重新扫描（若已安装 Codex 将自动双向同步）。"
         ) {
             VStack(spacing: 0) {
                 SettingsExternalLinkRow(

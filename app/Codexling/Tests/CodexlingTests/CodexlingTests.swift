@@ -1897,57 +1897,73 @@ final class CodexlingTests: XCTestCase {
         XCTAssertEqual(snapshot.hoverSubtitle, "正在运行本地命令")
     }
 
-    func testAsarArchiveReadsAndExtractsEntry() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let archiveURL = directory.appendingPathComponent("fixture.asar")
-        let payload = Data("hello".utf8)
-        let header = try JSONSerialization.data(withJSONObject: [
-            "files": [
-                "assets": [
-                    "files": [
-                        "hello.txt": ["size": payload.count, "offset": "0"]
-                    ]
-                ]
-            ]
-        ])
-        var archiveData = Data()
-        archiveData.append(littleEndian(4))
-        archiveData.append(littleEndian(UInt32(header.count + 8)))
-        archiveData.append(littleEndian(UInt32(header.count + 4)))
-        archiveData.append(littleEndian(UInt32(header.count)))
-        archiveData.append(header)
-        archiveData.append(payload)
-        try archiveData.write(to: archiveURL)
-
-        let archive = try AsarArchive(url: archiveURL)
-        let entry = try XCTUnwrap(archive.firstEntry { $0.hasSuffix("hello.txt") })
-        let destination = directory.appendingPathComponent("out/hello.txt")
-        try archive.extract(entry, to: destination)
-        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "hello")
-    }
-
-    func testInstalledCodexBuiltInPetsAreDiscoverableWhenApplicationExists() throws {
-        let application = URL(fileURLWithPath: "/Applications/ChatGPT.app")
-        guard FileManager.default.fileExists(atPath: application.path) else { return }
-
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-        let catalog = CodexPetCatalog(
-            customPetsRoot: temporaryRoot.appendingPathComponent("custom"),
-            cacheRoot: temporaryRoot.appendingPathComponent("cache"),
-            applicationURLs: [application]
-        )
+    func testBuiltInPetsAreDiscoverableStandaloneWithoutCodex() throws {
+        let catalog = CodexPetCatalog()
         let builtIns = catalog.discover().filter { $0.source == .codexBuiltIn }
 
-        XCTAssertEqual(builtIns.count, 9)
+        XCTAssertGreaterThanOrEqual(builtIns.count, 10)
         XCTAssertTrue(builtIns.allSatisfy { $0.rowCount >= 9 })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "codexling" })
         XCTAssertTrue(builtIns.contains { $0.assetID == "codex" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "dewey" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "fireball" })
         XCTAssertTrue(builtIns.contains { $0.assetID == "hoots" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "null-signal" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "rocky" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "seedy" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "stacky" })
+        XCTAssertTrue(builtIns.contains { $0.assetID == "bsod" })
+    }
+
+    @MainActor
+    func testPetBidirectionalSyncManagerPerformsTwoWaySync() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-test-\(UUID().uuidString)", isDirectory: true)
+        let appSupportPets = tempDir.appendingPathComponent("AppSupport/Codexling/Pets", isDirectory: true)
+        let codexPets = tempDir.appendingPathComponent(".codex/pets", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent(".codex/config.toml")
+        try FileManager.default.createDirectory(at: appSupportPets, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codexPets, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Setup custom-dog in AppSupport
+        let dogDir = appSupportPets.appendingPathComponent("custom-dog", isDirectory: true)
+        try FileManager.default.createDirectory(at: dogDir, withIntermediateDirectories: true)
+        try """
+        {"id":"custom-dog","displayName":"Doggo","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}
+        """.write(to: dogDir.appendingPathComponent("pet.json"), atomically: true, encoding: .utf8)
+        try "dummy-dog-sheet".write(to: dogDir.appendingPathComponent("spritesheet.webp"), atomically: true, encoding: .utf8)
+
+        // Setup custom-cat in Codex
+        let catDir = codexPets.appendingPathComponent("custom-cat", isDirectory: true)
+        try FileManager.default.createDirectory(at: catDir, withIntermediateDirectories: true)
+        try """
+        {"id":"custom-cat","displayName":"Kitty","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}
+        """.write(to: catDir.appendingPathComponent("pet.json"), atomically: true, encoding: .utf8)
+        try "dummy-cat-sheet".write(to: catDir.appendingPathComponent("spritesheet.webp"), atomically: true, encoding: .utf8)
+
+        let syncManager = PetBidirectionalSyncManager(
+            appSupportPetsRoot: appSupportPets,
+            codexPetsRoot: codexPets,
+            configURL: configURL
+        )
+
+        let firstResult = syncManager.performBidirectionalSync()
+        XCTAssertGreaterThanOrEqual(firstResult.forwardCount, 1)
+        XCTAssertGreaterThanOrEqual(firstResult.reverseCount, 1)
+
+        // Verify custom-dog was synced forward to .codex/pets
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codexPets.appendingPathComponent("custom-dog/pet.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codexPets.appendingPathComponent("custom-dog/spritesheet.webp").path))
+
+        // Verify custom-cat was synced in reverse to AppSupport/Codexling/Pets
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appSupportPets.appendingPathComponent("custom-cat/pet.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appSupportPets.appendingPathComponent("custom-cat/spritesheet.webp").path))
+
+        // Re-running sync should be idempotent and produce 0 changes
+        let secondResult = syncManager.performBidirectionalSync()
+        XCTAssertEqual(secondResult.forwardCount, 0)
+        XCTAssertEqual(secondResult.reverseCount, 0)
     }
 
     func testCodexPetSelectionSyncReadsAndMapsPetIDs() throws {

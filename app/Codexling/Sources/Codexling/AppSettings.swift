@@ -699,6 +699,7 @@ final class AppSettingsStore {
     }
 
     func reloadPets(notify: Bool = true) {
+        PetBidirectionalSyncManager.shared.performBidirectionalSync()
         isCodexlingPetInstalled = CodexlingPetInstaller.isInstalled()
         availablePets = CodexPetCatalog().discover()
         if !availablePets.contains(where: { $0.id == selectedPetID }),
