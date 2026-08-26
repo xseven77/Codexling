@@ -967,6 +967,7 @@ private struct DashboardConnectionSwitcher: View {
 
     @State private var draggingItemKey: String?
     @State private var dragOffset: CGSize = .zero
+    @State private var trailingFadeVisible = false
 
     /// 用户拖拽后的顺序同时也是自动轮播顺序。
     private var connectionItems: [ConnectionSwitcherItem] {
@@ -1028,7 +1029,7 @@ private struct DashboardConnectionSwitcher: View {
             GeometryReader { geometry in
                 let rowOffset = connectionRowOffset(viewportWidth: geometry.size.width)
                 let leadingFadeVisible = showsLeadingFade(rowOffset: rowOffset)
-                let trailingFadeVisible = showsTrailingFade(
+                let resolvedTrailingFadeVisible = showsTrailingFade(
                     viewportWidth: geometry.size.width,
                     rowOffset: rowOffset
                 )
@@ -1073,20 +1074,21 @@ private struct DashboardConnectionSwitcher: View {
                 .coordinateSpace(name: "connection-switcher")
                 .overlay(alignment: .leading) {
                     if leadingFadeVisible {
-                        connectionEdgeFade(leadingEdge: true)
-                            .frame(width: connectionFadeWidth(viewportWidth: geometry.size.width))
-                            .allowsHitTesting(false)
-                    }
-                }
-                .overlay(alignment: .trailing) {
-                    if trailingFadeVisible {
-                        connectionEdgeFade(leadingEdge: false)
-                            .frame(width: connectionFadeWidth(viewportWidth: geometry.size.width))
+                        connectionEdgeFade
+                            .frame(
+                                width: connectionFadeWidth(viewportWidth: geometry.size.width),
+                                height: 50
+                            )
                             .allowsHitTesting(false)
                     }
                 }
                 .animation(.easeOut(duration: 0.18), value: leadingFadeVisible)
-                .animation(.easeOut(duration: 0.18), value: trailingFadeVisible)
+                .onAppear {
+                    trailingFadeVisible = resolvedTrailingFadeVisible
+                }
+                .onChange(of: resolvedTrailingFadeVisible) { _, visible in
+                    trailingFadeVisible = visible
+                }
             }
             .frame(maxWidth: .infinity)
             .frame(height: 50)
@@ -1113,6 +1115,16 @@ private struct DashboardConnectionSwitcher: View {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .strokeBorder(Color.codexLine, style: StrokeStyle(lineWidth: 1, dash: [3]))
             }
+            .overlay(alignment: .leading) {
+                if trailingFadeVisible {
+                    connectionEdgeFade
+                        .frame(width: 36, height: 50)
+                        .scaleEffect(x: -1)
+                        .offset(x: -36)
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: trailingFadeVisible)
             .help("添加 Codex 账号或供应商 API Key")
         }
         .frame(height: 50, alignment: .center)
@@ -1190,15 +1202,15 @@ private struct DashboardConnectionSwitcher: View {
         min(36, max(0, viewportWidth / 2))
     }
 
-    private func connectionEdgeFade(leadingEdge: Bool) -> LinearGradient {
-        return LinearGradient(
+    private var connectionEdgeFade: LinearGradient {
+        LinearGradient(
             stops: [
                 .init(color: Color.codexCard, location: 0),
                 .init(color: Color.codexCard.opacity(0.82), location: 0.38),
                 .init(color: Color.codexCard.opacity(0), location: 1),
             ],
-            startPoint: leadingEdge ? .leading : .trailing,
-            endPoint: leadingEdge ? .trailing : .leading
+            startPoint: .leading,
+            endPoint: .trailing
         )
     }
 
