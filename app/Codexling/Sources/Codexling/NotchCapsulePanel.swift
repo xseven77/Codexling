@@ -905,7 +905,7 @@ private struct NotchCapsuleView: View {
                 .padding(.top, 16)
             }
         }
-        .frame(width: 200)
+        .frame(width: 212)
         .onHover { hovering in viewModel.onProviderHover?(hovering) }
         .onDisappear { viewModel.onProviderHover?(false) }
     }
