@@ -230,4 +230,32 @@ final class AgentHookManagerTests: XCTestCase {
         XCTAssertEqual(loaded.deepSeekConnections[0].balance?.total, Decimal(string: "42.80"))
         XCTAssertEqual(loaded.deepSeekConnections[0].createdAt, now)
     }
+
+    func testAgentInstallGuideCatalogProvidesCompleteGuidesForAllAgents() {
+        let agentIDs: [AgentID] = [.codex, .deepseekHarness, .hermes, .antigravity]
+        for id in agentIDs {
+            let guide = AgentInstallGuideCatalog.guide(for: id)
+            XCTAssertFalse(guide.name.isEmpty, "Name should not be empty for \(id)")
+            XCTAssertFalse(guide.tagline.isEmpty, "Tagline should not be empty for \(id)")
+            XCTAssertFalse(guide.summary.isEmpty, "Summary should not be empty for \(id)")
+            XCTAssertFalse(guide.methods.isEmpty, "Methods should not be empty for \(id)")
+            XCTAssertNotNil(guide.documentationURLString, "Doc URL should exist for \(id)")
+        }
+    }
+
+    func testAgentIntegrationStatusGuideAndInstalledProperties() {
+        var status = AgentIntegrationStatus(
+            id: .hermes,
+            name: "Hermes",
+            priority: 2,
+            cliInstalled: false,
+            desktopInstalled: false,
+            detail: "Gateway JSON-RPC · 会话读取"
+        )
+        XCTAssertFalse(status.isInstalled)
+        XCTAssertEqual(status.guide.name, "Hermes")
+
+        status.cliInstalled = true
+        XCTAssertTrue(status.isInstalled)
+    }
 }

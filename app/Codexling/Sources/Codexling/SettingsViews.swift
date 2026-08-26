@@ -62,6 +62,7 @@ struct SettingsView: View {
     @State private var revealedKey: RevealedAPIKey?
     @State private var revealedKeyCopyGeneration = 0
     @State private var editingConnectionTarget: AccountConnectionEditTarget?
+    @State private var presentingInstallGuide: AgentIntegrationStatus?
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
     @State private var selectedTab: SettingsTab = .general
@@ -157,6 +158,42 @@ struct SettingsView: View {
                 }
             }
             .animation(.easeOut(duration: 0.18), value: editingConnectionTarget)
+            .overlay {
+                if let presentingInstallGuide {
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.25))
+                            .background(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .onTapGesture { self.presentingInstallGuide = nil }
+
+                        AgentInstallGuideModal(
+                            integration: presentingInstallGuide,
+                            onCopyCommand: { command in
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(command, forType: .string)
+                                showToast("已复制命令至剪贴板", systemImage: "doc.on.doc")
+                            },
+                            onRecheck: {
+                                multiAgentSettings.refresh()
+                                if let updated = multiAgentSettings.integrations.first(where: { $0.id == presentingInstallGuide.id }) {
+                                    self.presentingInstallGuide = updated
+                                    if updated.isInstalled {
+                                        showToast("已检测到 \(updated.name) 安装！", systemImage: "checkmark.circle.fill")
+                                    } else {
+                                        showToast("未检测到 \(updated.name) 安装，请完成安装后重试", systemImage: "exclamationmark.triangle")
+                                    }
+                                }
+                            },
+                            onClose: { self.presentingInstallGuide = nil }
+                        )
+                        .padding(14)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    }
+                    .zIndex(38)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: presentingInstallGuide)
             // Present notifications at the settings window root so they are
             // above the connection sheet and every tab's local content.
             .overlay(alignment: .bottom) {
@@ -883,17 +920,36 @@ struct SettingsView: View {
     private var agentIntegrationsSection: some View {
         SettingsSection(
             title: "接入状态",
-            subtitle: "Codex / Deepseek Harness / Hermes 均通过会话读取接入，无需安装 Hook。"
+            subtitle: "Codexling 自动检测本地已安装的 Coding Agent 并通过会话读取实时同步任务状态，无需安装 Hook。"
         ) {
-            VStack(spacing: 0) {
-                ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
-                    agentIntegrationRow(integration)
-                    if index < multiAgentSettings.integrations.count - 1 {
-                        CodexDivider()
+            VStack(spacing: 12) {
+                HStack {
+                    Text("共检测到 \(multiAgentSettings.integrations.filter(\.isInstalled).count) / \(multiAgentSettings.integrations.count) 个 Agent 已安装")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                    Spacer()
+                    Button {
+                        multiAgentSettings.refresh()
+                        showToast("已刷新 Agent 安装检测", systemImage: "arrow.clockwise")
+                    } label: {
+                        Label("重新检测", systemImage: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+                .padding(.horizontal, 4)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(multiAgentSettings.integrations.enumerated()), id: \.element.id) { index, integration in
+                        agentIntegrationRow(integration)
+                        if index < multiAgentSettings.integrations.count - 1 {
+                            CodexDivider()
+                        }
                     }
                 }
+                .settingsGroupSurface()
             }
-            .settingsGroupSurface()
         }
     }
 
@@ -907,12 +963,22 @@ struct SettingsView: View {
                 HStack(spacing: 7) {
                     Text(integration.name)
                         .font(.system(size: 13, weight: .semibold))
-                    Text("会话读取")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.codexGreen)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.codexGreen.opacity(0.09), in: Capsule())
+
+                    if integration.isInstalled {
+                        Text("已接入")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.codexGreen.opacity(0.09), in: Capsule())
+                    } else {
+                        Text("未安装")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.codexAmber)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.codexAmber.opacity(0.12), in: Capsule())
+                    }
                 }
                 Text(integration.detail)
                     .font(.system(size: 10))
@@ -920,22 +986,55 @@ struct SettingsView: View {
                 Text(hookStatusLine(integration))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(
-                        integration.cliInstalled || integration.desktopInstalled
+                        integration.isInstalled
                             ? Color.codexGreen
-                            : Color.codexMuted
+                            : Color.codexAmber
                     )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 8)
+
+            if !integration.isInstalled {
+                Button {
+                    presentingInstallGuide = integration
+                } label: {
+                    Label("安装方式", systemImage: "arrow.up.right.square")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("查看 \(integration.name) 官方安装方式")
+            } else {
+                Button {
+                    presentingInstallGuide = integration
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看 \(integration.name) 接入说明与官方文档")
+            }
         }
         .padding(.horizontal, 14)
         .frame(minHeight: 68)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            presentingInstallGuide = integration
+        }
     }
 
     private func hookStatusLine(_ integration: AgentIntegrationStatus) -> String {
-        if integration.cliInstalled || integration.desktopInstalled {
+        if integration.isInstalled {
             return "已接入 · 会话读取"
         }
-        return "已就绪 · 启动后自动接入"
+        return "本地未安装 · 点击查看官方安装方式"
     }
 
     private var updateSection: some View {
@@ -1645,15 +1744,10 @@ private final class ScrollIndicatorHiderView: NSView {
     }
 
     private func hideIndicators() {
-        guard let rootView = window?.contentView else { return }
-        let markerRect = convert(bounds, to: nil)
-        var candidates: [NSScrollView] = []
-        collectScrollViews(in: rootView, into: &candidates)
-        guard let scrollView = candidates
-            .filter({ $0.convert($0.bounds, to: nil).intersects(markerRect) })
-            .min(by: { scrollViewArea($0) < scrollViewArea($1) })
-        else { return }
+        let targetScrollView = self.enclosingScrollView ?? findTargetScrollView()
+        guard let scrollView = targetScrollView else { return }
 
+        scrollView.scrollerStyle = .overlay
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
         scrollView.verticalScroller?.isHidden = true
@@ -1661,6 +1755,19 @@ private final class ScrollIndicatorHiderView: NSView {
         scrollView.verticalScroller?.alphaValue = 0
         scrollView.horizontalScroller?.alphaValue = 0
         scrollView.autohidesScrollers = true
+        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.tile()
+    }
+
+    private func findTargetScrollView() -> NSScrollView? {
+        guard let rootView = window?.contentView else { return nil }
+        let markerRect = convert(bounds, to: nil)
+        var candidates: [NSScrollView] = []
+        collectScrollViews(in: rootView, into: &candidates)
+        return candidates
+            .filter({ $0.convert($0.bounds, to: nil).intersects(markerRect) })
+            .min(by: { scrollViewArea($0) < scrollViewArea($1) })
     }
 
     private func collectScrollViews(in view: NSView, into result: inout [NSScrollView]) {
@@ -2318,5 +2425,296 @@ struct APIKeyRevealModal: View {
             RoundedRectangle(cornerRadius: 22)
                 .strokeBorder(Color.codexLine)
         }
+    }
+}
+
+// MARK: - Agent 官方安装指引弹窗
+
+struct AgentInstallGuideModal: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
+
+    let integration: AgentIntegrationStatus
+    var onCopyCommand: (String) -> Void
+    var onRecheck: () -> Void
+    var onClose: () -> Void
+
+    @State private var copiedMethodID: String?
+    @State private var copyResetTask: Task<Void, Never>?
+
+    private var guide: AgentInstallGuide {
+        integration.guide
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            headerView
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    integrationBanner
+
+                    methodsSection
+
+                    disclaimerNotice
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 4)
+            }
+            .scrollIndicators(.hidden)
+            .background(ScrollIndicatorHider())
+            .frame(maxHeight: 460)
+
+            footerActions
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+        }
+        .frame(maxWidth: 420)
+        .background(modalSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(modalBorder, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.52 : 0.24), radius: 28, y: 14)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(guide.name) 官方安装指引")
+    }
+
+    private var headerView: some View {
+        HStack(alignment: .center, spacing: 12) {
+            BrandIconView(asset: .agent(integration.id), size: 38, cornerRadius: 10)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(guide.name)
+                        .font(.system(size: 16, weight: .bold))
+
+                    if integration.isInstalled {
+                        Text("已接入")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.codexGreen)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.codexGreen.opacity(0.1), in: Capsule())
+                    } else {
+                        Text("未安装")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.codexAmber)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.codexAmber.opacity(0.12), in: Capsule())
+                    }
+                }
+
+                Text(guide.tagline)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+                    .background(closeButtonSurface, in: Circle())
+            }
+            .buttonStyle(CodexPressableCircleStyle())
+            .accessibilityLabel("关闭指引")
+        }
+    }
+
+    private var integrationBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("接入机制")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.codexInk)
+            }
+
+            Text(guide.summary)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.codexInk.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(2)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.codexLine, lineWidth: 0.8)
+        }
+    }
+
+    private var methodsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("官方安装方式")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.codexInk)
+
+            ForEach(guide.methods) { method in
+                methodCard(method)
+            }
+        }
+    }
+
+    private func methodCard(_ method: AgentInstallMethod) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                Text(method.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+
+                Spacer()
+
+                if let command = method.command {
+                    let isCopied = copiedMethodID == method.id
+                    Button {
+                        onCopyCommand(command)
+                        copiedMethodID = method.id
+                        copyResetTask?.cancel()
+                        copyResetTask = Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(2))
+                            if copiedMethodID == method.id {
+                                copiedMethodID = nil
+                            }
+                        }
+                    } label: {
+                        Label(isCopied ? "已复制" : "复制命令", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(isCopied ? Color.codexGreen : Color.accentColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                } else if let urlString = method.urlString, let url = URL(string: urlString) {
+                    Button {
+                        openURL(url)
+                    } label: {
+                        Label("前往下载", systemImage: "arrow.up.right")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if let command = method.command {
+                Text(command)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color.black.opacity(colorScheme == .dark ? 0.35 : 0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            if let note = method.note {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.codexLine.opacity(0.6), lineWidth: 0.8)
+        }
+    }
+
+    private var disclaimerNotice: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.codexMuted)
+                .padding(.top, 1)
+
+            Text("说明：Codexling 仅提供官方安装指引，不代为执行安装命令或更改系统环境。在终端中完成安装后，点击下方「重新检测」即可自动接入。")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(2)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var footerActions: some View {
+        HStack(spacing: 8) {
+            if let docURLString = guide.documentationURLString, let url = URL(string: docURLString) {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label("官方文档", systemImage: "arrow.up.right")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(height: 32)
+                        .padding(.horizontal, 10)
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+                .foregroundStyle(Color.codexInk)
+                .background(cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.codexLine, lineWidth: 0.8)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                onRecheck()
+            } label: {
+                Label("重新检测", systemImage: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(height: 32)
+                    .padding(.horizontal, 12)
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 8))
+            .foregroundStyle(Color.accentColor)
+            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Button(action: onClose) {
+                Text("完成")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(height: 32)
+                    .padding(.horizontal, 14)
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 8, ink: .softLight))
+            .foregroundStyle(Color.codexOnPrimary)
+            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .padding(.top, 4)
+    }
+
+    private var modalSurface: Color {
+        colorScheme == .dark
+            ? Color(red: 0.205, green: 0.205, blue: 0.218)
+            : Color(red: 0.985, green: 0.985, blue: 0.980)
+    }
+
+    private var modalBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.28) : Color.black.opacity(0.12)
+    }
+
+    private var cardBackground: Color {
+        colorScheme == .dark ? Color.white.opacity(0.04) : Color.white.opacity(0.7)
+    }
+
+    private var closeButtonSurface: Color {
+        colorScheme == .dark ? Color.black.opacity(0.12) : Color.black.opacity(0.035)
     }
 }
