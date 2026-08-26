@@ -925,6 +925,7 @@ final class CodexlingTests: XCTestCase {
             label: "Gemini Test",
             credentialHandle: "gemini-test",
             authenticationState: .connected,
+            planName: "Google AI Pro",
             geminiWeeklyRemaining: 0.70,
             geminiFiveHourRemaining: 0.10,
             createdAt: Date()
@@ -932,6 +933,8 @@ final class CodexlingTests: XCTestCase {
 
         let tick = StatusBarProviderTickFactory.geminiTick(connection)
 
+        XCTAssertEqual(tick.providerName, "Gemini")
+        XCTAssertEqual(tick.detailText, "Google AI Pro")
         XCTAssertEqual(tick.quotaText, "5h 10% · 周 70%")
         XCTAssertEqual(tick.quotaSegments, [
             StatusBarQuotaSegment(text: "5h 10%", health: .red),
@@ -952,7 +955,9 @@ final class CodexlingTests: XCTestCase {
             isConnected: true
         ))
 
+        XCTAssertEqual(tick.providerName, "Codex")
         XCTAssertEqual(tick.quotaText, "周 70% · 5h 10%")
+        XCTAssertEqual(tick.detailText, "plus")
         XCTAssertEqual(tick.quotaSegments, [
             StatusBarQuotaSegment(text: "周 70%", health: .green),
             StatusBarQuotaSegment(text: "5h 10%", health: .red)

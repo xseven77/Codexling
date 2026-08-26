@@ -207,6 +207,7 @@ struct StatusBarQuotaSegment: Equatable, Sendable {
 /// 右区 tick：某个账号 / API Key 的额度（与 Agent 独立，API Key 型无对应 Agent）。
 struct StatusBarProviderTick: Identifiable, Equatable, Sendable {
     let id: String
+    /// 展开面板顶部标题；始终是供应商名称，不能用账号套餐/等级替代。
     let providerName: String
     let accountName: String
     let asset: BrandAssetID
@@ -320,7 +321,7 @@ enum StatusBarProviderTickFactory {
             accountName: accountName.isEmpty ? "Codex" : accountName,
             asset: .codex,
             quotaText: quotaText,
-            detailText: "",
+            detailText: usage.planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             quotaHealth: primaryHealth,
             quotaSegments: segments
         )
@@ -409,17 +410,6 @@ enum StatusBarProviderTickFactory {
             quotaText = connection.resolvedPlanDisplayName
             segments = [StatusBarQuotaSegment(text: quotaText, health: connected ? .green : .yellow)]
         }
-        let detailText: String = if isRateLimited {
-            "API 限流冷却"
-        } else if connection.rateLimitState == "unauthorized" {
-            "需要重新登录"
-        } else if connection.rateLimitState == "account_validation_required" {
-            "完成 Google 账号验证后可读取额度"
-        } else if isQuotaUnavailable {
-            "Antigravity 远端未返回额度"
-        } else {
-            connection.email ?? (connection.isBillingEnabled == true ? "Google AI 订阅" : "Google 账号")
-        }
         let health: QuotaHealthLevel = if !connected {
             .yellow
         } else if isRateLimited {
@@ -433,11 +423,11 @@ enum StatusBarProviderTickFactory {
         }
         return StatusBarProviderTick(
             id: "gemini.\(connection.id.rawValue.uuidString.lowercased())",
-            providerName: connection.resolvedPlanDisplayName,
+            providerName: "Gemini",
             accountName: connection.label,
             asset: .googleGemini,
             quotaText: quotaText,
-            detailText: detailText,
+            detailText: connection.resolvedPlanDisplayName,
             quotaHealth: health,
             quotaSegments: segments
         )
