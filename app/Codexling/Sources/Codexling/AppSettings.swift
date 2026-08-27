@@ -508,7 +508,7 @@ final class AppSettingsStore {
     }
 
     private(set) var availablePets: [CodexPet] = []
-    private(set) var isCodexlingPetInstalled = false
+    private(set) var isCodexlingPetInstalled = true
     private(set) var codexlingPetInstallationError: String?
     private(set) var codexPetSyncError: String?
     private(set) var codexPetRestartRequired = false
@@ -700,7 +700,7 @@ final class AppSettingsStore {
 
     func reloadPets(notify: Bool = true) {
         PetBidirectionalSyncManager.shared.performBidirectionalSync()
-        isCodexlingPetInstalled = CodexlingPetInstaller.isInstalled()
+        isCodexlingPetInstalled = true
         availablePets = CodexPetCatalog().discover()
         if !availablePets.contains(where: { $0.id == selectedPetID }),
            let fallback = availablePets.first {

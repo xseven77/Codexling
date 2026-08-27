@@ -9,7 +9,7 @@ enum CodexPetSource: String, Sendable {
     var title: String {
         switch self {
         case .codexBuiltIn:
-            "Codex 内置"
+            "官方内置"
         case .custom:
             "自定义"
         }

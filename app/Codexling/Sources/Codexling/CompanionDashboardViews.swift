@@ -1037,14 +1037,10 @@ private struct DashboardConnectionSwitcher: View {
                     HStack(alignment: .center, spacing: 7) {
                         ForEach(connectionItems) { item in
                             let isDragging = draggingItemKey == item.key
-                            connectionButton(
-                                asset: item.asset,
-                                title: item.title,
-                                subtitle: item.subtitle,
-                                color: item.color,
-                                selected: item.selected,
-                                credential: item.credential,
-                                action: item.action
+                            DashboardConnectionItemButton(
+                                item: item,
+                                compact: compact,
+                                isDragging: isDragging
                             )
                             .offset(
                                 x: isDragging ? dragOffset.width : 0,
@@ -1213,26 +1209,27 @@ private struct DashboardConnectionSwitcher: View {
             endPoint: .trailing
         )
     }
+}
 
-    private func connectionButton(
-        asset: BrandAssetID,
-        title: String,
-        subtitle: String,
-        color: Color,
-        selected: Bool,
-        credential: CredentialBadge,
-        action: @escaping () -> Void
-    ) -> some View {
+private struct DashboardConnectionItemButton: View {
+    let item: ConnectionSwitcherItem
+    let compact: Bool
+    let isDragging: Bool
+
+    @State private var ripples: [CodexMaterialWaveToken] = []
+    @State private var didSpawnForTouch = false
+
+    var body: some View {
         Group {
             if compact {
-                connectionIcon(asset: asset, credential: credential)
+                connectionIcon
                     .frame(width: 42, height: 42)
             } else {
                 HStack(spacing: 6) {
-                    connectionIcon(asset: asset, credential: credential)
+                    connectionIcon
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.system(size: 10, weight: .bold))
-                        Text(subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
+                        Text(item.title).font(.system(size: 10, weight: .bold))
+                        Text(item.subtitle).font(.system(size: 8)).foregroundStyle(Color.codexMuted).lineLimit(1)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -1240,32 +1237,59 @@ private struct DashboardConnectionSwitcher: View {
             }
         }
         .frame(height: 42)
-        .background(selected ? color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .background(item.selected ? item.color.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            CodexMaterialWaveLayer(ripples: $ripples, ink: .adaptiveMint)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(selected ? color.opacity(0.25) : Color.clear, lineWidth: 1)
+                .strokeBorder(item.selected ? item.color.opacity(0.25) : Color.clear, lineWidth: 1)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .onTapGesture(perform: action)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    guard !didSpawnForTouch else { return }
+                    didSpawnForTouch = true
+                    ripples.spawnWave(at: value.startLocation)
+                }
+                .onEnded { value in
+                    defer { didSpawnForTouch = false }
+                    let travel = hypot(value.translation.width, value.translation.height)
+                    let hit = CGRect(origin: .zero, size: boardSize).insetBy(dx: -4, dy: -4)
+                    if hit.contains(value.location) && travel < 5 && !isDragging {
+                        item.action()
+                    }
+                }
+        )
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title)，\(subtitle)")
-        .accessibilityValue(selected ? "已选择" : "未选择")
+        .accessibilityLabel("\(item.title)，\(item.subtitle)")
+        .accessibilityValue(item.selected ? "已选择" : "未选择")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { action() }
+        .accessibilityAction { item.action() }
     }
 
-    private func connectionIcon(asset: BrandAssetID, credential: CredentialBadge) -> some View {
+    private var boardSize: CGSize {
+        compact ? CGSize(width: 42, height: 42) : CGSize(width: 120, height: 42)
+    }
+
+    private var connectionIcon: some View {
         ZStack(alignment: .bottomTrailing) {
-            BrandIconView(asset: asset, size: 32, cornerRadius: 11)
-            Image(systemName: credential.systemName)
+            BrandIconView(asset: item.asset, size: 32, cornerRadius: 11)
+            Image(systemName: item.credential.systemName)
                 .font(.system(size: 11, weight: .bold))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(credential.tint)
+                .foregroundStyle(item.credential.tint)
                 .frame(width: 14, height: 14)
                 .offset(x: 2, y: 2)
                 .accessibilityHidden(true)
         }
     }
+}
+
+extension DashboardConnectionSwitcher {
 
     private func codexQuotaColor(for connection: CodexAccountConnection) -> Color {
         guard connection.authenticationState == .connected else { return .codexRed }

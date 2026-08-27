@@ -1057,7 +1057,7 @@ struct SettingsView: View {
                             action: updater.openReleasesPage
                         )
                         Button(updater.settingsPrimaryActionTitle, action: primaryUpdateAction)
-                            .buttonStyle(CodexlingPetInstallButtonStyle())
+                            .buttonStyle(SettingsPrimaryActionButtonStyle())
                             .disabled(updater.phase.isBusy)
                     }
                 }
@@ -1371,17 +1371,6 @@ struct SettingsView: View {
                     .buttonStyle(CodexPressableStyle(cornerRadius: 7))
                 }
                 .padding(.horizontal, 4)
-
-                if !settings.isCodexlingPetInstalled {
-                    codexlingPetInstallationCard
-                }
-
-                if let installationError = settings.codexlingPetInstallationError {
-                    Text("Codexling Pet 安装失败：\(installationError)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.codexRed)
-                        .padding(.horizontal, 4)
-                }
                 }
             }
         }
@@ -1418,35 +1407,6 @@ struct SettingsView: View {
         }
     }
 
-    private var codexlingPetInstallationCard: some View {
-        HStack(spacing: 12) {
-            BundledCodexlingPetThumbnail()
-                .frame(width: 58, height: 58)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("安装 Codexling Pet")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("Codexling 的专属小精灵 · v2 · 11 行动画")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.codexMuted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                settings.installCodexlingPet()
-                showCodexlingPetInstallToastIfNeeded()
-            } label: {
-                Label("安装", systemImage: "arrow.down.to.line")
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(CodexlingPetInstallButtonStyle())
-            .fixedSize()
-        }
-        .padding(16)
-        .background(Color.codexGreen.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.codexGreen.opacity(0.20), lineWidth: 0.8))
-    }
-
     private var petPicker: some View {
         let builtIns = settings.availablePets.filter { $0.source == .codexBuiltIn }
         let custom = settings.availablePets.filter { $0.source == .custom }
@@ -1461,7 +1421,7 @@ struct SettingsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if !builtIns.isEmpty {
-                        SettingsPopoverSection(title: "Codex 内置") {
+                        SettingsPopoverSection(title: "官方内置") {
                             LazyVGrid(columns: petPickerColumns, spacing: 6) {
                                 ForEach(builtIns) { pet in
                                     petPopoverGridItem(pet)
@@ -1623,16 +1583,6 @@ struct SettingsView: View {
             showToast("已在 Finder 中打开 Pet 文件夹", systemImage: "folder.fill")
         } catch {
             showToast("无法打开 Pet 文件夹：\(error.localizedDescription)", systemImage: "exclamationmark.triangle.fill")
-        }
-    }
-
-    private func showCodexlingPetInstallToastIfNeeded() {
-        if settings.isCodexlingPetInstalled {
-            showToast("Codexling Pet 已安装到本机 Codex")
-            return
-        }
-        if let error = settings.codexlingPetInstallationError {
-            showToast("Codexling Pet 安装失败：\(error)", systemImage: "exclamationmark.triangle.fill")
         }
     }
 
@@ -1859,35 +1809,7 @@ private actor PetThumbnailLoader {
     }
 }
 
-private struct BundledCodexlingPetThumbnail: View {
-    @State private var image: NSImage?
-
-    var body: some View {
-        ZStack {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
-                    .padding(4)
-            } else {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(Color.codexPrimary)
-            }
-        }
-        .task {
-            guard let directory = CodexlingPetInstaller.bundledPetDirectory() else { return }
-            image = PetSpriteSheet(url: directory.appendingPathComponent("spritesheet.webp"))?.frame(
-                row: 0,
-                column: 0,
-                displayHeight: 52
-            )
-        }
-        .accessibilityLabel("Codexling Pet 预览")
-    }
-}
-
-private struct CodexlingPetInstallButtonStyle: PrimitiveButtonStyle {
+private struct SettingsPrimaryActionButtonStyle: PrimitiveButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
 
