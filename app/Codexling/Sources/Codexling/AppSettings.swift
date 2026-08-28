@@ -301,6 +301,7 @@ final class AppSettingsStore {
         static let autoRefreshInterval = "codexling.autoRefreshInterval"
         static let accountCarouselInterval = "codexling.accountCarouselInterval"
         static let mainWindowProviderCarouselEnabled = "codexling.mainWindowProviderCarouselEnabled"
+        static let notchProviderCarouselEnabled = "codexling.notchProviderCarouselEnabled"
         static let petsEnabled = "codexling.petsEnabled"
         static let standalonePetEnabled = "codexling.standalonePetEnabled"
         static let standalonePetEdge = "codexling.standalonePetEdge"
@@ -369,6 +370,15 @@ final class AppSettingsStore {
             guard mainWindowProviderCarouselEnabled != oldValue else { return }
             defaults.set(mainWindowProviderCarouselEnabled, forKey: Keys.mainWindowProviderCarouselEnabled)
             onMainWindowProviderCarouselEnabledChanged?(mainWindowProviderCarouselEnabled)
+        }
+    }
+
+    /// 刘海面板的「供应商轮播」是否自动轮播。仅作用于刘海面板，不影响主窗口。
+    var notchProviderCarouselEnabled: Bool {
+        didSet {
+            guard notchProviderCarouselEnabled != oldValue else { return }
+            defaults.set(notchProviderCarouselEnabled, forKey: Keys.notchProviderCarouselEnabled)
+            onNotchProviderCarouselEnabledChanged?(notchProviderCarouselEnabled)
         }
     }
 
@@ -524,6 +534,7 @@ final class AppSettingsStore {
     var onAutoRefreshIntervalChanged: ((AutoRefreshInterval) -> Void)?
     var onAccountCarouselIntervalChanged: ((AccountCarouselInterval) -> Void)?
     var onMainWindowProviderCarouselEnabledChanged: ((Bool) -> Void)?
+    var onNotchProviderCarouselEnabledChanged: ((Bool) -> Void)?
     var onThemeChanged: ((AppThemePreference) -> Void)?
     var onPetSettingsChanged: (() -> Void)?
     var onStandalonePetEnabledChanged: ((Bool) -> Void)?
@@ -564,6 +575,7 @@ final class AppSettingsStore {
         let carouselRaw = defaults.object(forKey: Keys.accountCarouselInterval) as? Int
         accountCarouselInterval = carouselRaw.flatMap(AccountCarouselInterval.init(rawValue:)) ?? .off
         mainWindowProviderCarouselEnabled = defaults.object(forKey: Keys.mainWindowProviderCarouselEnabled) as? Bool ?? true
+        notchProviderCarouselEnabled = defaults.object(forKey: Keys.notchProviderCarouselEnabled) as? Bool ?? true
 
         petsEnabled = defaults.object(forKey: Keys.petsEnabled) as? Bool ?? true
         standalonePetEnabled = defaults.object(forKey: Keys.standalonePetEnabled) as? Bool ?? true

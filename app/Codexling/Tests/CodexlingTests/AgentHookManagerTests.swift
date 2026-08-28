@@ -257,5 +257,43 @@ final class AgentHookManagerTests: XCTestCase {
 
         status.cliInstalled = true
         XCTAssertTrue(status.isInstalled)
+
+        status.cliInstalled = false
+        status.environmentConfigured = true
+        XCTAssertTrue(status.isInstalled)
+    }
+
+    func testIntegrationStatusesDetectsDSHViaNVMAndDataDirectory() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AgentHookManagerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // 模拟未安装时：
+        let managerEmpty = AgentHookManager(homeDirectory: tempDir, allowShellFallback: false)
+        let emptyDSH = try XCTUnwrap(managerEmpty.integrationStatuses().first(where: { $0.id == .deepseekHarness }))
+        XCTAssertFalse(emptyDSH.isInstalled)
+
+        // 模拟通过 NVM 安装：~/.nvm/versions/node/v24.15.0/bin/dsh
+        let nvmBin = tempDir.appendingPathComponent(".nvm/versions/node/v24.15.0/bin")
+        try FileManager.default.createDirectory(at: nvmBin, withIntermediateDirectories: true)
+        let fakeDSH = nvmBin.appendingPathComponent("dsh")
+        FileManager.default.createFile(atPath: fakeDSH.path, contents: Data("#!/bin/sh\nexit 0".utf8))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeDSH.path)
+
+        let managerWithCLI = AgentHookManager(homeDirectory: tempDir, allowShellFallback: false)
+        let dshWithCLI = try XCTUnwrap(managerWithCLI.integrationStatuses().first(where: { $0.id == .deepseekHarness }))
+        XCTAssertTrue(dshWithCLI.cliInstalled)
+        XCTAssertTrue(dshWithCLI.isInstalled)
+
+        // 模拟通过 ~/.dsh 数据目录感知：
+        try FileManager.default.removeItem(at: tempDir.appendingPathComponent(".nvm"))
+        let dshDataDir = tempDir.appendingPathComponent(".dsh")
+        try FileManager.default.createDirectory(at: dshDataDir, withIntermediateDirectories: true)
+
+        let managerWithData = AgentHookManager(homeDirectory: tempDir, allowShellFallback: false)
+        let dshWithData = try XCTUnwrap(managerWithData.integrationStatuses().first(where: { $0.id == .deepseekHarness }))
+        XCTAssertTrue(dshWithData.environmentConfigured)
+        XCTAssertTrue(dshWithData.isInstalled)
     }
 }

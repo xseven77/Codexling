@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onMainWindowProviderCarouselEnabledChanged = { [weak self] _ in
             self?.startAccountCarouselTimer()
         }
+        settingsStore.onNotchProviderCarouselEnabledChanged = { [weak self] _ in
+            self?.startAccountCarouselTimer()
+        }
         multiAgentSettingsStore.onSelectedConnectionChanged = { [weak self] in
             self?.syncSelectedCodexProjection()
             self?.startAccountCarouselTimer()
@@ -426,16 +429,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 唯一的账号轮播调度源。one-shot timer 会在手动或自动选择后重新完整计时，
     /// 避免 SwiftUI 为布局测量创建视图副本时产生重复轮播任务。
     ///
-    /// 「供应商自动轮播」开关只决定推进时是否改变全局选中账号：
-    /// 开启 → 主窗口与刘海面板同步轮播选中项；关闭 → 仅推进刘海面板自身的
-    /// 显示轮播，主窗口选中保持不变。因此开关本身不会停掉刘海面板的轮播。
+    /// 供应商自动轮播支持主窗口与刘海面板分别配置独立开关：
+    /// - 主窗口开启：推进全局选中账号；若刘海开启则同步推进，若刘海关闭则刘海保持当前显示不被带偏；
+    /// - 仅刘海开启：主窗口保持不变，仅推进刘海面板自身的账号轮播；
+    /// - 两者均关闭：停止调度。
     private func startAccountCarouselTimer() {
         accountCarouselTimerGeneration &+= 1
         let generation = accountCarouselTimerGeneration
         accountCarouselTimer?.invalidate()
         accountCarouselTimer = nil
 
-        guard let interval = settingsStore.accountCarouselInterval.timeInterval,
+        guard (settingsStore.mainWindowProviderCarouselEnabled || settingsStore.notchProviderCarouselEnabled),
+              let interval = settingsStore.accountCarouselInterval.timeInterval,
               !multiAgentSettingsStore.isAccountCarouselPaused
         else { return }
 
@@ -451,12 +456,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func advanceAccountCarousel() {
-        if settingsStore.mainWindowProviderCarouselEnabled {
-            // 自动轮播开启：推进全局选中账号。选中变化会触发
-            // onSelectedConnectionChanged → startAccountCarouselTimer() 重新计时。
+        let mainEnabled = settingsStore.mainWindowProviderCarouselEnabled
+        let notchEnabled = settingsStore.notchProviderCarouselEnabled
+
+        guard mainEnabled || notchEnabled else { return }
+
+        if mainEnabled {
+            // 主窗口开启自动轮播：推进全局选中账号。
+            // 若刘海面板关闭自动轮播，通知 statusController 忽略本次自动推进对刘海显示的影响。
+            if !notchEnabled {
+                statusController?.isAutoCarouselAdvancing = true
+            }
             multiAgentSettingsStore.selectNextConnection()
-        } else {
-            // 自动轮播关闭：主窗口选中保持不变，仅推进刘海面板自身的账号轮播。
+            statusController?.isAutoCarouselAdvancing = false
+        } else if notchEnabled {
+            // 仅刘海面板开启轮播：主窗口选中保持不变，仅推进刘海面板自身的账号轮播。
             let advanced = statusController?.advanceNotchProviderCarousel() ?? false
             if advanced {
                 startAccountCarouselTimer()

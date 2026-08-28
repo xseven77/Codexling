@@ -237,6 +237,9 @@ final class StatusBarController: NSObject {
     /// 只有选中账号真正变化时才回写索引；否则刘海面板自身的显示轮播
     /// （「供应商自动轮播」关闭时）不会被数据刷新拉回选中项。
     private var lastSyncedProviderSelectionKey: String?
+    /// 当主窗口开启自动轮播但刘海面板关闭自动轮播时，主窗口定时推进全局选中账号，
+    /// 此标记为 true，防止刘海面板显示被自动轮播的选中改变带偏（保持自身显示不变）。
+    var isAutoCarouselAdvancing = false
     /// 用户在刘海展开面板手动点击供应商后，通知 AppDelegate 重置轮播倒计时。
     var onProviderSelection: (() -> Void)?
     /// 刘海面板专用刷新入口；由 AppDelegate 执行统一刷新但不显示 toast。
@@ -701,6 +704,13 @@ final class StatusBarController: NSObject {
             return
         }
         lastSyncedProviderSelectionKey = selectedKey
+
+        // 当本次选中变更由自动轮播触发且刘海未开启轮播时，仅更新上次同步键，不改变刘海当前的显示索引。
+        if isAutoCarouselAdvancing && !settings.notchProviderCarouselEnabled {
+            ticker.clampProvider(to: providerTicks.count)
+            return
+        }
+
         if let selectedIndex = providerTicks.firstIndex(where: { $0.id == selectedKey }) {
             ticker.providerIndex = selectedIndex
         } else {
@@ -709,9 +719,10 @@ final class StatusBarController: NSObject {
     }
 
     /// 推进刘海面板自身的供应商账号轮播（仅显示轮播，不改变全局选中账号）。
-    /// 连接数不足 2 个时返回 false，调用方无需重新计时。
+    /// 连接数不足 2 个或未开启刘海轮播时返回 false，调用方无需重新计时。
     @discardableResult
     func advanceNotchProviderCarousel() -> Bool {
+        guard settings.notchProviderCarouselEnabled else { return false }
         let count = currentProviderTicks().count
         guard count > 1 else { return false }
         ticker.advanceProvider(count: count)

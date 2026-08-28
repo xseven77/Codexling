@@ -197,6 +197,34 @@ final class CodexlingTests: XCTestCase {
     }
 
     @MainActor
+    func testProviderCarouselSettingsDefaultsAndPersist() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(settings.mainWindowProviderCarouselEnabled)
+        XCTAssertTrue(settings.notchProviderCarouselEnabled)
+
+        var mainChanged: Bool?
+        var notchChanged: Bool?
+        settings.onMainWindowProviderCarouselEnabledChanged = { mainChanged = $0 }
+        settings.onNotchProviderCarouselEnabledChanged = { notchChanged = $0 }
+
+        settings.mainWindowProviderCarouselEnabled = false
+        settings.notchProviderCarouselEnabled = false
+
+        XCTAssertEqual(mainChanged, false)
+        XCTAssertEqual(notchChanged, false)
+        XCTAssertFalse(defaults.bool(forKey: "codexling.mainWindowProviderCarouselEnabled"))
+        XCTAssertFalse(defaults.bool(forKey: "codexling.notchProviderCarouselEnabled"))
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertFalse(restored.mainWindowProviderCarouselEnabled)
+        XCTAssertFalse(restored.notchProviderCarouselEnabled)
+    }
+
+    @MainActor
     func testSilentLaunchDefaultsOffAndPersists() throws {
         let suiteName = "CodexlingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

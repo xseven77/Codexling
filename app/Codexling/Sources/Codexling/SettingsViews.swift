@@ -1078,9 +1078,11 @@ struct SettingsView: View {
                 CodexDivider()
                 orientationSection
                 CodexDivider()
-                accountCarouselSection
-                CodexDivider()
                 mainWindowProviderCarouselSection
+                CodexDivider()
+                notchProviderCarouselSection
+                CodexDivider()
+                accountCarouselSection
                 CodexDivider()
                 refreshSection
             }
@@ -1174,27 +1176,39 @@ struct SettingsView: View {
         }
     }
 
+    private var mainWindowProviderCarouselSection: some View {
+        SettingsInlineRow(
+            title: "主窗口供应商轮播",
+            subtitle: "仅作用于主窗口；开启后主界面按设定间隔自动切换供应商账号"
+        ) {
+            SettingsSwitch(
+                isOn: $settings.mainWindowProviderCarouselEnabled,
+                accessibilityLabel: "主窗口供应商轮播"
+            )
+        }
+    }
+
+    private var notchProviderCarouselSection: some View {
+        SettingsInlineRow(
+            title: "刘海供应商轮播",
+            subtitle: "仅作用于刘海面板；开启后状态栏与刘海面板按设定间隔自动切换供应商账号"
+        ) {
+            SettingsSwitch(
+                isOn: $settings.notchProviderCarouselEnabled,
+                accessibilityLabel: "刘海供应商轮播"
+            )
+        }
+    }
+
     private var accountCarouselSection: some View {
         SettingsInlineRow(
-            title: "账号自动轮播",
-            subtitle: "按设定间隔自动轮播供应商账号；鼠标进入账号信息区域时暂停"
+            title: "轮播时间间隔",
+            subtitle: "主窗口与刘海面板共享的轮播频率；鼠标移入账号信息区域时自动暂停"
         ) {
             SettingsMenuPicker(
                 selection: $settings.accountCarouselInterval,
                 options: AccountCarouselInterval.allCases,
                 title: \.title
-            )
-        }
-    }
-
-    private var mainWindowProviderCarouselSection: some View {
-        SettingsInlineRow(
-            title: "供应商自动轮播",
-            subtitle: "仅作用于主窗口；关闭后主窗口停止自动轮播，刘海面板轮播不受影响"
-        ) {
-            SettingsSwitch(
-                isOn: $settings.mainWindowProviderCarouselEnabled,
-                accessibilityLabel: "供应商自动轮播"
             )
         }
     }

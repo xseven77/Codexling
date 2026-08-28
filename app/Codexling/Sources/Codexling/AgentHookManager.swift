@@ -6,10 +6,29 @@ struct AgentIntegrationStatus: Identifiable, Equatable, Sendable {
     let priority: Int
     var cliInstalled: Bool
     var desktopInstalled: Bool
+    var environmentConfigured: Bool
     var detail: String
 
+    init(
+        id: AgentID,
+        name: String,
+        priority: Int,
+        cliInstalled: Bool,
+        desktopInstalled: Bool,
+        environmentConfigured: Bool = false,
+        detail: String
+    ) {
+        self.id = id
+        self.name = name
+        self.priority = priority
+        self.cliInstalled = cliInstalled
+        self.desktopInstalled = desktopInstalled
+        self.environmentConfigured = environmentConfigured
+        self.detail = detail
+    }
+
     var isInstalled: Bool {
-        cliInstalled || desktopInstalled
+        cliInstalled || desktopInstalled || environmentConfigured
     }
 
     var guide: AgentInstallGuide {
@@ -194,28 +213,114 @@ enum AgentInstallGuideCatalog {
 struct AgentHookManager {
     let fileManager: FileManager
     let homeDirectory: URL
+    let allowShellFallback: Bool
 
     init(
         fileManager: FileManager = .default,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        allowShellFallback: Bool = true
     ) {
         self.fileManager = fileManager
         self.homeDirectory = homeDirectory
+        self.allowShellFallback = allowShellFallback
     }
 
     func integrationStatuses() -> [AgentIntegrationStatus] {
         BuiltInAgentCatalog.prioritized.map { descriptor in
             let cliInstalled = locateExecutable(for: descriptor.id) != nil
             let desktopInstalled = desktopApplicationExists(for: descriptor.id)
+            let envConfigured = environmentConfigured(for: descriptor.id)
             return AgentIntegrationStatus(
                 id: descriptor.id,
                 name: descriptor.displayName,
                 priority: descriptor.priority,
                 cliInstalled: cliInstalled,
                 desktopInstalled: desktopInstalled,
+                environmentConfigured: envConfigured,
                 detail: integrationDetail(for: descriptor.id)
             )
         }
+    }
+
+    private func environmentConfigured(for agentID: AgentID) -> Bool {
+        switch agentID {
+        case .deepseekHarness:
+            // DSH 可通过 npx 或 CLI 运行；其配置与会话保存在 ~/.dsh 中
+            return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".dsh").path)
+        case .codex:
+            return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".codex").path)
+        case .hermes:
+            return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".hermes").path)
+        case .antigravity:
+            return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".gemini/antigravity").path)
+        default:
+            return false
+        }
+    }
+
+    private func candidatePrefixes() -> [String] {
+        var prefixes = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            homeDirectory.appendingPathComponent(".local/bin").path,
+            homeDirectory.appendingPathComponent("bin").path,
+            homeDirectory.appendingPathComponent(".cargo/bin").path,
+            homeDirectory.appendingPathComponent(".bun/bin").path,
+            homeDirectory.appendingPathComponent("Library/pnpm").path,
+            homeDirectory.appendingPathComponent(".local/share/pnpm").path,
+            homeDirectory.appendingPathComponent(".volta/bin").path,
+            homeDirectory.appendingPathComponent(".asdf/shims").path,
+            homeDirectory.appendingPathComponent(".yarn/bin").path,
+            homeDirectory.appendingPathComponent(".config/yarn/global/node_modules/.bin").path,
+            homeDirectory.appendingPathComponent(".npm-global/bin").path,
+            homeDirectory.appendingPathComponent(".npm/bin").path,
+            homeDirectory.appendingPathComponent(".nvm/current/bin").path,
+            homeDirectory.appendingPathComponent(".local/share/fnm/current/bin").path,
+            homeDirectory.appendingPathComponent(".local/share/fnm/aliases/default/bin").path,
+            homeDirectory.appendingPathComponent(".fnm/current/bin").path,
+            homeDirectory.appendingPathComponent(".gemini/antigravity/bin").path,
+        ]
+
+        // 动态扫描 NVM 安装的所有 Node 版本 bin 目录（优先检测最新版本）
+        let nvmVersionsRoot = homeDirectory.appendingPathComponent(".nvm/versions/node", isDirectory: true)
+        if let subdirs = try? fileManager.contentsOfDirectory(atPath: nvmVersionsRoot.path) {
+            let sortedVersions = subdirs.sorted { $0.localizedStandardCompare($1) == .orderedDescending }
+            for version in sortedVersions {
+                let binDir = nvmVersionsRoot.appendingPathComponent(version).appendingPathComponent("bin").path
+                prefixes.append(binDir)
+            }
+        }
+
+        // 动态扫描 FNM 安装的所有 Node 版本 bin 目录
+        let fnmVersionsRoots = [
+            homeDirectory.appendingPathComponent(".local/share/fnm/versions", isDirectory: true),
+            homeDirectory.appendingPathComponent(".fnm/versions", isDirectory: true),
+        ]
+        for root in fnmVersionsRoots {
+            if let subdirs = try? fileManager.contentsOfDirectory(atPath: root.path) {
+                let sorted = subdirs.sorted { $0.localizedStandardCompare($1) == .orderedDescending }
+                for version in sorted {
+                    let binDir = root.appendingPathComponent(version).appendingPathComponent("bin").path
+                    prefixes.append(binDir)
+                }
+            }
+        }
+
+        // 动态扫描 ASDF 安装的所有 Node 版本 bin 目录
+        let asdfNodeRoot = homeDirectory.appendingPathComponent(".asdf/installs/nodejs", isDirectory: true)
+        if let subdirs = try? fileManager.contentsOfDirectory(atPath: asdfNodeRoot.path) {
+            let sorted = subdirs.sorted { $0.localizedStandardCompare($1) == .orderedDescending }
+            for version in sorted {
+                let binDir = asdfNodeRoot.appendingPathComponent(version).appendingPathComponent("bin").path
+                prefixes.append(binDir)
+            }
+        }
+
+        return prefixes
     }
 
     private func locateExecutable(for agentID: AgentID) -> URL? {
@@ -235,25 +340,18 @@ struct AgentHookManager {
         default: return nil
         }
 
-        let prefixes = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            homeDirectory.appendingPathComponent(".local/bin").path,
-            homeDirectory.appendingPathComponent(".nvm/current/bin").path,
-            homeDirectory.appendingPathComponent(".cargo/bin").path,
-            homeDirectory.appendingPathComponent(".bun/bin").path,
-            homeDirectory.appendingPathComponent(".gemini/antigravity/bin").path,
-        ]
-        for prefix in prefixes {
+        for prefix in candidatePrefixes() {
             let candidate = URL(fileURLWithPath: prefix).appendingPathComponent(executable)
             if fileManager.isExecutableFile(atPath: candidate.path) {
                 return candidate
             }
         }
 
+        guard allowShellFallback else { return nil }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "command -v \(executable)"]
+        process.arguments = ["-lc", "which \(executable) 2>/dev/null || type -p \(executable) 2>/dev/null"]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = Pipe()
@@ -262,7 +360,8 @@ struct AgentHookManager {
         guard process.terminationStatus == 0,
               let path = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty else {
+              path.hasPrefix("/"),
+              fileManager.isExecutableFile(atPath: path) else {
             return nil
         }
         return URL(fileURLWithPath: path)
