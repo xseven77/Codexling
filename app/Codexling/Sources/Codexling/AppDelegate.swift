@@ -59,10 +59,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onNotchDisplayTargetChanged = { [weak self] target in
             self?.statusController?.refreshNotchDisplay()
             // 选择具体显示器后，在该屏幕边缘闪红边提示。
-            if case .specificScreen(let number) = target,
-               let screen = NSScreen.screens.first(where: { $0.screenNumber == number }) {
+            if case .specificDisplay(let id) = target,
+               let screen = NSScreen.screens.first(where: { $0.persistentID == id || String($0.screenNumber) == id }) {
                 self?.statusController?.highlightScreen(screen)
             }
+        }
+        settingsStore.onNotchDraggingEnabledChanged = { [weak self] _ in
+            self?.statusController?.refreshNotchDragConfiguration()
+        }
+        settingsStore.onNotchDisplayOffsetsChanged = { [weak self] in
+            self?.statusController?.refreshNotchDragConfiguration()
         }
         settingsStore.onPetSettingsChanged = { [weak self] in
             self?.syncCompanionState()

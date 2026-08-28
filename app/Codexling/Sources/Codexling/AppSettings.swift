@@ -186,18 +186,26 @@ enum DashboardOrientation: String, CaseIterable, Identifiable {
     }
 }
 
+/// 曾连接过的显示器硬件元信息记录。
+struct KnownDisplayRecord: Codable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let isBuiltin: Bool
+    var lastSeen: Date
+}
+
 /// 刘海面板出现的目标显示器。
-/// 选项由系统 `NSScreen.screens` 动态提供（具体显示器 + 所有显示器 + 关闭）。
+/// 选项由系统 `NSScreen.screens` 动态提供（具体硬件显示器 + 所有显示器 + 关闭）。
 enum NotchDisplayTarget: Hashable, Sendable {
     case off
     case allDisplays
-    case specificScreen(UInt32)
+    case specificDisplay(String)
 
     var storageString: String {
         switch self {
         case .off: "off"
         case .allDisplays: "all"
-        case .specificScreen(let number): "\(number)"
+        case .specificDisplay(let id): id
         }
     }
 
@@ -205,7 +213,7 @@ enum NotchDisplayTarget: Hashable, Sendable {
         switch string {
         case "off": return .off
         case "all": return .allDisplays
-        default: return .specificScreen(UInt32(string) ?? 0)
+        default: return .specificDisplay(string)
         }
     }
 
@@ -213,7 +221,7 @@ enum NotchDisplayTarget: Hashable, Sendable {
         switch self {
         case .off: "所有显示器都不开刘海"
         case .allDisplays: "所有显示器"
-        case .specificScreen: "指定显示器"
+        case .specificDisplay: "指定显示器"
         }
     }
 }
@@ -318,6 +326,9 @@ final class AppSettingsStore {
         static let windowAlwaysOnTop = "codexling.windowAlwaysOnTop"
         static let dashboardOrientation = "codexling.dashboardOrientation"
         static let notchDisplayTarget = "codexling.notchDisplayTarget"
+        static let notchDraggingEnabled = "codexling.notchDraggingEnabled"
+        static let notchDisplayOffsets = "codexling.notchDisplayOffsets"
+        static let knownDisplays = "codexling.knownDisplays"
     }
 
     private let defaults: UserDefaults
@@ -517,6 +528,69 @@ final class AppSettingsStore {
         }
     }
 
+    /// 是否允许在非内建（外接）显示器上拖拽移动刘海位置。
+    var notchDraggingEnabled: Bool {
+        didSet {
+            guard notchDraggingEnabled != oldValue else { return }
+            defaults.set(notchDraggingEnabled, forKey: Keys.notchDraggingEnabled)
+            onNotchDraggingEnabledChanged?(notchDraggingEnabled)
+        }
+    }
+
+    /// 曾连接过的显示器硬件元信息记录（Key: persistentID）。
+    var knownDisplays: [String: KnownDisplayRecord] {
+        didSet {
+            guard knownDisplays != oldValue else { return }
+            if let data = try? JSONEncoder().encode(knownDisplays) {
+                defaults.set(data, forKey: Keys.knownDisplays)
+            }
+        }
+    }
+
+    /// 各外接显示器的刘海 X 轴相对中心偏移量 (Key: persistentID 硬件 UUID, Value: 偏移 pt)。
+    var notchDisplayOffsets: [String: Double] {
+        didSet {
+            guard notchDisplayOffsets != oldValue else { return }
+            defaults.set(notchDisplayOffsets, forKey: Keys.notchDisplayOffsets)
+            onNotchDisplayOffsetsChanged?()
+        }
+    }
+
+    func notchOffset(for persistentID: String) -> CGFloat {
+        CGFloat(notchDisplayOffsets[persistentID] ?? 0)
+    }
+
+    func setNotchOffset(_ offset: CGFloat, for persistentID: String) {
+        var offsets = notchDisplayOffsets
+        offsets[persistentID] = Double(offset)
+        notchDisplayOffsets = offsets
+    }
+
+    func resetNotchOffset(for persistentID: String) {
+        var offsets = notchDisplayOffsets
+        offsets.removeValue(forKey: persistentID)
+        notchDisplayOffsets = offsets
+    }
+
+    func resetAllNotchOffsets() {
+        notchDisplayOffsets = [:]
+    }
+
+    func recordDisplay(id: String, name: String, isBuiltin: Bool) {
+        var records = knownDisplays
+        records[id] = KnownDisplayRecord(
+            id: id,
+            name: name,
+            isBuiltin: isBuiltin,
+            lastSeen: Date()
+        )
+        knownDisplays = records
+    }
+
+    func displayName(for persistentID: String) -> String? {
+        knownDisplays[persistentID]?.name
+    }
+
     private(set) var availablePets: [CodexPet] = []
     private(set) var isCodexlingPetInstalled = true
     private(set) var codexlingPetInstallationError: String?
@@ -542,6 +616,8 @@ final class AppSettingsStore {
     var onDashboardOrientationChanged: ((DashboardOrientation) -> Void)?
     var onWindowAlwaysOnTopChanged: ((Bool) -> Void)?
     var onNotchDisplayTargetChanged: ((NotchDisplayTarget) -> Void)?
+    var onNotchDraggingEnabledChanged: ((Bool) -> Void)?
+    var onNotchDisplayOffsetsChanged: (() -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
@@ -609,11 +685,20 @@ final class AppSettingsStore {
         windowAlwaysOnTop = defaults.object(forKey: Keys.windowAlwaysOnTop) as? Bool ?? false
         dashboardOrientation = defaults.string(forKey: Keys.dashboardOrientation)
             .flatMap(DashboardOrientation.init(rawValue:)) ?? .horizontal
+        if let data = defaults.data(forKey: Keys.knownDisplays),
+           let decoded = try? JSONDecoder().decode([String: KnownDisplayRecord].self, from: data) {
+            knownDisplays = decoded
+        } else {
+            knownDisplays = [:]
+        }
+        notchDraggingEnabled = defaults.object(forKey: Keys.notchDraggingEnabled) as? Bool ?? false
+        notchDisplayOffsets = defaults.object(forKey: Keys.notchDisplayOffsets) as? [String: Double] ?? [:]
         if let stored = defaults.string(forKey: Keys.notchDisplayTarget) {
             notchDisplayTarget = NotchDisplayTarget.fromStorage(stored)
         } else {
-            notchDisplayTarget = .allDisplays
-            defaults.set(notchDisplayTarget.storageString, forKey: Keys.notchDisplayTarget)
+            let defaultTarget = NotchDisplayTarget.allDisplays
+            notchDisplayTarget = defaultTarget
+            defaults.set(defaultTarget.storageString, forKey: Keys.notchDisplayTarget)
         }
         // The status capsule now has one behavior: open the detached window.
         // Remove the retired popover preference so older installations cannot

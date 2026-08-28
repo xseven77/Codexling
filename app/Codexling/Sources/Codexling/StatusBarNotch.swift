@@ -113,6 +113,14 @@ extension NSScreen {
     var screenNumber: UInt32 {
         (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
     }
+
+    /// 显示器硬件唯一持久标识（基于 CoreGraphics 显示器 UUID，跨插拔、端口变更与系统重启绝对稳定）。
+    var persistentID: String {
+        if let uuidRef = CGDisplayCreateUUIDFromDisplayID(screenNumber) {
+            return CFUUIDCreateString(nil, uuidRef.takeRetainedValue()) as String
+        }
+        return "screen-\(screenNumber)"
+    }
 }
 
 /// 监听屏幕参数变化（外接/断开、分辨率、缩放、菜单栏归属），变化后触发重算。

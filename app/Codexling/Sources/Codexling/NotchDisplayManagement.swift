@@ -138,3 +138,50 @@ private struct LegacyCapsuleView: View {
         .onTapGesture { onClick?() }
     }
 }
+
+// MARK: - 显示器目标智能决断器
+
+enum NotchDisplayResolver {
+    /// 目标屏幕无损决断算法：
+    /// 1. .off -> 严格保持关闭，返回空列表。
+    /// 2. .allDisplays -> 返回当前所有连接的屏幕。
+    /// 3. .specificDisplay(targetID):
+    ///    a. 当前连接屏幕中存在 targetID（或历史数字 ID）时，精准匹配返回该屏幕。
+    ///    b. targetID 当前离线时，若存在其他外接屏，智能漫游至最近使用或首个外接屏（保持外接使用意图）。
+    ///    c. 若无任何外接屏，自动平滑回退至内建屏幕。
+    @MainActor
+    static func resolveActiveScreens(
+        from screens: [NSScreen],
+        target: NotchDisplayTarget,
+        knownDisplays: [String: KnownDisplayRecord] = [:]
+    ) -> [NSScreen] {
+        guard !screens.isEmpty else { return [] }
+        switch target {
+        case .off:
+            return []
+        case .allDisplays:
+            return screens
+        case .specificDisplay(let targetID):
+            // 1. 精准匹配：首选显示器当前连接中（同时兼容历史数字 ID）
+            if let matched = screens.first(where: { $0.persistentID == targetID || String($0.screenNumber) == targetID }) {
+                return [matched]
+            }
+            // 2. 首选外接屏当前未连接：智能漫游到当前连接的其他外接显示器（保持用户在外接屏使用刘海的意图）
+            let externalScreens = screens.filter { !$0.isBuiltin }
+            if !externalScreens.isEmpty {
+                let preferred = externalScreens.max { s1, s2 in
+                    let t1 = knownDisplays[s1.persistentID]?.lastSeen ?? .distantPast
+                    let t2 = knownDisplays[s2.persistentID]?.lastSeen ?? .distantPast
+                    return t1 < t2
+                } ?? externalScreens[0]
+                return [preferred]
+            }
+            // 3. 无任何外接显示器连接（如外出使用笔记本）：自动平滑回退至内建显示器
+            if let builtin = screens.first(where: \.isBuiltin) {
+                return [builtin]
+            }
+            return screens.first.map { [$0] } ?? []
+        }
+    }
+}
+

@@ -2,45 +2,85 @@ import AppKit
 import SwiftUI
 import Observation
 
-/// 刘海面板轮廓：顶部横边完整贴住屏幕顶边，左上/右上使用「反向圆角」，
-/// 底部为普通圆角。几何逻辑参考 Apache-2.0 的 Ping Island `NotchShape.swift`。
+/// 刘海面板轮廓：顶部横边完整贴住屏幕顶边，左上/右上使用「反向外耳圆角」，
+/// 底部为普通圆角。当靠紧屏幕左右边缘时，贴边侧圆角与外耳自动平滑收缩为直角贴边。
 private struct NotchShape: Shape {
-    var topCornerRadius: CGFloat
-    var bottomCornerRadius: CGFloat
+    var topLeftRadius: CGFloat
+    var topRightRadius: CGFloat
+    var bottomLeftRadius: CGFloat
+    var bottomRightRadius: CGFloat
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { .init(topCornerRadius, bottomCornerRadius) }
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get {
+            .init(.init(topLeftRadius, topRightRadius), .init(bottomLeftRadius, bottomRightRadius))
+        }
         set {
-            topCornerRadius = newValue.first
-            bottomCornerRadius = newValue.second
+            topLeftRadius = newValue.first.first
+            topRightRadius = newValue.first.second
+            bottomLeftRadius = newValue.second.first
+            bottomRightRadius = newValue.second.second
         }
     }
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        let top = min(topCornerRadius, rect.width / 2)
-        let bottom = min(bottomCornerRadius, rect.height / 2)
+        let topL = min(topLeftRadius, rect.width / 2)
+        let topR = min(topRightRadius, rect.width / 2)
+        let botL = min(bottomLeftRadius, rect.height / 2)
+        let botR = min(bottomRightRadius, rect.height / 2)
 
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + top, y: rect.minY + top),
-            control: CGPoint(x: rect.minX + top, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: rect.minX + top, y: rect.maxY - bottom))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + top + bottom, y: rect.maxY),
-            control: CGPoint(x: rect.minX + top, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX - top - bottom, y: rect.maxY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX - top, y: rect.maxY - bottom),
-            control: CGPoint(x: rect.maxX - top, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY + top))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX, y: rect.minY),
-            control: CGPoint(x: rect.maxX - top, y: rect.minY)
-        )
+
+        // 左上反向外耳
+        if topL > 0.1 {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.minX + topL, y: rect.minY + topL),
+                control: CGPoint(x: rect.minX + topL, y: rect.minY)
+            )
+        }
+
+        // 左边缘垂直下行
+        let leftX = rect.minX + topL
+        path.addLine(to: CGPoint(x: leftX, y: rect.maxY - botL))
+
+        // 左下圆角
+        if botL > 0.1 {
+            path.addQuadCurve(
+                to: CGPoint(x: leftX + botL, y: rect.maxY),
+                control: CGPoint(x: leftX, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: leftX, y: rect.maxY))
+        }
+
+        // 底部横线
+        let rightX = rect.maxX - topR
+        path.addLine(to: CGPoint(x: rightX - botR, y: rect.maxY))
+
+        // 右下圆角
+        if botR > 0.1 {
+            path.addQuadCurve(
+                to: CGPoint(x: rightX, y: rect.maxY - botR),
+                control: CGPoint(x: rightX, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rightX, y: rect.maxY))
+        }
+
+        // 右边缘垂直上行
+        path.addLine(to: CGPoint(x: rightX, y: rect.minY + topR))
+
+        // 右上反向外耳
+        if topR > 0.1 {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX, y: rect.minY),
+                control: CGPoint(x: rightX, y: rect.minY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
+
+        // 顶部封闭
         path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
         path.closeSubpath()
         return path
@@ -68,11 +108,23 @@ final class NotchCapsuleViewModel {
     /// 收起态胶囊高度（= 状态栏/刘海高度，动态计算）
     var closedHeight: CGFloat = 32
     /// 收起态胶囊宽度（= 刘海宽度 + 左右翼，动态计算）
-    var closedWidth: CGFloat = 310
+    var closedWidth: CGFloat = 360
     /// 中央摄像头避让区宽度（= 物理刘海宽度）
     var notchWidth: CGFloat = 104
     /// 当前所在显示器名称
     var screenName: String = ""
+    /// 是否为内建屏（MacBook 物理刘海屏不可移动）
+    var isBuiltin: Bool = true
+    /// 是否允许拖拽移动（仅外接屏且开启拖拽时有效）
+    var isDraggable: Bool = false
+    /// 当前 X 轴相对屏幕中心偏移量
+    var xOffset: CGFloat = 0
+    /// 收起态胶囊在 700pt 展开窗口内的水平偏移（靠左为负，靠右为正，居中为 0；展开时归零）
+    var capsuleHorizontalOffsetInWindow: CGFloat = 0
+    /// 左侧边缘平直贴合比例（0 = 正常圆角与反向外耳，1 = 完全直角贴合无圆角）
+    var leftEdgeFlatRatio: CGFloat = 0
+    /// 右侧边缘平直贴合比例（0 = 正常圆角与反向外耳，1 = 完全直角贴合无圆角）
+    var rightEdgeFlatRatio: CGFloat = 0
 
     // 交互回调（由 Controller 注入）
     var onClick: (() -> Void)?
@@ -87,6 +139,10 @@ final class NotchCapsuleViewModel {
     var onProviderHover: ((Bool) -> Void)?
     /// 供应商「工作区跳转」按钮回调（携带该供应商的跳转地址）。
     var onOpenWorkspace: ((StatusBarProviderTick) -> Void)?
+    /// 切换外接显示器刘海拖拽锁定状态。
+    var onToggleDragLock: (() -> Void)?
+    /// 一键恢复到屏幕顶部居中。
+    var onResetCenter: (() -> Void)?
 }
 
 /// 自定义命中视图：限制 SwiftUI 宿主内部的响应区域。
@@ -120,7 +176,7 @@ final class NotchCapsulePanelController {
     private let panel: NSPanel
     /// 收起态专用的透明点击层，尺寸严格等于可见胶囊，避免固定大窗口制造点击死区。
     private let collapsedHitPanel: NSPanel
-    private let viewModel = NotchCapsuleViewModel()
+    let viewModel = NotchCapsuleViewModel()
     private let hosting: NSHostingController<NotchCapsuleView>
     private let hitTestView = NotchHitTestView()
     private var globalMonitor: Any?
@@ -128,6 +184,15 @@ final class NotchCapsulePanelController {
     private var screen: NSScreen?
     private var collapseWorkItem: DispatchWorkItem?
     private var interactionWorkItem: DispatchWorkItem?
+
+    private(set) var isBuiltin: Bool = true
+    var isDraggingEnabled: Bool = false
+    private(set) var currentXOffset: CGFloat = 0
+    private var isMouseDownOnCapsule = false
+    private var hasDragged = false
+    private var dragStartMouseLocation: NSPoint = .zero
+    private var dragStartOffset: CGFloat = 0
+    private var wasHoveringCapsule = false
 
     var onClick: (() -> Void)?
     var onSelectAgent: ((Int) -> Void)?
@@ -140,6 +205,9 @@ final class NotchCapsulePanelController {
     var onAgentHover: ((Bool) -> Void)?
     var onProviderHover: ((Bool) -> Void)?
     var onOpenWorkspace: ((StatusBarProviderTick) -> Void)?
+    var onOffsetChanged: ((CGFloat) -> Void)?
+    var onToggleDragLock: (() -> Void)?
+    var onResetCenter: (() -> Void)?
 
     init() {
         hosting = NSHostingController(rootView: NotchCapsuleView(viewModel: viewModel))
@@ -212,6 +280,8 @@ final class NotchCapsulePanelController {
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
         viewModel.onProviderHover = { [weak self] hovering in self?.onProviderHover?(hovering) }
         viewModel.onOpenWorkspace = { [weak self] tick in self?.onOpenWorkspace?(tick) }
+        viewModel.onToggleDragLock = { [weak self] in self?.onToggleDragLock?() }
+        viewModel.onResetCenter = { [weak self] in self?.onResetCenter?() }
     }
 
     func update(
@@ -242,18 +312,57 @@ final class NotchCapsulePanelController {
         viewModel.providerRefreshState = state
     }
 
+    /// 设置拖拽配置（内建/外接屏状态、拖拽开关与记忆偏移量）
+    func setDragConfiguration(isBuiltin: Bool, isDraggingEnabled: Bool, xOffset: CGFloat) {
+        self.isBuiltin = isBuiltin
+        self.isDraggingEnabled = isDraggingEnabled
+        viewModel.isBuiltin = isBuiltin
+        viewModel.isDraggable = !isBuiltin && isDraggingEnabled
+        if let screen {
+            self.currentXOffset = clampedOffset(for: screen, offset: xOffset)
+        } else {
+            self.currentXOffset = isBuiltin ? 0 : xOffset
+        }
+        viewModel.xOffset = self.currentXOffset
+        if isVisible {
+            positionPanel()
+        }
+    }
+
+    /// 一键平滑恢复到屏幕顶部正中心
+    func resetToCenter(animated: Bool = true) {
+        guard currentXOffset != 0 else { return }
+        currentXOffset = 0
+        viewModel.xOffset = 0
+        positionPanel(animated: animated)
+        onOffsetChanged?(0)
+    }
+
+    func clampedOffset(for screen: NSScreen, offset: CGFloat) -> CGFloat {
+        guard !isBuiltin else { return 0 }
+        let capsuleWidth = viewModel.closedWidth > 0 ? viewModel.closedWidth : 434
+        // 允许收起态胶囊完全拖拽贴合至屏幕最左或最右边缘（零边距贴合）
+        let maxOffset = max(0, (screen.frame.width - capsuleWidth) / 2)
+        return min(max(offset, -maxOffset), maxOffset)
+    }
+
     func show(on screen: NSScreen? = nil) {
         guard let resolvedScreen = screen ?? NSScreen.main ?? NSScreen.screens.first else {
             hide()
             return
         }
         self.screen = resolvedScreen
+        self.isBuiltin = resolvedScreen.isBuiltin
+        viewModel.isBuiltin = resolvedScreen.isBuiltin
+        viewModel.isDraggable = !resolvedScreen.isBuiltin && isDraggingEnabled
         // 动态计算：收起态高度 = 刘海/状态栏高度，宽度 = 刘海宽度 + 左右翼。
         let notchWidth = self.screen?.notchWidth ?? 104
         let safeTop = self.screen?.notchHeight ?? NSStatusBar.system.thickness
         viewModel.notchWidth = notchWidth
-        viewModel.closedWidth = notchWidth + 280
+        viewModel.closedWidth = notchWidth + 330
         viewModel.closedHeight = safeTop
+        self.currentXOffset = clampedOffset(for: resolvedScreen, offset: currentXOffset)
+        viewModel.xOffset = currentXOffset
         viewModel.screenName = self.screen?.displayName ?? "显示器"
         viewModel.isExpanded = false
         cancelInteractionTransition()
@@ -277,6 +386,12 @@ final class NotchCapsulePanelController {
         removeMonitors()
         cancelCollapse()
         cancelInteractionTransition()
+        isMouseDownOnCapsule = false
+        hasDragged = false
+        if wasHoveringCapsule {
+            wasHoveringCapsule = false
+            NSCursor.arrow.set()
+        }
         onAgentHover?(false)
         onProviderHover?(false)
         viewModel.isExpanded = false
@@ -296,12 +411,17 @@ final class NotchCapsulePanelController {
             onAgentHover?(false)
             onProviderHover?(false)
         } else {
+            if wasHoveringCapsule {
+                wasHoveringCapsule = false
+                NSCursor.arrow.set()
+            }
             // 先移除小点击层并让完整面板接管，再开始展开动画。
             collapsedHitPanel.orderOut(nil)
             panel.ignoresMouseEvents = false
         }
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) {
             viewModel.isExpanded = expanded
+            positionPanel(animated: false)
         }
         updateHitTestPolicy()
         if !expanded {
@@ -325,12 +445,13 @@ final class NotchCapsulePanelController {
     private func updateHitTestPolicy() {
         let closedWidth = viewModel.closedWidth
         let closedHeight = viewModel.closedHeight
+        let offsetInWindow = viewModel.capsuleHorizontalOffsetInWindow
         hitTestView.shouldHit = { [weak self] point in
             guard let self else { return false }
             if self.viewModel.isExpanded { return true }
             let bounds = self.hitTestView.bounds
             let capsuleRect = NSRect(
-                x: (bounds.width - closedWidth) / 2,
+                x: (bounds.width - closedWidth) / 2 + offsetInWindow,
                 y: bounds.height - closedHeight,
                 width: closedWidth,
                 height: closedHeight
@@ -339,16 +460,70 @@ final class NotchCapsulePanelController {
         }
     }
 
-    private func positionPanel() {
+    private func currentCenterX() -> CGFloat {
+        guard let screen else { return 0 }
+        return screen.frame.midX + clampedOffset(for: screen, offset: currentXOffset)
+    }
+
+    /// 展开态大窗口的实际屏幕中心 X：保证 700pt 面板始终完整位于屏幕可视区内
+    private func expandedPanelCenterX() -> CGFloat {
+        guard let screen else { return 0 }
+        let rawCenterX = currentCenterX()
+        let halfWidth = Self.windowSize.width / 2
+        let minCenterX = screen.frame.minX + halfWidth
+        let maxCenterX = screen.frame.maxX - halfWidth
+        return min(max(rawCenterX, minCenterX), maxCenterX)
+    }
+
+    private func positionPanel(animated: Bool = false) {
         guard let screen else { return }
-        // 主窗口固定为展开尺寸，保证展开/收拢形变动画不跳帧。
         let size = Self.windowSize
-        let origin = NSPoint(
-            x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height
+        let windowCenterX = expandedPanelCenterX()
+        let capsuleCenterX = currentCenterX()
+        let panelOriginX = windowCenterX - size.width / 2
+        let targetCenterInWindow = capsuleCenterX - panelOriginX
+        viewModel.capsuleHorizontalOffsetInWindow = targetCenterInWindow - size.width / 2
+
+        // 计算当前胶囊在屏幕上的实际物理位置
+        let halfWidth = (viewModel.isExpanded ? size.width : viewModel.closedWidth) / 2
+        let currentScreenCenter = viewModel.isExpanded ? windowCenterX : capsuleCenterX
+        let capsuleLeft = currentScreenCenter - halfWidth
+        let capsuleRight = currentScreenCenter + halfWidth
+
+        // 计算靠边程度：小于 14pt 时平滑过渡为直角贴边（0 = 正常圆角，1 = 完全直角贴边无圆角）
+        let threshold: CGFloat = 14
+        let distToLeft = max(0, capsuleLeft - screen.frame.minX)
+        let distToRight = max(0, screen.frame.maxX - capsuleRight)
+        viewModel.leftEdgeFlatRatio = distToLeft < threshold ? (1 - distToLeft / threshold) : 0
+        viewModel.rightEdgeFlatRatio = distToRight < threshold ? (1 - distToRight / threshold) : 0
+
+        let panelFrame = NSRect(
+            x: windowCenterX - size.width / 2,
+            y: screen.frame.maxY - size.height,
+            width: size.width,
+            height: size.height
         )
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        collapsedHitPanel.setFrame(closedScreenRect(), display: true)
+        let closedFrame = closedScreenRect()
+        if animated {
+            if panel.frame != panelFrame {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.32
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(panelFrame, display: true)
+                }
+            }
+            if !viewModel.isExpanded, collapsedHitPanel.frame != closedFrame {
+                collapsedHitPanel.animator().setFrame(closedFrame, display: true)
+            }
+        } else {
+            if panel.frame != panelFrame {
+                panel.setFrame(panelFrame, display: true)
+            }
+            if collapsedHitPanel.frame != closedFrame {
+                collapsedHitPanel.setFrame(closedFrame, display: true)
+            }
+        }
+        updateHitTestPolicy()
     }
 
     private func scheduleCollapsedInteraction() {
@@ -373,12 +548,12 @@ final class NotchCapsulePanelController {
     private func installMonitors() {
         removeMonitors()
         globalMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown]
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .leftMouseUp]
         ) { [weak self] event in
             DispatchQueue.main.async { self?.handleEvent(event) }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .leftMouseDown, .mouseMoved, .leftMouseDragged]
+            matching: [.keyDown, .leftMouseDown, .mouseMoved, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             if event.type == .keyDown, event.keyCode == 53 { // Esc
                 DispatchQueue.main.async { self?.closePanel() }
@@ -402,32 +577,90 @@ final class NotchCapsulePanelController {
 
     private func handleEvent(_ event: NSEvent) {
         guard screen != nil else { return }
-        if event.type == .leftMouseDown {
-            handleClick()
-        } else {
-            handleMouseMove()
+        switch event.type {
+        case .leftMouseDown:
+            handleMouseDown(event)
+        case .leftMouseDragged:
+            handleMouseDragged(event)
+        case .leftMouseUp:
+            handleMouseUp(event)
+        case .mouseMoved:
+            handleMouseMove(event)
+        default:
+            break
         }
     }
 
-    /// 收起态点击刘海胶囊展开；展开态点击面板外部收起。
-    private func handleClick() {
+    /// 收起态按住拖拽/点击判定；展开态点击面板外部收起（展开态禁止拖动）。
+    private func handleMouseDown(_ event: NSEvent) {
         if viewModel.isExpanded {
             if !isPointerInsideOpenedRect() {
                 cancelCollapse()
                 setExpanded(false)
             }
-        } else if isPointerInsideClosedRect() {
+            return
+        }
+        if isPointerInsideClosedRect() {
+            if viewModel.isDraggable {
+                isMouseDownOnCapsule = true
+                hasDragged = false
+                dragStartMouseLocation = NSEvent.mouseLocation
+                dragStartOffset = currentXOffset
+            } else {
+                setExpanded(true)
+            }
+        }
+    }
+
+    /// 外接屏允许拖拽时实时更新位置（展开态完全不响应拖拽）。
+    private func handleMouseDragged(_ event: NSEvent) {
+        guard !viewModel.isExpanded, viewModel.isDraggable, isMouseDownOnCapsule, let screen else { return }
+        let currentLoc = NSEvent.mouseLocation
+        let deltaX = currentLoc.x - dragStartMouseLocation.x
+        if abs(deltaX) > 2 || hasDragged {
+            hasDragged = true
+            NSCursor.closedHand.set()
+            let rawOffset = dragStartOffset + deltaX
+            currentXOffset = clampedOffset(for: screen, offset: rawOffset)
+            viewModel.xOffset = currentXOffset
+            positionPanel()
+        }
+    }
+
+    /// 鼠标抬起：若发生拖动则持久化偏移，不展开；若未拖动则视为轻点展开。
+    private func handleMouseUp(_ event: NSEvent) {
+        guard isMouseDownOnCapsule else { return }
+        isMouseDownOnCapsule = false
+        if hasDragged {
+            hasDragged = false
+            onOffsetChanged?(currentXOffset)
+            if isPointerInsideClosedRect() {
+                NSCursor.openHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        } else {
             setExpanded(true)
         }
     }
 
-    /// 展开态下鼠标移出面板后自动收起。
-    private func handleMouseMove() {
-        guard viewModel.isExpanded else { return }
-        if !isPointerInsideOpenedRect() {
-            scheduleCollapse()
-        } else {
-            cancelCollapse()
+    /// 展开态下鼠标移出面板后自动收起；收起态下支持拖拽时展示手型光标。
+    private func handleMouseMove(_ event: NSEvent) {
+        if viewModel.isExpanded {
+            if !isPointerInsideOpenedRect() {
+                scheduleCollapse()
+            } else {
+                cancelCollapse()
+            }
+        } else if viewModel.isDraggable {
+            let inside = isPointerInsideClosedRect()
+            if inside && !wasHoveringCapsule {
+                wasHoveringCapsule = true
+                NSCursor.openHand.set()
+            } else if !inside && wasHoveringCapsule {
+                wasHoveringCapsule = false
+                NSCursor.arrow.set()
+            }
         }
     }
 
@@ -459,8 +692,9 @@ final class NotchCapsulePanelController {
     private func closedScreenRect() -> NSRect {
         guard let screen else { return .zero }
         let size = NSSize(width: viewModel.closedWidth, height: viewModel.closedHeight)
+        let centerX = currentCenterX()
         return NSRect(
-            x: screen.frame.midX - size.width / 2,
+            x: centerX - size.width / 2,
             y: screen.frame.maxY - size.height,
             width: size.width,
             height: size.height
@@ -470,8 +704,9 @@ final class NotchCapsulePanelController {
     private func openedScreenRect() -> NSRect {
         guard let screen else { return .zero }
         let size = Self.openedSize
+        let centerX = expandedPanelCenterX()
         return NSRect(
-            x: screen.frame.midX - size.width / 2,
+            x: centerX - size.width / 2,
             y: screen.frame.maxY - size.height,
             width: size.width,
             height: size.height
@@ -484,6 +719,14 @@ final class NotchCapsulePanelController {
 private struct NotchCapsuleView: View {
     let viewModel: NotchCapsuleViewModel
     @State private var showQuitConfirmation = false
+    @State private var hoveredFooterAction: FooterAction?
+
+    private enum FooterAction: Equatable {
+        case settings
+        case quit
+        case dragLock
+        case resetCenter
+    }
 
     private var agent: StatusBarAgentTick? {
         viewModel.agentTicks.indices.contains(viewModel.agentIndex)
@@ -493,16 +736,37 @@ private struct NotchCapsuleView: View {
         viewModel.providerTicks.indices.contains(viewModel.providerIndex)
             ? viewModel.providerTicks[viewModel.providerIndex] : nil
     }
-    private var topCornerRadius: CGFloat { viewModel.isExpanded ? 19 : 6 }
-    private var bottomCornerRadius: CGFloat { viewModel.isExpanded ? 24 : 14 }
+    private var baseTopRadius: CGFloat { viewModel.isExpanded ? 19 : 6 }
+    private var baseBottomRadius: CGFloat { viewModel.isExpanded ? 24 : 14 }
     private var panelWidth: CGFloat { viewModel.isExpanded ? 700 : viewModel.closedWidth }
     private var panelHeight: CGFloat { viewModel.isExpanded ? 330 : viewModel.closedHeight }
+    private var contentHorizontalOffset: CGFloat {
+        viewModel.isExpanded ? 0 : viewModel.capsuleHorizontalOffsetInWindow
+    }
+
+    private var topLeftRadius: CGFloat {
+        baseTopRadius * (1 - viewModel.leftEdgeFlatRatio)
+    }
+    private var bottomLeftRadius: CGFloat {
+        baseBottomRadius * (1 - viewModel.leftEdgeFlatRatio)
+    }
+    private var topRightRadius: CGFloat {
+        baseTopRadius * (1 - viewModel.rightEdgeFlatRatio)
+    }
+    private var bottomRightRadius: CGFloat {
+        baseBottomRadius * (1 - viewModel.rightEdgeFlatRatio)
+    }
 
     var body: some View {
         ZStack {
             // 同一容器：尺寸与圆角随展开态连续插值（形变动画，而非视图切换渐变）
-            NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius)
-                .fill(Color.black.opacity(0.97))
+            NotchShape(
+                topLeftRadius: topLeftRadius,
+                topRightRadius: topRightRadius,
+                bottomLeftRadius: bottomLeftRadius,
+                bottomRightRadius: bottomRightRadius
+            )
+            .fill(Color.black.opacity(0.97))
             if viewModel.isExpanded {
                 expandedContent
                     .transition(.opacity)
@@ -517,11 +781,19 @@ private struct NotchCapsuleView: View {
             }
         }
         .frame(width: panelWidth, height: panelHeight)
-        .clipShape(NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius))
+        .clipShape(
+            NotchShape(
+                topLeftRadius: topLeftRadius,
+                topRightRadius: topRightRadius,
+                bottomLeftRadius: bottomLeftRadius,
+                bottomRightRadius: bottomRightRadius
+            )
+        )
+        .offset(x: contentHorizontalOffset)
         // 只水平居中、垂直贴顶，保证形变始终以屏幕顶部为锚点向下展开，不产生顶部空隙。
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: viewModel.isExpanded)
+        .animation(.spring(response: 0.42, dampingFraction: 0.84), value: viewModel.isExpanded)
     }
 
     // MARK: 收起态
@@ -573,7 +845,28 @@ private struct NotchCapsuleView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, collapsedLeadingPadding)
+        .padding(.trailing, collapsedTrailingPadding)
+    }
+
+    private var collapsedLeadingPadding: CGFloat {
+        14 - 4 * viewModel.leftEdgeFlatRatio
+    }
+
+    private var collapsedTrailingPadding: CGFloat {
+        14 - 4 * viewModel.rightEdgeFlatRatio
+    }
+
+    private var expandedLeadingPadding: CGFloat {
+        let basePadding: CGFloat = 36
+        let flatPadding: CGFloat = 20
+        return basePadding - (basePadding - flatPadding) * viewModel.leftEdgeFlatRatio
+    }
+
+    private var expandedTrailingPadding: CGFloat {
+        let basePadding: CGFloat = 36
+        let flatPadding: CGFloat = 20
+        return basePadding - (basePadding - flatPadding) * viewModel.rightEdgeFlatRatio
     }
 
     // MARK: 展开态
@@ -592,7 +885,8 @@ private struct NotchCapsuleView: View {
                 .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.5) }
                 .padding(.top, 16)
         }
-        .padding(.horizontal, 40)
+        .padding(.leading, expandedLeadingPadding)
+        .padding(.trailing, expandedTrailingPadding)
         .padding(.top, 18)
         .padding(.bottom, 26)
     }
@@ -927,31 +1221,42 @@ private struct NotchCapsuleView: View {
     private var footer: some View {
         HStack {
             HStack(spacing: 12) {
-                Button {
-                    viewModel.onOpenSettings?()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .foregroundStyle(.white.opacity(0.78))
-                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开设置")
-                .help("打开设置")
-
-                Button {
+                footerActionButton(
+                    action: .quit,
+                    icon: "power",
+                    tooltip: "关闭软件"
+                ) {
                     showQuitConfirmation = true
-                } label: {
-                    Image(systemName: "power")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .foregroundStyle(.white.opacity(0.78))
-                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("关闭软件")
-                .help("关闭软件")
+
+                footerActionButton(
+                    action: .settings,
+                    icon: "gearshape",
+                    tooltip: "打开设置"
+                ) {
+                    viewModel.onOpenSettings?()
+                }
+
+                if !viewModel.isBuiltin {
+                    footerActionButton(
+                        action: .dragLock,
+                        icon: viewModel.isDraggable ? "lock.open" : "lock",
+                        tooltip: viewModel.isDraggable ? "锁定刘海位置" : "解锁刘海拖拽",
+                        isActive: viewModel.isDraggable
+                    ) {
+                        viewModel.onToggleDragLock?()
+                    }
+
+                    if viewModel.xOffset != 0 {
+                        footerActionButton(
+                            action: .resetCenter,
+                            icon: "arrow.counterclockwise",
+                            tooltip: "一键恢复刘海居中"
+                        ) {
+                            viewModel.onResetCenter?()
+                        }
+                    }
+                }
             }
             Spacer()
             HStack(spacing: 10) {
@@ -977,6 +1282,65 @@ private struct NotchCapsuleView: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(.white.opacity(0.45))
+        .onDisappear {
+            hoveredFooterAction = nil
+        }
+    }
+
+    @ViewBuilder
+    private func footerActionButton(
+        action: FooterAction,
+        icon: String,
+        tooltip: String,
+        isActive: Bool = false,
+        onTap: @escaping () -> Void
+    ) -> some View {
+        Button(action: onTap) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .foregroundStyle(isActive ? Color.accentColor : (hoveredFooterAction == action ? .white : .white.opacity(0.78)))
+                .background(
+                    hoveredFooterAction == action
+                        ? Color.white.opacity(0.18)
+                        : Color.white.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tooltip)
+        .help(tooltip)
+        .overlay(alignment: .top) {
+            if hoveredFooterAction == action {
+                Text(tooltip)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3.5)
+                    .background(Color(white: 0.16).opacity(0.96), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                    .fixedSize()
+                    .offset(y: -26)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    .zIndex(100)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) {
+                if hovering {
+                    hoveredFooterAction = action
+                    NSCursor.pointingHand.set()
+                } else if hoveredFooterAction == action {
+                    hoveredFooterAction = nil
+                    NSCursor.arrow.set()
+                }
+            }
+        }
     }
 
     /// 刘海内嵌确认卡片：不使用系统 alert，因此不会给整个屏幕添加背景 mask。

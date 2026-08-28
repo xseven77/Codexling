@@ -1270,9 +1270,44 @@ struct SettingsView: View {
                 ) {
                     SettingsMenuPicker(
                         selection: $settings.notchDisplayTarget,
-                        options: notchDisplayOptions,
-                        title: { notchDisplayTitle($0) }
+                        options: notchDisplayOptions(currentSelection: settings.notchDisplayTarget),
+                        title: { notchDisplayTitle($0, settings: settings) }
                     )
+                }
+                CodexDivider()
+
+                SettingsInlineRow(
+                    title: "外接屏刘海拖拽",
+                    subtitle: "允许在非内建显示器上按住鼠标左键横向拖动刘海位置"
+                ) {
+                    SettingsSwitch(
+                        isOn: $settings.notchDraggingEnabled,
+                        accessibilityLabel: "外接屏刘海拖拽"
+                    )
+                }
+
+                if !settings.notchDisplayOffsets.isEmpty {
+                    CodexDivider()
+
+                    SettingsInlineRow(
+                        title: "重置刘海位置",
+                        subtitle: "一键将所有外接显示器刘海恢复至屏幕顶部中心位置"
+                    ) {
+                        Button {
+                            settings.resetAllNotchOffsets()
+                        } label: {
+                            Text("恢复居中")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(Color.accentColor.opacity(0.25), lineWidth: 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 }
                 .settingsGroupSurface()
@@ -2273,10 +2308,18 @@ struct SettingsGroupSurfaceModifier: ViewModifier {
 
 // MARK: - 刘海显示器选项（系统 API 动态获取）
 
-private var notchDisplayOptions: [NotchDisplayTarget] {
+@MainActor
+private func notchDisplayOptions(currentSelection: NotchDisplayTarget) -> [NotchDisplayTarget] {
     var options: [NotchDisplayTarget] = []
+    var seenIDs = Set<String>()
     for screen in NSScreen.screens {
-        options.append(.specificScreen(screen.screenNumber))
+        let id = screen.persistentID
+        seenIDs.insert(id)
+        options.append(.specificDisplay(id))
+    }
+    // 若当前持久化的首选显示器暂时离线，将其保留在选项中，避免选中态丢失
+    if case .specificDisplay(let targetID) = currentSelection, !seenIDs.contains(targetID) {
+        options.append(.specificDisplay(targetID))
     }
     // 特殊选项放到最后。
     options.append(.allDisplays)
@@ -2284,15 +2327,19 @@ private var notchDisplayOptions: [NotchDisplayTarget] {
     return options
 }
 
-private func notchDisplayTitle(_ target: NotchDisplayTarget) -> String {
+@MainActor
+private func notchDisplayTitle(_ target: NotchDisplayTarget, settings: AppSettingsStore) -> String {
     switch target {
     case .off:
         return "所有显示器都不开刘海"
     case .allDisplays:
         return "所有显示器"
-    case .specificScreen(let number):
-        return NSScreen.screens.first(where: { $0.screenNumber == number })?.displayName
-            ?? "显示器 \(number)"
+    case .specificDisplay(let id):
+        if let screen = NSScreen.screens.first(where: { $0.persistentID == id || String($0.screenNumber) == id }) {
+            return screen.displayName
+        }
+        let savedName = settings.displayName(for: id) ?? "外接显示器"
+        return "\(savedName) (未连接 · 自动漫游)"
     }
 }
 

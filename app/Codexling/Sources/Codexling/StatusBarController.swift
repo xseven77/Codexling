@@ -214,7 +214,7 @@ final class StatusBarController: NSObject {
     private var capsuleView: StatusCapsuleView?
     private let notchDetector: MenuBarNotchDetector
     private let highlightOverlay = ScreenHighlightOverlay()
-    private var notchPanels: [UInt32: NotchCapsulePanelController] = [:]
+    private var notchPanels: [String: NotchCapsulePanelController] = [:]
     /// `NSScreen.screens` can still be empty for a short time while an accessory
     /// app is launching. Keep screen discovery separate from the user's mode so
     /// that this transient state cannot switch the UI to the status-item fallback.
@@ -321,6 +321,29 @@ final class StatusBarController: NSObject {
     /// 刘海显示位置设置变化后重新选择屏幕并切换模式。
     func refreshNotchDisplay() {
         applyMode()
+    }
+
+    /// 刷新各屏幕刘海的拖拽配置与偏移位置。
+    func refreshNotchDragConfiguration() {
+        for (id, panel) in notchPanels {
+            let isBuiltin = NSScreen.screens.first(where: { $0.persistentID == id })?.isBuiltin ?? true
+            let offset = settings.notchOffset(for: id)
+            panel.setDragConfiguration(
+                isBuiltin: isBuiltin,
+                isDraggingEnabled: settings.notchDraggingEnabled,
+                xOffset: offset
+            )
+        }
+    }
+
+    /// 一键将所有外接显示器刘海恢复到顶部中心。
+    func resetAllNotchPositionsToCenter() {
+        settings.resetAllNotchOffsets()
+        for (_, panel) in notchPanels {
+            if !panel.isBuiltin {
+                panel.resetToCenter(animated: true)
+            }
+        }
     }
 
     private func configureStatusButton() {
@@ -494,15 +517,17 @@ final class StatusBarController: NSObject {
     // MARK: - 刘海模式与降级模式切换
 
     /// 目标屏幕（显示刘海面板，无论刘海屏 / 非刘海屏）。
-    private var targetScreens: [NSScreen] {
-        switch settings.notchDisplayTarget {
-        case .off:
-            return []
-        case .allDisplays:
-            return NSScreen.screens
-        case .specificScreen(let number):
-            return NSScreen.screens.filter { $0.screenNumber == number }
-        }
+    /// 目标屏幕计算（无损决断：首选精准匹配 -> 外接屏智能漫游 -> 内建屏自动兜底；若首选项为 off 则严格关闭）。
+    var targetScreens: [NSScreen] {
+        resolveActiveScreens(from: NSScreen.screens, target: settings.notchDisplayTarget)
+    }
+
+    func resolveActiveScreens(from screens: [NSScreen], target: NotchDisplayTarget) -> [NSScreen] {
+        NotchDisplayResolver.resolveActiveScreens(
+            from: screens,
+            target: target,
+            knownDisplays: settings.knownDisplays
+        )
     }
 
     private var isNotchDisplayEnabled: Bool {
@@ -511,84 +536,93 @@ final class StatusBarController: NSObject {
     }
 
     private func notchPanel(for screen: NSScreen) -> NotchCapsulePanelController {
-        if let panel = notchPanels[screen.screenNumber] { return panel }
-        let panel = NotchCapsulePanelController()
-        panel.onClick = { [weak self] in self?.openFromNotchPanel() }
-        panel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
-        panel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
-        panel.onQuit = actions.quit
-        panel.onSelectAgent = { [weak self] index in
-            self?.ticker.agentIndex = index
-            self?.refreshStatusTitle()
-        }
-        panel.onSelectProvider = { [weak self] connectionID in
-            guard let self else { return }
-            self.multiAgentSettings.selectConnection(key: connectionID)
-            self.onProviderSelection?()
-        }
-        panel.onRefreshProvider = { [weak self] in
-            self?.onRefreshProvider?()
-        }
-        panel.onOpenAgentTask = { tick in
-            AgentTaskOpener.open(agentDisplayName: tick.name, taskID: tick.taskID)
-        }
-        panel.onAgentHover = { [weak self] hovering in
-            guard let self else { return }
-            if hovering {
-                self.agentCarouselDriver.pause()
-            } else {
-                self.agentCarouselDriver.resume()
+        let panel: NotchCapsulePanelController
+        if let existing = notchPanels[screen.persistentID] {
+            panel = existing
+        } else {
+            let newPanel = NotchCapsulePanelController()
+            newPanel.onClick = { [weak self] in self?.openFromNotchPanel() }
+            newPanel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
+            newPanel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
+            newPanel.onQuit = actions.quit
+            newPanel.onSelectAgent = { [weak self] index in
+                self?.ticker.agentIndex = index
+                self?.refreshStatusTitle()
             }
+            newPanel.onSelectProvider = { [weak self] connectionID in
+                guard let self else { return }
+                self.multiAgentSettings.selectConnection(key: connectionID)
+                self.onProviderSelection?()
+            }
+            newPanel.onRefreshProvider = { [weak self] in
+                self?.onRefreshProvider?()
+            }
+            newPanel.onOpenAgentTask = { tick in
+                AgentTaskOpener.open(agentDisplayName: tick.name, taskID: tick.taskID)
+            }
+            newPanel.onAgentHover = { [weak self] hovering in
+                guard let self else { return }
+                if hovering {
+                    self.agentCarouselDriver.pause()
+                } else {
+                    self.agentCarouselDriver.resume()
+                }
+            }
+            newPanel.onProviderHover = { [weak self] hovering in
+                self?.multiAgentSettings.setAccountCarouselPaused(
+                    hovering,
+                    source: .notch(screenNumber: screen.screenNumber)
+                )
+            }
+            newPanel.onOpenWorkspace = { tick in
+                guard let workspaceURL = tick.workspaceURL,
+                      let url = URL(string: workspaceURL) else { return }
+                NSLog("[StatusBarController] 打开供应商工作区: %@", url.absoluteString)
+                NSWorkspace.shared.open(url)
+                // 打开系统浏览器后收起刘海面板，避免面板悬停在别的应用上方。
+                newPanel.setExpandedFromWorkspaceJump()
+            }
+            newPanel.onOffsetChanged = { [weak self] newOffset in
+                self?.settings.setNotchOffset(newOffset, for: screen.persistentID)
+            }
+            newPanel.onToggleDragLock = { [weak self] in
+                guard let self else { return }
+                self.settings.notchDraggingEnabled.toggle()
+            }
+            newPanel.onResetCenter = { [weak self] in
+                guard let self else { return }
+                self.settings.resetNotchOffset(for: screen.persistentID)
+                newPanel.resetToCenter(animated: true)
+            }
+            notchPanels[screen.persistentID] = newPanel
+            panel = newPanel
         }
-        panel.onProviderHover = { [weak self] hovering in
-            self?.multiAgentSettings.setAccountCarouselPaused(
-                hovering,
-                source: .notch(screenNumber: screen.screenNumber)
-            )
-        }
-        panel.onOpenWorkspace = { tick in
-            guard let workspaceURL = tick.workspaceURL,
-                  let url = URL(string: workspaceURL) else { return }
-            NSLog("[StatusBarController] 打开供应商工作区: %@", url.absoluteString)
-            NSWorkspace.shared.open(url)
-            // 打开系统浏览器后收起刘海面板，避免面板悬停在别的应用上方。
-            panel.setExpandedFromWorkspaceJump()
-        }
-        notchPanels[screen.screenNumber] = panel
+
+        let offset = settings.notchOffset(for: screen.persistentID)
+        panel.setDragConfiguration(
+            isBuiltin: screen.isBuiltin,
+            isDraggingEnabled: settings.notchDraggingEnabled,
+            xOffset: offset
+        )
         return panel
     }
 
-    /// 屏幕参数变化后校验刘海目标显示器：若当前指定的显示器已断开，自动回退到内建显示器。
-    private func reconcileNotchDisplayTargetAfterScreenChange() {
-        guard case .specificScreen(let number) = settings.notchDisplayTarget else { return }
-        let availableScreens = NSScreen.screens
-        // An empty launch-time snapshot does not mean that the selected display
-        // was disconnected. Wait for AppKit to finish screen discovery instead
-        // of overwriting the persisted target with a fallback.
-        guard !availableScreens.isEmpty else { return }
-        guard !availableScreens.contains(where: { $0.screenNumber == number }) else { return }
-
-        if let builtin = availableScreens.first(where: \.isBuiltin) {
-            settings.notchDisplayTarget = .specificScreen(builtin.screenNumber)
-        } else {
-            settings.notchDisplayTarget = .allDisplays
-        }
-    }
-
     private func applyMode() {
-        reconcileNotchDisplayTargetAfterScreenChange()
+        for screen in NSScreen.screens {
+            settings.recordDisplay(id: screen.persistentID, name: screen.displayName, isBuiltin: screen.isBuiltin)
+        }
 
         let resolvedTargetScreens = targetScreens
-        let targetNumbers = Set(resolvedTargetScreens.map(\.screenNumber))
+        let targetIDs = Set(resolvedTargetScreens.map(\.persistentID))
 
         // 刘海面板：目标屏幕（悬停屏幕顶部中央）。
         for screen in resolvedTargetScreens {
             notchPanel(for: screen).show(on: screen)
         }
         // 清理非目标屏幕的刘海面板。
-        for (number, panel) in notchPanels where !targetNumbers.contains(number) {
+        for (id, panel) in notchPanels where !targetIDs.contains(id) {
             panel.hide()
-            notchPanels.removeValue(forKey: number)
+            notchPanels.removeValue(forKey: id)
         }
 
         // 菜单栏胶囊：刘海开启时全局隐藏（由刘海面板取代），关闭时显示。
