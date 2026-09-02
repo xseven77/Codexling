@@ -227,6 +227,13 @@ mod tests {
     }
 
     #[test]
+    fn formats_gateway_refreshed_expiry_dates_for_swift_to_read() {
+        let formatted = GatewayServer::format_rfc3339_utc(86_401);
+        assert_eq!(formatted, "1970-01-02T00:00:01Z");
+        assert_eq!(GatewayServer::parse_rfc3339_utc(&formatted), Some(86_401));
+    }
+
+    #[test]
     fn matches_gateway_account_slug_against_email() {
         assert!(GatewayServer::gateway_account_filter_matches(
             "xujinqixujinqi-gmail-com",
@@ -235,6 +242,14 @@ mod tests {
         assert!(!GatewayServer::gateway_account_filter_matches(
             "another-account",
             &["", "xujinqixujinqi@gmail.com", "xujinqixujinqi@gmail.com"],
+        ));
+    }
+
+    #[test]
+    fn matches_gateway_account_name_with_non_ascii_characters() {
+        assert!(GatewayServer::gateway_account_filter_matches(
+            "徐金琦",
+            &["徐金琦", "xujinqi777@gmail.com", "xujinqi777@gmail.com"],
         ));
     }
 }
@@ -1901,6 +1916,7 @@ impl GatewayServer {
         // 1. Google Gemini 专属通道（严格隔离，只使用已登录账号的 OAuth 凭证）
         if is_google {
             let conn_path = format!("{app_support}/connections-v1.json");
+            let mut oauth_failures = Vec::new();
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) =
@@ -1934,20 +1950,19 @@ impl GatewayServer {
                             };
 
                             if matched {
-                                if let Ok(access_token) =
-                                    Self::gemini_oauth_access_token(&app_support, handle)
-                                {
-                                    let requested = base_model.trim().to_lowercase();
-                                    let normalized = |value: &str| {
-                                        value
-                                            .trim()
-                                            .trim_start_matches("models/")
-                                            .trim_start_matches("MODEL_GOOGLE_")
-                                            .trim_start_matches("MODEL_OPENAI_")
-                                            .to_lowercase()
-                                            .replace('_', "-")
-                                    };
-                                    let target_model = acc
+                                match Self::gemini_oauth_access_token(&app_support, handle) {
+                                    Ok(access_token) => {
+                                        let requested = base_model.trim().to_lowercase();
+                                        let normalized = |value: &str| {
+                                            value
+                                                .trim()
+                                                .trim_start_matches("models/")
+                                                .trim_start_matches("MODEL_GOOGLE_")
+                                                .trim_start_matches("MODEL_OPENAI_")
+                                                .to_lowercase()
+                                                .replace('_', "-")
+                                        };
+                                        let target_model = acc
                                         .get("availableModelIDs")
                                         .and_then(|models| models.as_array())
                                         .and_then(|models| models.iter().filter_map(|model| model.as_str()).find(|candidate| {
@@ -1957,7 +1972,7 @@ impl GatewayServer {
                                         }))
                                         .map(str::to_owned)
                                         .ok_or_else(|| format!("Google OAuth 账号不提供模型 [{base_model}]，未执行回退。"))?;
-                                    return Ok(UpstreamEndpoint {
+                                        return Ok(UpstreamEndpoint {
                                         url: "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent".into(),
                                         auth_header: format!("Bearer {access_token}"),
                                         // The Cloud Code envelope carries this project directly.
@@ -1974,13 +1989,21 @@ impl GatewayServer {
                                         _account_name: if !display_name.is_empty() { display_name.to_string() } else { email.to_string() },
                                         codex_home: None,
                                     });
+                                    }
+                                    Err(error) => oauth_failures.push(error),
                                 }
                             }
                         }
                     }
                 }
             }
-            return Err(format!("Google Gemini 账号 [{}] 的 OAuth 凭证不可用，请在 Codexling 重新登录该 Google 账号后重试。", account_filter.unwrap_or("默认")));
+            let account = account_filter.unwrap_or("默认");
+            if let Some(error) = oauth_failures.into_iter().next() {
+                return Err(format!(
+                    "Google Gemini 账号 [{account}] 的 OAuth 凭证暂时不可用：{error}"
+                ));
+            }
+            return Err(format!("Google Gemini 账号 [{account}] 的 OAuth 凭证不可用，请在 Codexling 重新登录该 Google 账号后重试。"));
         }
 
         // 2. OpenAI / Codex 专属通道 (严格隔离，绝不降级)
@@ -2216,7 +2239,8 @@ impl GatewayServer {
     }
 
     /// Loads the user-owned Gemini OAuth session and refreshes it when a
-    /// refresh token exists. Gemini traffic is OAuth-only.
+    /// refresh token exists. A successful refresh is atomically persisted so
+    /// the next routed request does not need to refresh again.
     fn gemini_oauth_access_token(app_support: &str, handle: &str) -> Result<String, String> {
         if handle.trim().is_empty() {
             return Err("Google OAuth credential handle is missing".into());
@@ -2224,7 +2248,7 @@ impl GatewayServer {
         let path = format!("{app_support}/gemini_oauth/{handle}.json");
         let raw = std::fs::read_to_string(&path)
             .map_err(|_| "Google OAuth token is missing; sign in again".to_string())?;
-        let token: serde_json::Value = serde_json::from_str(&raw)
+        let mut token: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|_| "Google OAuth token file is invalid; sign in again".to_string())?;
         let existing_access = token
             .get("accessToken")
@@ -2259,28 +2283,121 @@ impl GatewayServer {
             });
         };
 
-        let output = std::process::Command::new("curl")
-            .arg("-s")
-            .arg("-X")
-            .arg("POST")
-            .arg("https://oauth2.googleapis.com/token")
-            .arg("-d")
-            .arg("grant_type=refresh_token")
-            .arg("-d")
-            .arg(format!("client_id={client_id}"))
-            .arg("-d")
-            .arg(format!("refresh_token={refresh_token}"))
-            .output()
-            .map_err(|_| "Unable to refresh Google OAuth token".to_string())?;
-        let refreshed: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|_| "Google OAuth token refresh returned an invalid response".to_string())?;
-        refreshed
+        let refreshed = Self::refresh_gemini_oauth_token(&client_id, refresh_token)?;
+        let refreshed_access = refreshed
             .get("access_token")
             .and_then(|value| value.as_str())
             .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned)
-            .or(existing_access)
-            .ok_or_else(|| "Google OAuth token refresh failed; sign in again".into())
+            .map(str::to_owned);
+
+        let Some(refreshed_access) = refreshed_access else {
+            let provider_error = refreshed
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown_error");
+            let provider_description = refreshed
+                .get("error_description")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Google did not return a usable access token");
+            if let Some(access_token) =
+                existing_access.filter(|_| Self::gemini_access_token_is_unexpired(&token))
+            {
+                return Ok(access_token);
+            }
+            return Err(format!("Google OAuth refresh was rejected ({provider_error}): {provider_description}. Please sign in again."));
+        };
+
+        let expires_in = refreshed
+            .get("expires_in")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(3_600)
+            .clamp(60, 86_400);
+        let now_unix = Self::current_unix_seconds();
+        token["accessToken"] = serde_json::Value::String(refreshed_access.clone());
+        token["expiresAt"] = serde_json::Value::String(Self::format_rfc3339_utc(
+            now_unix.saturating_add(expires_in),
+        ));
+        if let Some(new_refresh_token) = refreshed
+            .get("refresh_token")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+        {
+            token["refreshToken"] = serde_json::Value::String(new_refresh_token.to_string());
+        }
+        Self::persist_gemini_oauth_token(&path, &token)?;
+        Ok(refreshed_access)
+    }
+
+    /// Refresh through the configured network route first. If a stale local
+    /// proxy prevents curl from connecting, retry once without proxy settings;
+    /// this keeps an OAuth renewal from requiring the user to re-authorize.
+    fn refresh_gemini_oauth_token(
+        client_id: &str,
+        refresh_token: &str,
+    ) -> Result<serde_json::Value, String> {
+        let via_environment = Self::run_gemini_oauth_refresh(client_id, refresh_token, false);
+        match via_environment {
+            Ok(value) => Ok(value),
+            Err(environment_error) => Self::run_gemini_oauth_refresh(client_id, refresh_token, true)
+                .map_err(|direct_error| format!(
+                    "OAuth refresh could not reach Google (configured network route: {environment_error}; direct route: {direct_error})"
+                )),
+        }
+    }
+
+    fn run_gemini_oauth_refresh(
+        client_id: &str,
+        refresh_token: &str,
+        bypass_proxy: bool,
+    ) -> Result<serde_json::Value, String> {
+        let mut command = std::process::Command::new("curl");
+        command
+            .arg("-sS")
+            .arg("--connect-timeout")
+            .arg("5")
+            .arg("--max-time")
+            .arg("20")
+            .arg("-X")
+            .arg("POST")
+            .arg("https://oauth2.googleapis.com/token")
+            .arg("--data-urlencode")
+            .arg("grant_type=refresh_token")
+            .arg("--data-urlencode")
+            .arg(format!("client_id={client_id}"))
+            .arg("--data-urlencode")
+            .arg(format!("refresh_token={refresh_token}"));
+        if bypass_proxy {
+            command.arg("--noproxy").arg("*");
+        }
+        let output = command
+            .output()
+            .map_err(|error| format!("could not start refresh helper: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("network helper failed: {}", stderr.trim()));
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|_| "Google returned a non-JSON refresh response".to_string())
+    }
+
+    fn persist_gemini_oauth_token(path: &str, token: &serde_json::Value) -> Result<(), String> {
+        let encoded = serde_json::to_vec(token)
+            .map_err(|_| "could not encode refreshed OAuth credentials".to_string())?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temporary_path = format!("{path}.refreshing-{}-{nonce}", std::process::id());
+        std::fs::write(&temporary_path, encoded)
+            .map_err(|_| "could not save refreshed OAuth credentials".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "could not secure refreshed OAuth credentials".to_string())?;
+        }
+        std::fs::rename(&temporary_path, path)
+            .map_err(|_| "could not replace refreshed OAuth credentials".to_string())
     }
 
     fn gemini_access_token_is_fresh(token: &serde_json::Value) -> bool {
@@ -2290,12 +2407,47 @@ impl GatewayServer {
         let Some(expires_unix) = Self::parse_rfc3339_utc(expires_at) else {
             return false;
         };
-        let now_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or(i64::MAX);
+        let now_unix = Self::current_unix_seconds();
         // Match the App's 60-second safety window.
         expires_unix.saturating_sub(now_unix) >= 60
+    }
+
+    fn gemini_access_token_is_unexpired(token: &serde_json::Value) -> bool {
+        Self::parse_rfc3339_utc(
+            token
+                .get("expiresAt")
+                .and_then(|value| value.as_str())
+                .unwrap_or(""),
+        )
+        .is_some_and(|expires_unix| expires_unix >= Self::current_unix_seconds())
+    }
+
+    fn current_unix_seconds() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(i64::MAX)
+    }
+
+    /// Formats the RFC3339 subset written by Swift's ISO8601 encoder without
+    /// introducing a date-time dependency into the Gateway binary.
+    fn format_rfc3339_utc(unix_seconds: i64) -> String {
+        let days = unix_seconds.div_euclid(86_400);
+        let seconds_of_day = unix_seconds.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let mut year = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = mp + if mp < 10 { 3 } else { -9 };
+        year += i64::from(month <= 2);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
     }
 
     /// Minimal RFC3339 UTC parser for Swift's persisted ISO-8601 `expiresAt`.
@@ -2373,7 +2525,7 @@ impl GatewayServer {
             value
                 .chars()
                 .map(|character| {
-                    if character.is_ascii_alphanumeric() {
+                    if character.is_alphanumeric() {
                         character.to_ascii_lowercase()
                     } else {
                         ' '

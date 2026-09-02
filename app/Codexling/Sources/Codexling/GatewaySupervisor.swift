@@ -30,6 +30,8 @@ public final class GatewaySupervisor {
     private var outputPipe: Pipe?
     private var uptimeTimer: Timer?
     private var startTime: Date?
+    private var pendingRestartTask: Task<Void, Never>?
+    private var hasAttemptedStaleGatewayRecovery = false
 
     public init() {
         self.isAutoStartEnabled = UserDefaults.standard.object(forKey: "codexling.gateway.autostart") as? Bool ?? true
@@ -70,6 +72,8 @@ public final class GatewaySupervisor {
 
     public func start() {
         guard !isRunning else { return }
+        pendingRestartTask?.cancel()
+        pendingRestartTask = nil
 
         if let executable = candidateExecutableURL() {
             startChildProcess(at: executable)
@@ -103,17 +107,41 @@ public final class GatewaySupervisor {
             self.process = proc
             self.outputPipe = outPipe
 
-            // Read ready handshake from first line of stdout
-            if let readyLine = readFirstLine(from: outPipe.fileHandleForReading),
-               let data = readyLine.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let host = json["host"] as? String,
-               let port = json["port"] as? Int,
-               let token = json["token"] as? String {
-                self.port = port
-                self.localToken = token
-                self.endpoint = URL(string: "http://\(host):\(port)")
+            // A helper that cannot bind the loopback port exits before this
+            // handshake. Do not mark that failed launch as "running": doing
+            // so leaves Pi/Hermes attached to an orphaned, older Gateway.
+            guard let readyLine = readFirstLine(from: outPipe.fileHandleForReading),
+                  let data = readyLine.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let host = json["host"] as? String,
+                  let port = json["port"] as? Int,
+                  let token = json["token"] as? String else {
+                if proc.isRunning { proc.terminate() }
+                self.process = nil
+                self.outputPipe = nil
+                self.isRunning = false
+                self.startTime = nil
+                if !self.hasAttemptedStaleGatewayRecovery {
+                    self.hasAttemptedStaleGatewayRecovery = true
+                    self.statusText = "正在切换 Gateway"
+                    self.statusDetail = "检测到旧 Gateway 占用端口，正在停止并切换到当前版本。"
+                    self.requestGatewayShutdown()
+                    self.pendingRestartTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        guard !Task.isCancelled else { return }
+                        self?.start()
+                    }
+                    return
+                }
+                self.statusText = "启动失败"
+                self.statusDetail = "Gateway 未能绑定本地端口；已阻止继续连接旧 Gateway。"
+                self.lastError = "Gateway 未返回启动握手。请重启 Gateway 后重试。"
+                return
             }
+            self.port = port
+            self.localToken = token
+            self.endpoint = URL(string: "http://\(host):\(port)")
+            self.hasAttemptedStaleGatewayRecovery = false
 
             self.isRunning = true
             self.startTime = Date()
@@ -140,18 +168,15 @@ public final class GatewaySupervisor {
     public func stop() {
         guard isRunning else { return }
 
+        pendingRestartTask?.cancel()
+        pendingRestartTask = nil
+
         uptimeTimer?.invalidate()
         uptimeTimer = nil
 
         // The helper may have been launched by an earlier app process, so request
         // shutdown even when this supervisor does not own a Process instance.
-        if let endpoint = endpoint {
-            var request = URLRequest(url: endpoint.appendingPathComponent("shutdown"))
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 1
-            URLSession.shared.dataTask(with: request).resume()
-        }
+        requestGatewayShutdown()
 
         if let proc = process, proc.isRunning {
             proc.terminate()
@@ -166,6 +191,15 @@ public final class GatewaySupervisor {
         self.uptimeText = "--:--:--"
     }
 
+    private func requestGatewayShutdown() {
+        guard let endpoint else { return }
+        var request = URLRequest(url: endpoint.appendingPathComponent("shutdown"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 1
+        URLSession.shared.dataTask(with: request).resume()
+    }
+
     public func toggle() {
         if isRunning {
             stop()
@@ -176,7 +210,14 @@ public final class GatewaySupervisor {
 
     public func restart() {
         stop()
-        start()
+        // /shutdown is asynchronous for a Gateway owned by an earlier app
+        // instance. Waiting briefly before binding prevents a port race that
+        // used to keep Pi and Hermes on the stale helper binary.
+        pendingRestartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.start()
+        }
     }
 
     private var statusPollTick: Int = 0
