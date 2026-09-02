@@ -326,6 +326,7 @@ struct UsageActions {
     var loginAndFetch: () -> Void
     var disconnect: () -> Void
     var openDetachedWindow: () -> Void
+    var openGatewayWindow: (() -> Void)? = nil
     var quit: () -> Void
 }
 

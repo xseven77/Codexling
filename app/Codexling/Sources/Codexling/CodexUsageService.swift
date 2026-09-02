@@ -71,6 +71,31 @@ actor CodexUsageService {
         return try await fetchQuotaSnapshot(token: refreshed)
     }
 
+    /// 动态从官方接口获取当前授权账号下的全部可用模型列表
+    func fetchAvailableModels() async -> [String] {
+        guard let token = try? await validToken(forceLogin: false) else {
+            return []
+        }
+        let accountID = readJWTClaim(token.accessToken, namespace: "https://api.openai.com/auth", claim: "chatgpt_account_id")
+        let modelsURL = URL(string: "https://chatgpt.com/backend-api/models")!
+        if let json = try? await fetchJSON(url: modelsURL, token: token.accessToken, accountID: accountID) as? [String: Any],
+           let models = json["models"] as? [[String: Any]] {
+            let slugs = models.compactMap { $0["slug"] as? String }.filter { !$0.isEmpty }
+            if !slugs.isEmpty {
+                return slugs
+            }
+        }
+        let standardURL = URL(string: "https://api.openai.com/v1/models")!
+        if let json = try? await fetchJSON(url: standardURL, token: token.accessToken, accountID: accountID) as? [String: Any],
+           let data = json["data"] as? [[String: Any]] {
+            let ids = data.compactMap { $0["id"] as? String }.filter { !$0.isEmpty }
+            if !ids.isEmpty {
+                return ids
+            }
+        }
+        return ["gpt-5", "gpt-5-codex", "gpt-5-mini", "gpt-4.5-preview", "gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini", "chatgpt-4o-latest", "codex-mini"]
+    }
+
     func disconnect() {
         tokenStore.clear()
     }

@@ -544,6 +544,7 @@ final class StatusBarController: NSObject {
             newPanel.onClick = { [weak self] in self?.openFromNotchPanel() }
             newPanel.onOpenCurrentTask = { [weak self] in self?.openFromNotchPanel() }
             newPanel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
+            newPanel.onOpenGateway = actions.openGatewayWindow
             newPanel.onQuit = actions.quit
             newPanel.onSelectAgent = { [weak self] index in
                 self?.ticker.agentIndex = index
@@ -684,10 +685,15 @@ final class StatusBarController: NSObject {
     private func currentProviderTicks() -> [StatusBarProviderTick] {
         var ticksByKey: [String: StatusBarProviderTick] = [:]
         for account in multiAgentSettings.codexAccounts {
+            let friendlyName = GatewayStore.friendlyAccountName(
+                displayName: account.usage?.accountName,
+                email: account.usage?.accountEmail,
+                fallbackLabel: account.label
+            )
             if let tick = StatusBarProviderTickFactory.codexTick(
                 id: "codex.\(account.id.rawValue.uuidString.lowercased())",
                 label: account.label,
-                accountName: account.label,
+                accountName: friendlyName,
                 usage: account.usage,
                 isConnected: account.authenticationState == .connected
             ) {

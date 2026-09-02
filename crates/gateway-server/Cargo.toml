@@ -1,0 +1,22 @@
+[package]
+name = "gateway-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codexling-gateway"
+path = "src/main.rs"
+
+[dependencies]
+gateway-ir = { path = "../gateway-ir" }
+gateway-stream = { path = "../gateway-stream" }
+gateway-state = { path = "../gateway-state" }
+gateway-routing = { path = "../gateway-routing" }
+protocol-openai-chat = { path = "../protocol-openai-chat" }
+protocol-openai-responses = { path = "../protocol-openai-responses" }
+protocol-anthropic-messages = { path = "../protocol-anthropic-messages" }
+provider-openai-compatible = { path = "../provider-openai-compatible" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

@@ -126,11 +126,18 @@ if ! build_release_binary; then
   fi
 fi
 
+echo "Building Gateway for production..."
+cargo build --release --manifest-path ../../crates/gateway-server/Cargo.toml
+
 rm -rf "${DIST_DIR}"
 mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Helpers" "${APP_BUNDLE}/Contents/Resources"
 
 cp ".build/release/${BINARY_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 cp ".build/release/${BRIDGE_BINARY_NAME}" "${APP_BUNDLE}/Contents/Helpers/${BRIDGE_BINARY_NAME}"
+if [[ -f "../../target/release/codexling-gateway" ]]; then
+  cp "../../target/release/codexling-gateway" "${APP_BUNDLE}/Contents/Helpers/CodexlingGateway"
+  chmod +x "${APP_BUNDLE}/Contents/Helpers/CodexlingGateway"
+fi
 cp "Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 
 # OAuth 配置只进入最终 App bundle，不进入源码仓库；临时配置由 EXIT trap 删除。

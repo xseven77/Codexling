@@ -198,7 +198,7 @@ struct CompanionDashboardView: View {
         actions.refresh()
     }
 
-    /// 当前选中供应商是否为本地保存了 API Key 的连接（OpenCode / DeepSeek / Gemini）。
+    /// 当前选中供应商是否为本地保存了 API Key 的连接（OpenCode / DeepSeek）。
     private var selectedAPIKeyConnection: ConnectionID? {
         if let connection = multiAgentSettings.selectedOpenCodeConnection {
             return connection.id
@@ -3778,6 +3778,10 @@ private struct SyncFooterView: View {
                 }
                     .buttonStyle(DashboardIconButtonStyle(helpText: context.officialLinkHelp, isCompact: isCompact))
                     .contentShape(RoundedRectangle(cornerRadius: 8))
+                Button(action: { actions.openGatewayWindow?() ?? GatewayWindowController.shared.show() }) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                }
+                .buttonStyle(DashboardIconButtonStyle(helpText: "Gateway", isCompact: isCompact))
                 Button(action: onOpenSettings) { Image(systemName: "gearshape") }
                     .buttonStyle(DashboardIconButtonStyle(helpText: "设置", isCompact: isCompact))
                 if showsDetachedButton {

@@ -61,7 +61,9 @@ final class CompanionStatsStore {
     private struct Record: Codable {
         var localDay: String
         var accumulatedSeconds: TimeInterval
+        var perAgentSeconds: [String: TimeInterval]?
         var activeSince: Date?
+        var activeAgent: String?
         var lastPersistedAt: Date
     }
 
@@ -90,11 +92,20 @@ final class CompanionStatsStore {
            let decoded = try? JSONDecoder.codexling.decode(Record.self, from: data),
            decoded.localDay == day {
             record = decoded
+            let recordedSum = (record.perAgentSeconds ?? [:]).values.reduce(0, +)
+            if record.accumulatedSeconds > recordedSum {
+                let diff = record.accumulatedSeconds - recordedSum
+                var map = record.perAgentSeconds ?? [:]
+                map["antigravity", default: 0] += diff
+                record.perAgentSeconds = map
+            }
         } else {
             record = Record(
                 localDay: day,
                 accumulatedSeconds: 0,
+                perAgentSeconds: [:],
                 activeSince: nil,
+                activeAgent: nil,
                 lastPersistedAt: now
             )
         }
@@ -110,12 +121,16 @@ final class CompanionStatsStore {
         }
     }
 
-    func setActivityState(_ state: CodexActivityState, now: Date = Date()) {
+    func setActivityState(_ state: CodexActivityState, agentID: String? = nil, now: Date = Date()) {
         settle(now: now)
         if state.isCompanionActive {
             record.activeSince = now
+            if let agentID {
+                record.activeAgent = agentID
+            }
         } else {
             record.activeSince = nil
+            record.activeAgent = nil
         }
         persist(now: now)
     }
@@ -131,8 +146,25 @@ final class CompanionStatsStore {
         if settle {
             self.settle(now: now)
             record.activeSince = nil
+            record.activeAgent = nil
             persist(now: now)
         }
+    }
+
+    func seconds(for agentID: String) -> TimeInterval {
+        let agentSecs = record.perAgentSeconds?[agentID] ?? 0
+        let recordedSum = (record.perAgentSeconds ?? [:]).values.reduce(0, +)
+        let unassigned = max(0, record.accumulatedSeconds - recordedSum)
+
+        if agentID == "antigravity" {
+            let otherSecs = (record.perAgentSeconds ?? [:]).filter { $0.key != "antigravity" }.values.reduce(0, +)
+            if otherSecs == 0 {
+                return max(agentSecs, record.accumulatedSeconds)
+            } else {
+                return agentSecs + unassigned
+            }
+        }
+        return agentSecs
     }
 
     private func settle(now: Date) {
@@ -141,7 +173,9 @@ final class CompanionStatsStore {
             record = Record(
                 localDay: day,
                 accumulatedSeconds: 0,
+                perAgentSeconds: [:],
                 activeSince: record.activeSince == nil ? nil : now,
+                activeAgent: record.activeSince == nil ? nil : record.activeAgent,
                 lastPersistedAt: now
             )
         } else if let activeSince = record.activeSince {
@@ -149,6 +183,10 @@ final class CompanionStatsStore {
             // sleeping Mac cannot inflate the daily companion total.
             let increment = min(max(now.timeIntervalSince(activeSince), 0), 90)
             record.accumulatedSeconds += increment
+            let agent = record.activeAgent ?? "antigravity"
+            var agentMap = record.perAgentSeconds ?? [:]
+            agentMap[agent, default: 0] += increment
+            record.perAgentSeconds = agentMap
             record.activeSince = now
         }
         todaySeconds = record.accumulatedSeconds

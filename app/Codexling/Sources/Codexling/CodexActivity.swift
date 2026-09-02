@@ -597,6 +597,29 @@ struct CodexActivityService: Sendable {
         )
     }
 
+    func countTodayThreads(now: Date = Date()) -> Int {
+        guard let databaseURL = databaseURLs.first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }) else { return 0 }
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            databaseURL.path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+            nil
+        ) == SQLITE_OK, let database else { return 0 }
+        defer { sqlite3_close(database) }
+        let sql = "SELECT count(*) FROM threads WHERE archived = 0 AND date(updated_at, 'unixepoch', 'localtime') = date('now', 'localtime');"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        if sqlite3_step(statement) == SQLITE_ROW {
+            return Int(sqlite3_column_int(statement, 0))
+        }
+        return 0
+    }
+
     private typealias RecentThread = (
         id: String,
         rolloutPath: String,

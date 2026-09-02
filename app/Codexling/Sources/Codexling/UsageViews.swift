@@ -289,6 +289,11 @@ struct UsagePanel: View {
                     title: "退出登录",
                     action: { showLogoutConfirmation = true }
                 )
+                IconButton(
+                    systemName: "point.3.connected.trianglepath.dotted",
+                    title: "Gateway",
+                    action: { actions.openGatewayWindow?() ?? GatewayWindowController.shared.show() }
+                )
                 IconButton(systemName: "gearshape", title: "设置", action: onOpenSettings)
                 if showsDetachedButton {
                     IconButton(systemName: "rectangle.on.rectangle.angled", title: "打开窗口", action: actions.openDetachedWindow)

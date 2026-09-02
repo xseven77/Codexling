@@ -341,6 +341,7 @@ final class MultiAgentModelsTests: XCTestCase {
                 "first-key": 200_000_000,  // 0.2s
                 "second-key": 400_000_000, // 0.4s
             ]),
+            deepSeekModelsService: TestDeepSeekModelsService(),
             startsAutomaticRefresh: false,
             migratesLegacyAccount: false
         )
@@ -653,5 +654,11 @@ private actor TestDeepSeekBalanceService: DeepSeekBalanceFetching {
             toppedUp: total,
             fetchedAt: Date()
         )
+    }
+}
+
+private struct TestDeepSeekModelsService: DeepSeekModelsFetching {
+    func validate(apiKey: String) async throws -> [String] {
+        ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
     }
 }

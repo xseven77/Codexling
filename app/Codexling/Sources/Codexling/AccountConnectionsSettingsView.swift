@@ -349,10 +349,10 @@ struct AccountConnectionsModalView: View {
                         }
                     }
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color.codexOnPrimary)
                     .padding(.horizontal, 15)
                     .frame(height: 32)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
                 .disabled(store.isMutatingConnections || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -425,16 +425,15 @@ struct AccountConnectionsModalView: View {
                         }
                     }
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color.codexOnPrimary)
                     .padding(.horizontal, 15)
                     .frame(height: 32)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 7, ink: .softLight))
                 .disabled(store.isMutatingConnections || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(.top, 16)
     }
 
     private func resetFields() {

@@ -27,6 +27,7 @@ final class MultiAgentSettingsStore {
     private let codexAppServerSupervisor: CodexAppServerSupervisor
     private let credentialStore: any DeepSeekCredentialStoring
     private let deepSeekBalanceService: any DeepSeekBalanceFetching
+    private let deepSeekModelsService: any DeepSeekModelsFetching
     private let openCodeCredentialStore: any OpenCodeCredentialStoring
     private let openCodeModelsService: any OpenCodeModelsFetching
     private let geminiOAuthTokenStore: any GeminiOAuthTokenStoring
@@ -44,6 +45,9 @@ final class MultiAgentSettingsStore {
     private(set) var refreshingConnectionIDs: Set<ConnectionID> = []
     private(set) var isCodexOAuthInProgress = false
     private(set) var isGeminiOAuthInProgress = false
+    /// Existing-account OAuth is single-flight; this identifies the row that
+    /// owns the active browser authorization.
+    private(set) var activeGeminiOAuthConnectionID: ConnectionID?
     private(set) var lastMessage: String?
     private(set) var isAccountCarouselPaused = false
     private var accountCarouselPauseSources: Set<AccountCarouselPauseSource> = []
@@ -66,6 +70,7 @@ final class MultiAgentSettingsStore {
         codexAppServerSupervisor: CodexAppServerSupervisor = CodexAppServerSupervisor(),
         credentialStore: any DeepSeekCredentialStoring = DeepSeekCredentialStore(),
         deepSeekBalanceService: any DeepSeekBalanceFetching = DeepSeekBalanceService(),
+        deepSeekModelsService: any DeepSeekModelsFetching = DeepSeekModelsService(),
         openCodeCredentialStore: any OpenCodeCredentialStoring = OpenCodeCredentialStore(),
         openCodeModelsService: any OpenCodeModelsFetching = OpenCodeModelsService(),
         geminiOAuthTokenStore: any GeminiOAuthTokenStoring = GeminiOAuthTokenStore(),
@@ -79,6 +84,7 @@ final class MultiAgentSettingsStore {
         self.codexAppServerSupervisor = codexAppServerSupervisor
         self.credentialStore = credentialStore
         self.deepSeekBalanceService = deepSeekBalanceService
+        self.deepSeekModelsService = deepSeekModelsService
         self.openCodeCredentialStore = openCodeCredentialStore
         self.openCodeModelsService = openCodeModelsService
         self.geminiOAuthTokenStore = geminiOAuthTokenStore
@@ -94,6 +100,7 @@ final class MultiAgentSettingsStore {
             migrateLegacyCodexAccountIfNeeded()
         }
         connectionOrder = registry.connectionOrder
+        purgeLegacyGeminiCredentials()
         refresh()
         validateSelectedConnection()
         if startsAutomaticRefresh {
@@ -289,17 +296,21 @@ final class MultiAgentSettingsStore {
 
         if tokenStore.hasStoredToken() {
             do {
-                let snapshot = try await CodexUsageService(tokenStore: tokenStore).fetchWithStoredToken()
-                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: snapshot)
+                let service = CodexUsageService(tokenStore: tokenStore)
+                let snapshot = try await service.fetchWithStoredToken()
+                let models = await service.fetchAvailableModels()
+                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: snapshot, availableModels: models)
             } catch let codexError as CodexUsageError where codexError == .noStoredToken || codexError == .invalidTokenResponse {
                 // 令牌缺失或已失效 → 需要重新登录。
                 return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
             } catch CodexUsageError.quotaUnavailable {
                 // 令牌有效但额度接口暂不可用 → 保持「已连接」，仅保留旧额度。
-                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage)
+                let service = CodexUsageService(tokenStore: tokenStore)
+                let models = await service.fetchAvailableModels()
+                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage, availableModels: models)
             } catch {
                 // 网络抖动等瞬时错误 → 不降级，保留原状态。
-                return CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage)
+                return CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage, availableModels: connection.availableModelIDs)
             }
         }
 
@@ -333,6 +344,10 @@ final class MultiAgentSettingsStore {
             }
             if let usage = result.usage, codexAccounts[index].usage != usage {
                 codexAccounts[index].usage = usage
+                changed = true
+            }
+            if !result.availableModels.isEmpty && codexAccounts[index].availableModelIDs != result.availableModels {
+                codexAccounts[index].availableModelIDs = result.availableModels
                 changed = true
             }
         }
@@ -383,12 +398,14 @@ final class MultiAgentSettingsStore {
                 isCodexOAuthInProgress = false
             }
             let snapshot = try await service.connectAndFetch(forceLogin: true)
+            let models = await service.fetchAvailableModels()
             connection.label = normalizedLabel(
                 snapshot.accountName ?? snapshot.accountEmail,
                 fallback: fallback
             )
             connection.authenticationState = .connected
             connection.usage = snapshot
+            connection.availableModelIDs = models
             codexAccounts.append(connection)
             try saveRegistry()
             selectCodexConnection(connection)
@@ -436,6 +453,7 @@ final class MultiAgentSettingsStore {
                 isCodexOAuthInProgress = false
             }
             let snapshot = try await service.connectAndFetch(forceLogin: true)
+            let models = await service.fetchAvailableModels()
             guard let index = codexAccounts.firstIndex(where: { $0.id == connection.id }) else {
                 return false
             }
@@ -445,6 +463,7 @@ final class MultiAgentSettingsStore {
             )
             codexAccounts[index].authenticationState = .connected
             codexAccounts[index].usage = snapshot
+            codexAccounts[index].availableModelIDs = models
             try saveRegistry()
             lastMessage = "已登录并更新 \(codexAccounts[index].label)"
             return true
@@ -501,6 +520,52 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    func toggleConnectionProxyEnabled(id: ConnectionID) {
+        if let idx = codexAccounts.firstIndex(where: { $0.id == id }) {
+            codexAccounts[idx].isEnabled.toggle()
+            try? saveRegistry()
+            return
+        }
+        if let idx = geminiConnections.firstIndex(where: { $0.id == id }) {
+            geminiConnections[idx].isEnabled.toggle()
+            try? saveRegistry()
+            return
+        }
+        if let idx = deepSeekConnections.firstIndex(where: { $0.id == id }) {
+            deepSeekConnections[idx].isEnabled.toggle()
+            try? saveRegistry()
+            return
+        }
+        if let idx = openCodeConnections.firstIndex(where: { $0.id == id }) {
+            openCodeConnections[idx].isEnabled.toggle()
+            try? saveRegistry()
+            return
+        }
+    }
+
+    func setConnectionProxyEnabled(id: ConnectionID, enabled: Bool) {
+        if let idx = geminiConnections.firstIndex(where: { $0.id == id }) {
+            geminiConnections[idx].isEnabled = enabled
+            try? saveRegistry()
+            return
+        }
+        if let idx = codexAccounts.firstIndex(where: { $0.id == id }) {
+            codexAccounts[idx].isEnabled = enabled
+            try? saveRegistry()
+            return
+        }
+        if let idx = deepSeekConnections.firstIndex(where: { $0.id == id }) {
+            deepSeekConnections[idx].isEnabled = enabled
+            try? saveRegistry()
+            return
+        }
+        if let idx = openCodeConnections.firstIndex(where: { $0.id == id }) {
+            openCodeConnections[idx].isEnabled = enabled
+            try? saveRegistry()
+            return
+        }
+    }
+
     func addDeepSeekConnection(label: String, apiKey: String) async -> Bool {
         guard !isMutatingConnections else { return false }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -516,6 +581,7 @@ final class MultiAgentSettingsStore {
         do {
             try credentialStore.save(apiKey: trimmedKey, handle: handle)
             let balance = try await deepSeekBalanceService.fetch(apiKey: trimmedKey, connectionID: id)
+            let models = (try? await deepSeekModelsService.validate(apiKey: trimmedKey)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
             let connection = DeepSeekAPIConnection(
                 id: id,
                 label: normalizedLabel(label, fallback: "DeepSeek Key \(deepSeekConnections.count + 1)"),
@@ -523,6 +589,7 @@ final class MultiAgentSettingsStore {
                 keySuffix: String(trimmedKey.suffix(4)),
                 authenticationState: .connected,
                 balance: balance,
+                availableModelIDs: models,
                 createdAt: Date()
             )
             deepSeekConnections.append(connection)
@@ -562,6 +629,7 @@ final class MultiAgentSettingsStore {
             try credentialStore.save(apiKey: trimmedKey, handle: connection.credentialHandle)
             do {
                 let balance = try await deepSeekBalanceService.fetch(apiKey: trimmedKey, connectionID: connection.id)
+                let models = (try? await deepSeekModelsService.validate(apiKey: trimmedKey)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
                 guard let index = deepSeekConnections.firstIndex(where: { $0.id == connectionID }) else {
                     return false
                 }
@@ -569,6 +637,7 @@ final class MultiAgentSettingsStore {
                 deepSeekConnections[index].keySuffix = String(trimmedKey.suffix(4))
                 deepSeekConnections[index].authenticationState = .connected
                 deepSeekConnections[index].balance = balance
+                deepSeekConnections[index].availableModelIDs = models
                 try saveRegistry()
                 lastMessage = "DeepSeek Key 已更新并验证"
                 return true
@@ -599,10 +668,12 @@ final class MultiAgentSettingsStore {
         do {
             let key = try credentialStore.read(handle: connection.credentialHandle)
             let balance = try await deepSeekBalanceService.fetch(apiKey: key, connectionID: connection.id)
+            let models = (try? await deepSeekModelsService.validate(apiKey: key)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
             guard let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) else {
                 return RefreshOutcome(failures: ["\(connection.label)：连接已不存在"])
             }
             deepSeekConnections[index].balance = balance
+            deepSeekConnections[index].availableModelIDs = models
             deepSeekConnections[index].authenticationState = .connected
             try saveRegistry()
             if publishesMessage { lastMessage = "\(connection.label) 余额已刷新" }
@@ -886,13 +957,16 @@ final class MultiAgentSettingsStore {
     func authenticateGeminiAccount(_ connection: GeminiAccountConnection) async -> Bool {
         guard !isMutatingConnections else { return false }
         isMutatingConnections = true
+        activeGeminiOAuthConnectionID = connection.id
         defer { isMutatingConnections = false }
         do {
+            lastMessage = "正在打开 Google 重新授权页面…"
             activeGeminiOAuthService = geminiOAuthService
             isGeminiOAuthInProgress = true
             defer {
                 activeGeminiOAuthService = nil
                 isGeminiOAuthInProgress = false
+                activeGeminiOAuthConnectionID = nil
             }
             let token = try await geminiOAuthService.startOAuth(forceLogin: true)
             try geminiOAuthTokenStore.save(token, handle: connection.credentialHandle)
@@ -1001,10 +1075,21 @@ final class MultiAgentSettingsStore {
         if let email = snapshot.userEmail, !email.isEmpty {
             geminiConnections[index].email = email
         }
-        geminiConnections[index].availableModelCount = snapshot.availableModelCount
-        geminiConnections[index].availableModelIDs = snapshot.availableModels
-        geminiConnections[index].projectId = snapshot.projectId
-        geminiConnections[index].projectName = snapshot.projectName
+        // A quota/network/OAuth failure does not mean that the account lost
+        // every previously discovered Cloud Code model.  Keep the last known
+        // registry until a successful Cloud Code response supplies a new
+        // non-empty catalog; otherwise a background refresh would erase the
+        // entire Gateway model list before the user can reauthorize.
+        if !snapshot.availableModels.isEmpty {
+            geminiConnections[index].availableModelCount = snapshot.availableModelCount
+            geminiConnections[index].availableModelIDs = snapshot.availableModels
+        }
+        if let projectID = snapshot.projectId, !projectID.isEmpty {
+            geminiConnections[index].projectId = projectID
+        }
+        if let projectName = snapshot.projectName, !projectName.isEmpty {
+            geminiConnections[index].projectName = projectName
+        }
         geminiConnections[index].tier = snapshot.tier
         geminiConnections[index].isBillingEnabled = snapshot.isBillingEnabled
         geminiConnections[index].dailyRequestsLimit = snapshot.dailyRequestsLimit
@@ -1202,6 +1287,20 @@ final class MultiAgentSettingsStore {
         ))
     }
 
+    /// Gemini proxy traffic is OAuth-only. Remove pre-OAuth credential files
+    /// and rewrite the registry so obsolete fields disappear.
+    private func purgeLegacyGeminiCredentials() {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/gemini_credentials", isDirectory: true)
+        for connection in geminiConnections {
+            for extensionName in ["key", "json"] {
+                let legacyCredential = root.appendingPathComponent("\(connection.credentialHandle).\(extensionName)")
+                try? FileManager.default.removeItem(at: legacyCredential)
+            }
+        }
+        try? saveRegistry()
+    }
+
     private func normalizedLabel(_ value: String, fallback: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : String(trimmed.prefix(60))
@@ -1284,4 +1383,5 @@ private struct CodexAccountRefreshResult: Sendable {
     let id: ConnectionID
     let state: ConnectionAuthenticationState
     let usage: CodexUsageSnapshot?
+    var availableModels: [String] = []
 }

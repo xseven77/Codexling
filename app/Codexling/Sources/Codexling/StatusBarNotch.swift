@@ -431,10 +431,15 @@ enum StatusBarProviderTickFactory {
         } else {
             .green
         }
+        let friendlyName = GatewayStore.friendlyAccountName(
+            displayName: connection.displayName,
+            email: connection.email,
+            fallbackLabel: connection.label
+        )
         return StatusBarProviderTick(
             id: "gemini.\(connection.id.rawValue.uuidString.lowercased())",
             providerName: "Gemini",
-            accountName: connection.label,
+            accountName: friendlyName,
             asset: .googleGemini,
             quotaText: quotaText,
             detailText: connection.resolvedPlanDisplayName,

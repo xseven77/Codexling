@@ -64,6 +64,20 @@ struct AntigravityActivityService: Sendable {
         )
     }
 
+    func countTodaySessions(now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let conversationsDir = antigravityRoot.appendingPathComponent("conversations", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: conversationsDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        return files.filter { file in
+            guard file.pathExtension == "db" else { return false }
+            let mod = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            return calendar.isDateInToday(mod)
+        }.count
+    }
+
     struct Session {
         let id: String
         let title: String

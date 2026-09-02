@@ -71,8 +71,9 @@ enum BuiltInAgentCatalog {
     ]
 }
 
-struct ConnectionID: RawRepresentable, Hashable, Codable, Sendable {
-    let rawValue: UUID
+public struct ConnectionID: RawRepresentable, Hashable, Codable, Sendable {
+    public let rawValue: UUID
+    public init(rawValue: UUID) { self.rawValue = rawValue }
 }
 
 enum ConnectionIsolation: Hashable, Codable, Sendable {
@@ -204,7 +205,57 @@ struct CodexAccountConnection: Identifiable, Equatable, Codable, Sendable {
     var isEnabled: Bool
     /// 该 Codex 连接的全量快照（额度/账单/重置券）。
     var usage: CodexUsageSnapshot? = nil
+    /// 可访问的模型 id 列表（来自官方接口动态获取）。
+    var availableModelIDs: [String] = []
     let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, relativeHomeDirectory, authenticationState, isEnabled, usage, availableModelIDs, createdAt
+    }
+
+    init(
+        id: ConnectionID,
+        label: String,
+        relativeHomeDirectory: String,
+        authenticationState: ConnectionAuthenticationState,
+        isEnabled: Bool,
+        usage: CodexUsageSnapshot? = nil,
+        availableModelIDs: [String] = [],
+        createdAt: Date
+    ) {
+        self.id = id
+        self.label = label
+        self.relativeHomeDirectory = relativeHomeDirectory
+        self.authenticationState = authenticationState
+        self.isEnabled = isEnabled
+        self.usage = usage
+        self.availableModelIDs = availableModelIDs
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ConnectionID.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        relativeHomeDirectory = try container.decode(String.self, forKey: .relativeHomeDirectory)
+        authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        usage = try container.decodeIfPresent(CodexUsageSnapshot.self, forKey: .usage)
+        availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(relativeHomeDirectory, forKey: .relativeHomeDirectory)
+        try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encodeIfPresent(usage, forKey: .usage)
+        try container.encode(availableModelIDs, forKey: .availableModelIDs)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
@@ -213,8 +264,63 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
     let credentialHandle: String
     var keySuffix: String
     var authenticationState: ConnectionAuthenticationState
+    var isEnabled: Bool = true
     var balance: ProviderBalanceSnapshot?
+    /// 可访问的模型 id 列表（来自官方接口动态获取）。
+    var availableModelIDs: [String] = []
     let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, credentialHandle, keySuffix, authenticationState, isEnabled, balance, availableModelIDs, createdAt
+    }
+
+    init(
+        id: ConnectionID,
+        label: String,
+        credentialHandle: String,
+        keySuffix: String,
+        authenticationState: ConnectionAuthenticationState,
+        isEnabled: Bool = true,
+        balance: ProviderBalanceSnapshot? = nil,
+        availableModelIDs: [String] = [],
+        createdAt: Date
+    ) {
+        self.id = id
+        self.label = label
+        self.credentialHandle = credentialHandle
+        self.keySuffix = keySuffix
+        self.authenticationState = authenticationState
+        self.isEnabled = isEnabled
+        self.balance = balance
+        self.availableModelIDs = availableModelIDs
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ConnectionID.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        credentialHandle = try container.decode(String.self, forKey: .credentialHandle)
+        keySuffix = try container.decode(String.self, forKey: .keySuffix)
+        authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        balance = try container.decodeIfPresent(ProviderBalanceSnapshot.self, forKey: .balance)
+        availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(credentialHandle, forKey: .credentialHandle)
+        try container.encode(keySuffix, forKey: .keySuffix)
+        try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encodeIfPresent(balance, forKey: .balance)
+        try container.encode(availableModelIDs, forKey: .availableModelIDs)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 /// OpenCode Go 与 Zen 使用相同的 API Key 凭据机制，但它们是两种不同的
@@ -250,6 +356,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
     let credentialHandle: String
     var keySuffix: String
     var authenticationState: ConnectionAuthenticationState
+    var isEnabled: Bool = true
     var availableModelCount: Int?
     /// 可访问的模型 id 列表（用于「点击查看模型列表」弹窗）。
     var availableModelIDs: [String] = []
@@ -259,11 +366,8 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
     var workspaceURL: String?
     let createdAt: Date
 
-    /// Custom Codable so `availableModelIDs` decodes as `[]` when absent
-    /// (older saved registries), preventing a decode failure that would wipe
-    /// the whole connection registry on load.
     enum CodingKeys: String, CodingKey {
-        case id, label, plan, credentialHandle, keySuffix, authenticationState
+        case id, label, plan, credentialHandle, keySuffix, authenticationState, isEnabled
         case availableModelCount, availableModelIDs, lastValidatedAt, workspaceURL, createdAt
     }
 
@@ -274,6 +378,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
         credentialHandle: String,
         keySuffix: String,
         authenticationState: ConnectionAuthenticationState,
+        isEnabled: Bool = true,
         availableModelCount: Int? = nil,
         availableModelIDs: [String] = [],
         lastValidatedAt: Date? = nil,
@@ -286,6 +391,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
         self.credentialHandle = credentialHandle
         self.keySuffix = keySuffix
         self.authenticationState = authenticationState
+        self.isEnabled = isEnabled
         self.availableModelCount = availableModelCount
         self.availableModelIDs = availableModelIDs
         self.lastValidatedAt = lastValidatedAt
@@ -301,6 +407,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
         credentialHandle = try container.decode(String.self, forKey: .credentialHandle)
         keySuffix = try container.decode(String.self, forKey: .keySuffix)
         authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         availableModelCount = try container.decodeIfPresent(Int.self, forKey: .availableModelCount)
         availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
         lastValidatedAt = try container.decodeIfPresent(Date.self, forKey: .lastValidatedAt)
@@ -316,6 +423,7 @@ struct OpenCodeAPIConnection: Identifiable, Equatable, Codable, Sendable {
         try container.encode(credentialHandle, forKey: .credentialHandle)
         try container.encode(keySuffix, forKey: .keySuffix)
         try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encode(isEnabled, forKey: .isEnabled)
         try container.encodeIfPresent(availableModelCount, forKey: .availableModelCount)
         try container.encode(availableModelIDs, forKey: .availableModelIDs)
         try container.encodeIfPresent(lastValidatedAt, forKey: .lastValidatedAt)
@@ -334,6 +442,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
     var avatarURL: String?
     let credentialHandle: String
     var authenticationState: ConnectionAuthenticationState
+    var isEnabled: Bool = true
     var availableModelCount: Int?
     var availableModelIDs: [String] = []
     var projectId: String?
@@ -359,7 +468,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, label, email, displayName, avatarURL, credentialHandle
-        case authenticationState, availableModelCount, availableModelIDs
+        case authenticationState, isEnabled, availableModelCount, availableModelIDs
         case projectId, projectName, tier, isBillingEnabled
         case dailyRequestsLimit, minuteRequestsLimit, minuteTokensLimit
         case planName, geminiWeeklyRemaining, geminiWeeklyResetDesc
@@ -377,6 +486,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         avatarURL: String? = nil,
         credentialHandle: String,
         authenticationState: ConnectionAuthenticationState,
+        isEnabled: Bool = true,
         availableModelCount: Int? = nil,
         availableModelIDs: [String] = [],
         projectId: String? = nil,
@@ -407,6 +517,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         self.avatarURL = avatarURL
         self.credentialHandle = credentialHandle
         self.authenticationState = authenticationState
+        self.isEnabled = isEnabled
         self.availableModelCount = availableModelCount
         self.availableModelIDs = availableModelIDs
         self.projectId = projectId
@@ -440,6 +551,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         avatarURL = try container.decodeIfPresent(String.self, forKey: .avatarURL)
         credentialHandle = try container.decode(String.self, forKey: .credentialHandle)
         authenticationState = try container.decode(ConnectionAuthenticationState.self, forKey: .authenticationState)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         availableModelCount = try container.decodeIfPresent(Int.self, forKey: .availableModelCount)
         availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
         projectId = try container.decodeIfPresent(String.self, forKey: .projectId)
@@ -473,6 +585,7 @@ struct GeminiAccountConnection: Identifiable, Equatable, Codable, Sendable {
         try container.encodeIfPresent(avatarURL, forKey: .avatarURL)
         try container.encode(credentialHandle, forKey: .credentialHandle)
         try container.encode(authenticationState, forKey: .authenticationState)
+        try container.encode(isEnabled, forKey: .isEnabled)
         try container.encodeIfPresent(availableModelCount, forKey: .availableModelCount)
         try container.encode(availableModelIDs, forKey: .availableModelIDs)
         try container.encodeIfPresent(projectId, forKey: .projectId)

@@ -133,6 +133,7 @@ final class NotchCapsuleViewModel {
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onOpenGateway: (() -> Void)?
     var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
@@ -200,6 +201,7 @@ final class NotchCapsulePanelController {
     var onRefreshProvider: (() -> Void)?
     var onOpenCurrentTask: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onOpenGateway: (() -> Void)?
     var onQuit: (() -> Void)?
     var onOpenAgentTask: ((StatusBarAgentTick) -> Void)?
     var onAgentHover: ((Bool) -> Void)?
@@ -275,6 +277,7 @@ final class NotchCapsulePanelController {
         viewModel.onRefreshProvider = { [weak self] in self?.onRefreshProvider?() }
         viewModel.onOpenCurrentTask = { [weak self] in self?.onOpenCurrentTask?() }
         viewModel.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
+        viewModel.onOpenGateway = { [weak self] in self?.onOpenGateway?() }
         viewModel.onQuit = { [weak self] in self?.onQuit?() }
         viewModel.onOpenAgentTask = { [weak self] tick in self?.onOpenAgentTask?(tick) }
         viewModel.onAgentHover = { [weak self] hovering in self?.onAgentHover?(hovering) }
@@ -723,6 +726,7 @@ private struct NotchCapsuleView: View {
 
     private enum FooterAction: Equatable {
         case settings
+        case gateway
         case quit
         case dragLock
         case resetCenter
@@ -1235,6 +1239,14 @@ private struct NotchCapsuleView: View {
                     tooltip: "打开设置"
                 ) {
                     viewModel.onOpenSettings?()
+                }
+
+                footerActionButton(
+                    action: .gateway,
+                    icon: "point.3.connected.trianglepath.dotted",
+                    tooltip: "打开 Gateway"
+                ) {
+                    viewModel.onOpenGateway?()
                 }
 
                 if !viewModel.isBuiltin {

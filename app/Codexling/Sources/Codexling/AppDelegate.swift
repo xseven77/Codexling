@@ -82,9 +82,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pet: self?.settingsStore.selectedPet,
                 activityState: snapshot.state
             )
-            self?.companionStatsStore.setActivityState(snapshot.state)
+            let activeAgent: String? = {
+                if let task = snapshot.activeTasks.first(where: { $0.state.showsActivityWave }) {
+                    if task.id.hasPrefix("antigravity:") { return "antigravity" }
+                    if task.id.hasPrefix("dsh:") { return "dsh" }
+                    if task.id.hasPrefix("hermes:") { return "hermes" }
+                    return "codex"
+                }
+                return nil
+            }()
+            self?.companionStatsStore.setActivityState(snapshot.state, agentID: activeAgent)
             self?.statusController?.refreshStatusTitle()
         }
+
+        GatewayStore.shared.bind(
+            activityStore: activityStore,
+            companionStatsStore: companionStatsStore
+        )
+        GatewayWindowController.shared.multiAgentSettingsStore = multiAgentSettingsStore
 
         let actions = UsageActions(
             refresh: { [weak self] in
@@ -108,6 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             openDetachedWindow: { [weak self] in
                 self?.openDetachedWindow()
+            },
+            openGatewayWindow: {
+                GatewayWindowController.shared.show()
             },
             quit: {
                 NSApp.terminate(nil)

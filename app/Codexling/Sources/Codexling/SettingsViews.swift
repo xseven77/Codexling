@@ -14,6 +14,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case accounts
     case agents
+    case gateway
     case pet
 
     var id: String { rawValue }
@@ -22,6 +23,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "账户池"
         case .agents: "Agents 与 Hooks"
+        case .gateway: "Gateway"
         case .general: "通用"
         case .pet: "状态栏与 Pet"
         }
@@ -31,6 +33,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "管理本机账号与 API Key"
         case .agents: "接入并管理本地 Coding Agent"
+        case .gateway: "本地多协议 LLM 网关与遥测"
         case .general: "更新、外观、布局与刷新"
         case .pet: "菜单栏、任务浮窗与 Pet"
         }
@@ -40,6 +43,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "person.2"
         case .agents: "terminal"
+        case .gateway: "point.3.connected.trianglepath.dotted"
         case .general: "slider.horizontal.3"
         case .pet: "pawprint"
         }
@@ -216,7 +220,10 @@ struct SettingsView: View {
 
     private var alertContent: some View {
         toastTrackingContent
-            .alert("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
+            // Keep this separate from the account-deletion Alert below. Two
+            // `alert` modifiers on the same view can cause macOS SwiftUI to
+            // silently drop one of them.
+            .confirmationDialog("重启 Codex 以切换 Pet？", isPresented: $showsCodexRestartConfirmation) {
                 Button("取消", role: .cancel) {}
                 Button("重启 Codex", role: .destructive) {
                     restartCodex()
@@ -460,6 +467,8 @@ struct SettingsView: View {
                 accountPoolSection
             case .agents:
                 agentIntegrationsSection
+            case .gateway:
+                gatewaySection
             case .general:
                 updateSection
             case .pet:
@@ -468,6 +477,73 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var gatewaySection: some View {
+        SettingsSection(
+            title: "本地 Agent Gateway",
+            subtitle: "统一代理本地 Coding Agent 流量，提供模型别名与实时遥测"
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 14) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 26))
+                        .foregroundStyle(gatewayStatusColor)
+                        .frame(width: 44, height: 44)
+                        .background(gatewayStatusColor.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("本地多协议 LLM 网关")
+                            .font(.system(size: 13.5, weight: .bold))
+                        Text("\(GatewaySupervisor.shared.statusText) · \(GatewaySupervisor.shared.endpoint?.absoluteString ?? "http://127.0.0.1:58349") · \(GatewaySupervisor.shared.activeRequests) 个活跃请求")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        GatewayWindowController.shared.show()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "macwindow.on.rectangle")
+                            Text("打开 Gateway")
+                        }
+                        .font(.system(size: 12.5, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .foregroundStyle(Color.codexOnPrimary)
+                        .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(14)
+                .background(Color.codexCard)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                    Text("Gateway 在独立窗口中管理；关闭窗口不会停止服务。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    private var gatewayStatusColor: Color {
+        let supervisor = GatewaySupervisor.shared
+        if !supervisor.isRunning {
+            return Color.codexRed
+        }
+        if supervisor.lastError != nil {
+            return Color.codexAmber
+        }
+        return Color.codexGreen
     }
 
     private var stickySettingsTitle: some View {
@@ -546,10 +622,16 @@ struct SettingsView: View {
                                 subtitle: connection.usage?.accountEmail ?? "Codex 账号",
                                 badge: connection.authenticationState == .connected ? "已连接" : "待登录",
                                 badgeColor: connection.authenticationState == .connected ? Color.codexGreen : Color.codexAmber,
-                                actionTitle: "删除"
-                            ) {
-                                pendingAccountRemoval = .codex(connection)
-                            }
+                                actionTitle: "删除",
+                                action: {
+                                    pendingAccountRemoval = .codex(connection)
+                                },
+                                onReauth: connection.authenticationState != .connected ? {
+                                    Task {
+                                        _ = await multiAgentSettings.authenticateCodexAccount(connection)
+                                    }
+                                } : nil
+                            )
                             if connection.id != multiAgentSettings.codexAccounts.last?.id {
                                 CodexDivider()
                             }
@@ -570,14 +652,17 @@ struct SettingsView: View {
                                 subtitle: "sk-•••• \(connection.keySuffix)",
                                 badge: deepSeekPoolBadge(connection),
                                 badgeColor: deepSeekPoolColor(connection),
-                                actionTitle: "删除"
-                            ) {
-                                pendingAccountRemoval = .deepSeek(connection)
-                            } onReveal: {
-                                presentAPIKeyReveal(for: connection.id)
-                            } onEdit: {
-                                presentConnectionEdit(for: connection.id)
-                            }
+                                actionTitle: "删除",
+                                action: {
+                                    pendingAccountRemoval = .deepSeek(connection)
+                                },
+                                onReveal: {
+                                    presentAPIKeyReveal(for: connection.id)
+                                },
+                                onEdit: {
+                                    presentConnectionEdit(for: connection.id)
+                                }
+                            )
                             if connection.id != multiAgentSettings.deepSeekConnections.last?.id {
                                 CodexDivider()
                             }
@@ -592,16 +677,30 @@ struct SettingsView: View {
                         count: multiAgentSettings.geminiConnections.count
                     ) {
                         ForEach(multiAgentSettings.geminiConnections) { connection in
+                            let isThisConnectionAuthorizing =
+                                multiAgentSettings.isGeminiOAuthInProgress
+                                && multiAgentSettings.activeGeminiOAuthConnectionID == connection.id
+                            let isAnotherConnectionAuthorizing =
+                                multiAgentSettings.isGeminiOAuthInProgress
+                                && !isThisConnectionAuthorizing
                             accountPoolRow(
                                 asset: .googleGemini,
-                                title: connection.label,
-                                subtitle: (connection.email ?? connection.displayName ?? "Google OAuth") + " · Generative Language",
+                                title: connection.displayName ?? connection.email ?? connection.label,
+                                subtitle: geminiSubtitle(connection),
                                 badge: geminiPoolBadge(connection),
                                 badgeColor: geminiPoolColor(connection),
-                                actionTitle: "删除"
-                            ) {
-                                pendingAccountRemoval = .gemini(connection)
-                            }
+                                actionTitle: "删除",
+                                action: {
+                                    pendingAccountRemoval = .gemini(connection)
+                                },
+                                onReauth: isThisConnectionAuthorizing ? nil : {
+                                    Task { _ = await multiAgentSettings.authenticateGeminiAccount(connection) }
+                                },
+                                isReauthDisabled: isAnotherConnectionAuthorizing,
+                                onCancelReauth: isThisConnectionAuthorizing ? {
+                                    multiAgentSettings.cancelCurrentGeminiOAuth()
+                                } : nil
+                            )
                             if connection.id != multiAgentSettings.geminiConnections.last?.id {
                                 CodexDivider()
                             }
@@ -732,7 +831,10 @@ struct SettingsView: View {
         actionTitle: String,
         action: @escaping () -> Void,
         onReveal: (() -> Void)? = nil,
-        onEdit: (() -> Void)? = nil
+        onEdit: (() -> Void)? = nil,
+        onReauth: (() -> Void)? = nil,
+        isReauthDisabled: Bool = false,
+        onCancelReauth: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: 12) {
             BrandIconView(asset: asset, size: 38, cornerRadius: 10)
@@ -779,6 +881,34 @@ struct SettingsView: View {
                     .overlay {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .stroke(Color.accentColor.opacity(0.16), lineWidth: 0.7)
+                    }
+            }
+            if let onReauth {
+                Button("重新授权", action: onReauth)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.codexAmber)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.codexAmber.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.codexAmber.opacity(0.20), lineWidth: 0.7)
+                    }
+                    .disabled(isReauthDisabled)
+                    .opacity(isReauthDisabled ? 0.42 : 1)
+            }
+            if let onCancelReauth {
+                Button("取消授权", action: onCancelReauth)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.codexMuted.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.codexMuted.opacity(0.18), lineWidth: 0.7)
                     }
             }
             Button(actionTitle, action: action)
@@ -860,6 +990,11 @@ struct SettingsView: View {
                 showToast(error.localizedDescription, systemImage: "lock.fill")
             }
         }
+    }
+
+    private func geminiSubtitle(_ connection: GeminiAccountConnection) -> String {
+        let base = connection.email ?? connection.label
+        return "\(base) · Google OAuth 授权"
     }
 
     private func makeEditTarget(for connectionID: ConnectionID, apiKey: String) -> AccountConnectionEditTarget? {
@@ -1753,6 +1888,8 @@ private final class ScrollIndicatorHiderView: NSView {
         scrollView.horizontalScroller?.isHidden = true
         scrollView.verticalScroller?.alphaValue = 0
         scrollView.horizontalScroller?.alphaValue = 0
+        scrollView.verticalScroller = nil
+        scrollView.horizontalScroller = nil
         scrollView.autohidesScrollers = true
         scrollView.scrollerInsets = NSEdgeInsetsZero
         scrollView.automaticallyAdjustsContentInsets = false

@@ -12,6 +12,9 @@ struct GeminiOAuthToken: Codable, Sendable {
     let email: String?
     let displayName: String?
     let avatarURL: String?
+    /// Public OAuth client ID used to refresh this user-owned token from the
+    /// Gateway helper without relying on an API key.
+    let clientID: String?
     /// 用于区分旧版或其他应用签发的 OAuth 凭证与 Codexling 自有客户端凭证。
     let authorizationProfile: String?
 
@@ -189,7 +192,11 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
     private let authorizationURL = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     private let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
     private let userInfoURL = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
-    private let cloudCodeBaseURL = URL(string: "https://cloudcode-pa.googleapis.com")!
+    // Antigravity's Cloud Code control plane (account/project discovery,
+    // model catalog and quota) lives on the daily host.  `cloudcode-pa` is a
+    // different public endpoint and returns incomplete/empty results for an
+    // Antigravity OAuth session.
+    private let cloudCodeBaseURL = URL(string: "https://daily-cloudcode-pa.googleapis.com")!
 
     private let scopes = [
         "https://www.googleapis.com/auth/cloud-platform",
@@ -277,6 +284,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             email: userInfo?.email,
             displayName: userInfo?.name,
             avatarURL: userInfo?.picture,
+            clientID: clientID,
             authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
         )
     }
@@ -326,6 +334,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             email: userInfo?.email ?? token.email,
             displayName: userInfo?.name ?? token.displayName,
             avatarURL: userInfo?.picture ?? token.avatarURL,
+            clientID: token.clientID ?? clientID,
             authorizationProfile: GeminiOAuthToken.currentAuthorizationProfile
         )
     }
@@ -493,10 +502,18 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         )
         let decoded = try JSONDecoder().decode(AntigravityAvailableModelsResponse.self, from: data)
         return decoded.models.compactMap { id, model in
-            guard model.isInternal != true, !(model.displayName ?? "").isEmpty else { return nil }
-            return model.model ?? id
+            // A few Cloud Code catalog entries (notably Gemini 3.7 Flash)
+            // intentionally omit `displayName`.  The catalog key is still the
+            // canonical, callable model name, so never hide a public model
+            // merely because that optional presentation field is absent.
+            guard model.isInternal != true, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            // Cloud Code's `generateContent` envelope expects the catalog key
+            // (for example `gemini-2.5-flash`), not the implementation enum
+            // carried in `model` (for example `MODEL_GOOGLE_…`).
+            return id
         }.sorted()
     }
+
 
     private func fetchAntigravityQuota(accessToken: String, project: String) async throws -> AntigravityRemoteQuota {
         let data = try await postCloudCode(
@@ -518,14 +535,11 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         request.timeoutInterval = 15
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if legacyClientSecret != nil {
-            // 旧 Antigravity OAuth Client 会根据客户端元数据裁剪 loadCodeAssist 响应。
-            // 仅本机兼容配置启用；Codexling 自有 Desktop Client 不发送这些标识。
-            request.setValue("antigravity", forHTTPHeaderField: "User-Agent")
-            request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
-        } else {
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        }
+        // These are Cloud Code protocol headers, not API-key credentials.
+        // Without the Antigravity IDE metadata, loadCodeAssist can return an
+        // empty capability/project response even for a valid OAuth token.
+        request.setValue("antigravity", forHTTPHeaderField: "User-Agent")
+        request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
 
         let (data, response) = try await session.data(for: request)
