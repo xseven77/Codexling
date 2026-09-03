@@ -4,6 +4,7 @@ import SwiftUI
 enum BrandAssetID: String, Sendable {
     case codex
     case hermesAgent = "hermes-agent"
+    case piAgent = "pi-agent"
     case deepSeek = "deepseek"
     case openCode = "opencode"
     case antigravity = "antigravity"
@@ -37,7 +38,7 @@ enum BrandAssetCatalog {
             .appendingPathComponent(id.rawValue, isDirectory: true) else { return nil }
         // Codex, Hermes, Antigravity, and Google Gemini use official raster exports
         let candidates: [String]
-        if (id == .codex || id == .hermesAgent || id == .antigravity || id == .googleGemini), prefersColor {
+        if (id == .codex || id == .hermesAgent || id == .piAgent || id == .antigravity || id == .googleGemini), prefersColor {
             candidates = ["app-icon.png", "color.svg", "icon.svg"]
         } else {
             candidates = prefersColor
@@ -83,7 +84,7 @@ struct BrandIconView: View {
         // Raster-first icons already include a white tile and optical
         // padding, so the generic inset would make their artwork too small.
         switch asset {
-        case .codex, .hermesAgent, .antigravity, .googleGemini:
+        case .codex, .hermesAgent, .piAgent, .antigravity, .googleGemini:
             size * 0.10
         case .deepSeek, .openCode, .geminiCLI:
             size * 0.16

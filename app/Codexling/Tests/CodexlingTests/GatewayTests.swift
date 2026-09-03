@@ -23,6 +23,53 @@ final class GatewayTests: XCTestCase {
         )
     }
 
+    func testConnectionShortIDAndCompositeModelFormatting() {
+        let uuid = UUID(uuidString: "12345678-ABCD-EF01-2345-6789ABCDEF01")!
+        let connID = ConnectionID(rawValue: uuid)
+        let shortID = GatewayStore.connectionShortID(id: connID)
+        XCTAssertEqual(shortID, "12345678")
+
+        let slug = "\(GatewayStore.accountSlug(name: "Work"))-google-\(shortID)"
+        XCTAssertEqual(slug, "work-google-12345678")
+
+        let agentModelID = GatewayStore.agentCompatibleModelID("gemini-2.5-flash (\(slug))")
+        XCTAssertEqual(agentModelID, "gemini-2.5-flash@work-google-12345678")
+    }
+
+    func testCodexServableSlugsReadsCliauthoritativeCacheAndExcludesHidden() throws {
+        let fm = FileManager.default
+        let runtimesRoot = fm.temporaryDirectory.appendingPathComponent("codex-runtimes-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: runtimesRoot) }
+        let relative = "abc123-def456"
+        let home = runtimesRoot.appendingPathComponent(relative, isDirectory: true)
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try """
+        {"models":[
+          {"slug":"gpt-reserve","visibility":"hide","display_name":"Reserve"},
+          {"slug":"codex-auto-review","visibility":"hide","display_name":"Review"},
+          {"slug":"gpt-5.6-sol","visibility":"list","display_name":"GPT-5.6 Sol"},
+          {"slug":"gpt-brand-new","visibility":"list"}
+        ]}
+        """.data(using: .utf8)!.write(to: home.appendingPathComponent("models_cache.json"))
+
+        // availableModelIDs is the ChatGPT-side catalog, which codex exec rejects.
+        let connection = CodexAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Seven X",
+            relativeHomeDirectory: relative,
+            authenticationState: .connected,
+            isEnabled: true,
+            usage: nil,
+            availableModelIDs: ["gpt-5-6-t-mini"],
+            createdAt: Date()
+        )
+        let slugs = GatewayStore.codexServableSlugs(from: connection, runtimesRoot: runtimesRoot)
+        XCTAssertEqual(slugs, ["gpt-5.6-sol", "gpt-brand-new"])
+        XCTAssertFalse(slugs.contains("gpt-reserve"))
+        XCTAssertFalse(slugs.contains("codex-auto-review"))
+        XCTAssertFalse(slugs.contains("gpt-5-6-t-mini"), "ChatGPT catalog models must never be exported")
+    }
+
     func testHermesGatewayConfigurationUsesOfficialCustomProviderContractAndVerifiesWrites() throws {
         let configURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("hermes-config-\(UUID().uuidString).yaml")
@@ -46,11 +93,12 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(runner.values["providers.codexling.discover_models"], "false")
         XCTAssertEqual(runner.values["providers.codexling.models"], "[\"deepseek-chat\",\"gemini-3.1-pro-preview\"]")
         XCTAssertEqual(runner.values["providers.codexling.extra_headers.X-Codexling-Catalog-Version"], "2")
+        XCTAssertEqual(runner.values["providers.codexling.extra_headers.X-Agent-Name"], "Hermes")
         XCTAssertEqual(runner.values["model.provider"], "custom:codexling")
         XCTAssertEqual(runner.values["model.default"], "gemini-3.1-pro-preview")
-        XCTAssertEqual(runner.commands.filter { $0.starts(with: ["config", "set"]) }.count, 10)
+        XCTAssertEqual(runner.commands.filter { $0.starts(with: ["config", "set"]) }.count, 11)
         XCTAssertEqual(runner.commands.filter { $0.starts(with: ["config", "unset"]) }.count, 2)
-        XCTAssertEqual(runner.commands.filter { $0.starts(with: ["config", "get"]) }.count, 9)
+        XCTAssertEqual(runner.commands.filter { $0.starts(with: ["config", "get"]) }.count, 10)
     }
 
     func testHermesGatewayConfigurationRejectsFalseSuccessWhenReadbackDiffers() throws {
@@ -72,6 +120,35 @@ final class GatewayTests: XCTestCase {
             )
         )
         XCTAssertEqual(try Data(contentsOf: configURL), original)
+    }
+
+    func testHermesGatewayUnconfigurationRemovesProviderAndResetsModel() throws {
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hermes-config-\(UUID().uuidString).yaml")
+        try Data("providers:\n  codexling:\n    name: Codexling\n".utf8).write(to: configURL)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let runner = TestHermesCommandRunner()
+        let configurator = HermesGatewayConfigurator(runner: runner, configURL: configURL)
+
+        // First configure
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "local-test-token",
+            models: ["deepseek-chat"],
+            defaultModel: "deepseek-chat"
+        )
+        XCTAssertTrue(configurator.isConfigured)
+
+        // Now unconfigure
+        try configurator.unconfigure()
+        XCTAssertFalse(configurator.isConfigured)
+        XCTAssertNil(runner.values["providers.codexling.name"])
+        XCTAssertNil(runner.values["providers.codexling.api"])
+        XCTAssertNil(runner.values["providers.codexling.api_key"])
+        XCTAssertNil(runner.values["providers.codexling.models"])
+        XCTAssertNil(runner.values["model.provider"])
+        XCTAssertNil(runner.values["model.default"])
     }
 
     func testPiGatewayConfigurationWritesModelsContractAndPreservesSettings() throws {
@@ -117,6 +194,41 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(runner.commands, [["--offline", "--list-models", "codexling"]])
     }
 
+    func testPiGatewayUnconfigurationRemovesProviderAndResetsDefaults() throws {
+        let agentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pi-agent-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: agentDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: agentDirectory) }
+
+        let modelsURL = agentDirectory.appendingPathComponent("models.json")
+        let settingsURL = agentDirectory.appendingPathComponent("settings.json")
+        try Data(#"{"providers":{"codexling":{"baseUrl":"http://example.test"},"other":{"baseUrl":"http://other.test"}}}"#.utf8).write(to: modelsURL)
+        try Data(#"{"defaultProvider":"codexling","defaultModel":"gemini-3.7-flash","otherSetting":"keep"}"#.utf8).write(to: settingsURL)
+
+        let runner = TestPiCommandRunner(discoveredModel: "gemini-3.7-flash")
+        let configurator = PiGatewayConfigurator(runner: runner, agentDirectory: agentDirectory)
+
+        XCTAssertTrue(configurator.isConfigured)
+
+        try configurator.unconfigure()
+
+        XCTAssertFalse(configurator.isConfigured)
+
+        let modelsRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: modelsURL)) as? [String: Any]
+        )
+        let providers = try XCTUnwrap(modelsRoot["providers"] as? [String: Any])
+        XCTAssertNil(providers["codexling"])
+        XCTAssertNotNil(providers["other"])
+
+        let settings = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: Any]
+        )
+        XCTAssertNil(settings["defaultProvider"])
+        XCTAssertNil(settings["defaultModel"])
+        XCTAssertEqual(settings["otherSetting"] as? String, "keep")
+    }
+
     func testGatewaySupervisorStateAndToggle() {
         let supervisor = GatewaySupervisor.shared
         XCTAssertTrue(supervisor.isRunning)
@@ -136,7 +248,7 @@ final class GatewayTests: XCTestCase {
 
     func testGatewayStoreTelemetryAndChecks() {
         let store = GatewayStore.shared
-        XCTAssertEqual(store.telemetryItems.count, 9)
+        XCTAssertEqual(store.telemetryItems.count, 7)
         XCTAssertEqual(store.doctorChecks.count, 5)
         XCTAssertTrue(store.doctorChecks.contains { $0.id == "sec" && $0.isSuccess })
         XCTAssertTrue(store.doctorChecks.contains { !$0.isSuccess })

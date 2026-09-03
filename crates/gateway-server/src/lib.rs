@@ -60,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_chat_completions_flow() {
+    fn test_server_chat_rejects_legacy_fallback_alias() {
         let (port, token, handle) = spawn_test_server();
 
         let body = serde_json::json!({
@@ -79,6 +79,7 @@ mod tests {
         assert!(resp.contains("200 OK"));
         assert!(resp.contains("text/event-stream"));
         assert!(resp.contains("data: [DONE]"));
+        assert!(resp.contains("无法识别该模型"));
 
         // Shutdown
         let shutdown_req = format!("POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
@@ -87,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_responses_flow() {
+    fn test_server_responses_rejects_legacy_fallback_alias() {
         let (port, token, handle) = spawn_test_server();
 
         let body = serde_json::json!({
@@ -104,10 +105,8 @@ mod tests {
         );
 
         let resp = send_request(port, &req);
-        assert!(resp.contains("200 OK"));
-        assert!(resp.contains("text/event-stream"));
-        assert!(resp.contains("event: response.created"));
-        assert!(resp.contains("event: response.completed"));
+        assert!(resp.contains("502 Bad Gateway"));
+        assert!(!resp.contains("event: response.completed"));
 
         // Shutdown
         let shutdown_req = format!("POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
@@ -116,7 +115,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_anthropic_messages_flow() {
+    fn test_server_anthropic_rejects_legacy_fallback_alias() {
         let (port, token, handle) = spawn_test_server();
 
         let body = serde_json::json!({
@@ -133,11 +132,8 @@ mod tests {
         );
 
         let resp = send_request(port, &req);
-        assert!(resp.contains("200 OK"));
-        assert!(resp.contains("text/event-stream"));
-        assert!(resp.contains("event: message_start"));
-        assert!(resp.contains("event: content_block_delta"));
-        assert!(resp.contains("event: message_stop"));
+        assert!(resp.contains("502 Bad Gateway"));
+        assert!(!resp.contains("event: message_stop"));
 
         // Shutdown
         let shutdown_req = format!("POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");

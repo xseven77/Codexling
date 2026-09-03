@@ -28,10 +28,13 @@ public final class GatewaySupervisor {
 
     private var process: Process?
     private var outputPipe: Pipe?
+    private var errorPipe: Pipe?
     private var uptimeTimer: Timer?
     private var startTime: Date?
     private var pendingRestartTask: Task<Void, Never>?
     private var hasAttemptedStaleGatewayRecovery = false
+    private var isRecoveryScheduled = false
+    private var consecutiveHealthFailures = 0
 
     public init() {
         self.isAutoStartEnabled = UserDefaults.standard.object(forKey: "codexling.gateway.autostart") as? Bool ?? true
@@ -40,14 +43,31 @@ public final class GatewaySupervisor {
 
     /// Locate candidate executable path for the Gateway.
     private func candidateExecutableURL() -> URL? {
-        // 1. Check App Bundle Contents/Helpers
+        // In unit test runner, always use mock loopback mode to avoid port
+        // contention with live Codexling app running on developer machine.
+        if NSClassFromString("XCTestCase") != nil ||
+            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+            ProcessInfo.processInfo.processName.contains("xctest") {
+            return nil
+        }
+
+        // 1. Check the packaged App helper. `url(forAuxiliaryExecutable:)`
+        // only searches the standard executable locations and does not find
+        // our Contents/Helpers binary reliably.
+        let bundledHelperURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/CodexlingGateway")
+        if FileManager.default.isExecutableFile(atPath: bundledHelperURL.path) {
+            return bundledHelperURL
+        }
+
+        // 2. Legacy bundle lookup.
         if let helperURL = Bundle.main.url(forAuxiliaryExecutable: "CodexlingGateway") {
             if FileManager.default.isExecutableFile(atPath: helperURL.path) {
                 return helperURL
             }
         }
 
-        // 2. Development / workspace paths
+        // 3. Development / workspace paths
         let fileManager = FileManager.default
         let devCandidates = [
             URL(fileURLWithPath: "/Users/qiizo/code/Personal/Codexling/target/release/codexling-gateway"),
@@ -106,6 +126,15 @@ public final class GatewaySupervisor {
             try proc.run()
             self.process = proc
             self.outputPipe = outPipe
+            self.errorPipe = errPipe
+            errPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                Self.appendGatewayDiagnostic(String(decoding: data, as: UTF8.self))
+            }
 
             // A helper that cannot bind the loopback port exits before this
             // handshake. Do not mark that failed launch as "running": doing
@@ -119,29 +148,32 @@ public final class GatewaySupervisor {
                 if proc.isRunning { proc.terminate() }
                 self.process = nil
                 self.outputPipe = nil
+                self.errorPipe?.fileHandleForReading.readabilityHandler = nil
+                self.errorPipe = nil
                 self.isRunning = false
                 self.startTime = nil
-                if !self.hasAttemptedStaleGatewayRecovery {
-                    self.hasAttemptedStaleGatewayRecovery = true
-                    self.statusText = "正在切换 Gateway"
-                    self.statusDetail = "检测到旧 Gateway 占用端口，正在停止并切换到当前版本。"
-                    self.requestGatewayShutdown()
-                    self.pendingRestartTask = Task { @MainActor [weak self] in
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        guard !Task.isCancelled else { return }
-                        self?.start()
-                    }
-                    return
-                }
-                self.statusText = "启动失败"
-                self.statusDetail = "Gateway 未能绑定本地端口；已阻止继续连接旧 Gateway。"
-                self.lastError = "Gateway 未返回启动握手。请重启 Gateway 后重试。"
+                // During rebuild-and-run the prior App instance may still own
+                // this port. Reuse a healthy local Gateway immediately instead
+                // of shutting it down and showing a needless recovery state.
+                self.statusText = "正在连接 Gateway"
+                self.statusDetail = "正在确认现有本地 Gateway 是否可用。"
+                self.adoptExistingGatewayOrScheduleRecovery()
                 return
             }
             self.port = port
             self.localToken = token
             self.endpoint = URL(string: "http://\(host):\(port)")
             self.hasAttemptedStaleGatewayRecovery = false
+            self.consecutiveHealthFailures = 0
+
+            proc.terminationHandler = { [weak self] terminatedProcess in
+                DispatchQueue.main.async {
+                    guard let self,
+                          self.process === terminatedProcess,
+                          self.isRunning else { return }
+                    self.handleUnexpectedGatewayExit(status: terminatedProcess.terminationStatus)
+                }
+            }
 
             self.isRunning = true
             self.startTime = Date()
@@ -180,15 +212,19 @@ public final class GatewaySupervisor {
 
         if let proc = process, proc.isRunning {
             proc.terminate()
+            proc.waitUntilExit()
         }
 
         self.process = nil
         self.outputPipe = nil
+        self.errorPipe?.fileHandleForReading.readabilityHandler = nil
+        self.errorPipe = nil
         self.isRunning = false
         self.statusText = "已停止"
         self.statusDetail = "Gateway 已停止 · Agent 将无法访问本地端点"
         self.activeRequests = 0
         self.uptimeText = "--:--:--"
+        self.consecutiveHealthFailures = 0
     }
 
     private func requestGatewayShutdown() {
@@ -247,10 +283,19 @@ public final class GatewaySupervisor {
         var request = URLRequest(url: endpoint.appendingPathComponent("status"))
         request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 1
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-            guard let self, let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self,
+                  let data,
+                  let response = response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async {
+                    self?.recordGatewayHealthFailure(error)
+                }
+                return
+            }
             DispatchQueue.main.async {
+                self.consecutiveHealthFailures = 0
                 self.activeRequests = json["active_requests"] as? Int ?? 0
                 self.todayRequests = json["total_requests"] as? Int ?? 0
                 let inTokens = json["total_input_tokens"] as? Int ?? 0
@@ -296,6 +341,108 @@ public final class GatewaySupervisor {
                 }
             }
         }.resume()
+    }
+
+    private func recordGatewayHealthFailure(_ error: Error?) {
+        guard isRunning else { return }
+        consecutiveHealthFailures += 1
+        // Gateway currently handles a request at a time, so `/status` may
+        // legitimately wait behind a long streaming request. A timeout must
+        // never terminate the process that is serving Pi/Hermes.
+        guard let urlError = error as? URLError,
+              urlError.code == .cannotConnectToHost,
+              process == nil else {
+            return
+        }
+        // An adopted Gateway has no local Process handle. Only an explicit
+        // connection refusal confirms that its listener disappeared; it is
+        // then safe for this App to create the single replacement listener.
+        handleGatewayUnavailable(reason: "已连接的 Gateway 不再监听本地端口。")
+    }
+
+    private func handleUnexpectedGatewayExit(status: Int32) {
+        handleGatewayUnavailable(reason: "Gateway 子进程意外退出（状态码 \(status)）。")
+    }
+
+    private func handleGatewayUnavailable(reason: String) {
+        guard isRunning else { return }
+        Self.appendGatewayDiagnostic(reason)
+        uptimeTimer?.invalidate()
+        uptimeTimer = nil
+        process = nil
+        outputPipe = nil
+        errorPipe?.fileHandleForReading.readabilityHandler = nil
+        errorPipe = nil
+        isRunning = false
+        startTime = nil
+        activeRequests = 0
+        uptimeText = "--:--:--"
+        statusText = "正在恢复 Gateway"
+        statusDetail = reason
+        lastError = reason
+        scheduleGatewayRecovery()
+    }
+
+    private func scheduleGatewayRecovery() {
+        guard isAutoStartEnabled, !isRecoveryScheduled else { return }
+        isRecoveryScheduled = true
+        pendingRestartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.isRecoveryScheduled = false
+            self.pendingRestartTask = nil
+            self.start()
+        }
+    }
+
+    private func adoptExistingGatewayOrScheduleRecovery() {
+        guard let endpoint else {
+            scheduleGatewayRecovery()
+            return
+        }
+        var request = URLRequest(url: endpoint.appendingPathComponent("status"))
+        request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 1
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            let isHealthy = data != nil
+                && (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } == true
+            DispatchQueue.main.async {
+                guard let self, !self.isRunning else { return }
+                if isHealthy {
+                    self.hasAttemptedStaleGatewayRecovery = false
+                    self.consecutiveHealthFailures = 0
+                    self.isRunning = true
+                    self.startTime = Date()
+                    self.statusText = "运行中"
+                    self.statusDetail = "已连接现有本地 Gateway · loopback 与 local token 已验证"
+                    self.lastError = nil
+                    self.startUptimeTracker()
+                } else {
+                    self.statusText = "正在恢复 Gateway"
+                    self.statusDetail = "Gateway 尚未取得本地端口；将在端口释放后自动重试。"
+                    self.lastError = "Gateway 未返回启动握手。正在自动恢复。"
+                    Self.appendGatewayDiagnostic(self.lastError ?? "Gateway 未返回启动握手。")
+                    self.scheduleGatewayRecovery()
+                }
+            }
+        }.resume()
+    }
+
+    nonisolated private static func appendGatewayDiagnostic(_ message: String) {
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? "/Users/qiizo"
+        let directory = URL(fileURLWithPath: home)
+            .appendingPathComponent("Library/Application Support/Codexling", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)) != nil else { return }
+        let path = directory.appendingPathComponent("gateway-supervisor.log")
+        let line = "[\(Int(Date().timeIntervalSince1970))] \(message.trimmingCharacters(in: .whitespacesAndNewlines))\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: path) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: path, options: .atomic)
+        }
     }
 
     private func readFirstLine(from handle: FileHandle) -> String? {

@@ -83,27 +83,10 @@ impl RouteTable {
                     }
                 }
 
-                // Dynamic Pass-Through Fallback:
-                // Allows ANY model to be requested directly (e.g. gemini-3.7-flash, deepseek-v4-pro)
-                let lower = alias.to_lowercase();
-                let provider = if lower.contains("gemini") {
-                    "gemini"
-                } else if lower.contains("deepseek") {
-                    "deepseek"
-                } else if lower.contains("claude") {
-                    "anthropic"
-                } else if lower.contains("gpt") || lower.contains("codex") || lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4") || lower.starts_with("o5") {
-                    "openai"
-                } else {
-                    "default"
-                };
-
-                Ok(ResolvedTarget {
-                    provider: provider.into(),
-                    model: alias.clone(),
-                    fidelity: Fidelity::Native,
-                    is_sticky: false,
-                })
+                // Unregistered names must never be classified from a word in
+                // their spelling. Provider/account ownership comes only from
+                // an explicit route selected from the account's catalog.
+                Err(RoutingError::AliasNotFound(alias.clone()))
             }
         }
     }

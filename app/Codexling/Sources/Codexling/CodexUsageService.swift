@@ -72,28 +72,28 @@ actor CodexUsageService {
     }
 
     /// 动态从官方接口获取当前授权账号下的全部可用模型列表
-    func fetchAvailableModels() async -> [String] {
-        guard let token = try? await validToken(forceLogin: false) else {
-            return []
-        }
+    /// Returns only the model IDs advertised by OpenAI for this account.
+    ///
+    /// Do not invent a compatibility list when discovery is unavailable: an
+    /// invented ID can be displayed as usable and then be routed to an account
+    /// that has never been granted access to it.
+    func fetchAvailableModels() async throws -> [String] {
+        let token = try await validToken(forceLogin: false)
         let accountID = readJWTClaim(token.accessToken, namespace: "https://api.openai.com/auth", claim: "chatgpt_account_id")
         let modelsURL = URL(string: "https://chatgpt.com/backend-api/models")!
         if let json = try? await fetchJSON(url: modelsURL, token: token.accessToken, accountID: accountID) as? [String: Any],
            let models = json["models"] as? [[String: Any]] {
-            let slugs = models.compactMap { $0["slug"] as? String }.filter { !$0.isEmpty }
-            if !slugs.isEmpty {
-                return slugs
-            }
+            // An empty array is also an authoritative response: it means this
+            // account currently has no exported models, not that we should
+            // resurrect a guessed compatibility list.
+            return models.compactMap { $0["slug"] as? String }.filter { !$0.isEmpty }
         }
         let standardURL = URL(string: "https://api.openai.com/v1/models")!
         if let json = try? await fetchJSON(url: standardURL, token: token.accessToken, accountID: accountID) as? [String: Any],
            let data = json["data"] as? [[String: Any]] {
-            let ids = data.compactMap { $0["id"] as? String }.filter { !$0.isEmpty }
-            if !ids.isEmpty {
-                return ids
-            }
+            return data.compactMap { $0["id"] as? String }.filter { !$0.isEmpty }
         }
-        return ["gpt-5", "gpt-5-codex", "gpt-5-mini", "gpt-4.5-preview", "gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini", "chatgpt-4o-latest", "codex-mini"]
+        throw CodexUsageError.quotaUnavailable
     }
 
     func disconnect() {

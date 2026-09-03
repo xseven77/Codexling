@@ -3,8 +3,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use gateway_ir::{Capability, CapabilitySet, FinishReason};
-use gateway_routing::{ModelAliasDefinition, RouteCandidate, RouteTable};
+use gateway_ir::FinishReason;
+use gateway_routing::RouteTable;
+use gateway_state::{TelemetryEvent, TelemetryQueryFilter, TelemetryStore};
 use gateway_stream::event::{ResponseCompleted, ResponseStarted, TextDelta};
 use gateway_stream::StreamEvent;
 use protocol_anthropic_messages::{
@@ -16,7 +17,18 @@ use protocol_openai_responses::{
 };
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// A short-lived in-memory cache of the codex CLI's servable-model catalog,
+/// keyed by the connected runtime's `CODEX_HOME`. This lets the hot routing
+/// path avoid re-spawning the `codex` CLI on every request while still picking
+/// up newly released models automatically once the entry expires.
+struct CodexCatalogEntry {
+    fetched: Instant,
+    catalog: Vec<serde_json::Value>,
+}
+static CODEX_CATALOG_CACHE: OnceLock<Mutex<HashMap<String, CodexCatalogEntry>>> = OnceLock::new();
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +50,7 @@ pub struct GatewayRequestRecord {
 #[cfg(test)]
 mod tests {
     use super::GatewayServer;
+    use gateway_ir::ModelSelector;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -60,12 +73,26 @@ mod tests {
         let home = temporary_home();
         let support = home.join("Library/Application Support/Codexling");
         fs::create_dir_all(&support).unwrap();
+        let codex_home = support.join("Runtimes/Codex/abc123-def456");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            codex_home.join("models_cache.json"),
+            r#"{
+                "models": [
+                    {"slug":"gpt-reserve","visibility":"hide","display_name":"Reserve"},
+                    {"slug":"codex-auto-review","visibility":"hide","display_name":"Review"},
+                    {"slug":"gpt-5.6-sol","visibility":"list","display_name":"GPT-5.6 Sol"},
+                    {"slug":"gpt-5.6-luna","visibility":"list","display_name":"GPT-5.6 Luna"}
+                ]
+            }"#,
+        )
+        .unwrap();
         fs::write(
             support.join("connections-v1.json"),
             r#"{
                 "codexAccounts": [
-                    {"label":"Seven X","isEnabled":true,"authenticationState":"connected","availableModelIDs":["gpt-5.6-wm"]},
-                    {"label":"Disabled User","isEnabled":false,"availableModelIDs":["disabled-model"]}
+                    {"id":{"rawValue":"1A0C5FD1-5B60-46BC-9C9E-3067003DB35B"},"label":"Seven X","relativeHomeDirectory":"abc123-def456","isEnabled":true,"authenticationState":"connected","availableModelIDs":["gpt-5-6-t-mini","gpt-5.6-luna-wm"]},
+                    {"id":{"rawValue":"2B1D6FE2-6C71-57CD-ADAF-4178114EC46C"},"label":"Disabled User","isEnabled":false,"availableModelIDs":["disabled-model"]}
                 ],
                 "geminiConnections": [],
                 "deepSeekConnections": [],
@@ -77,7 +104,13 @@ mod tests {
         let payload = GatewayServer::get_dynamic_models_payload_for_home(home.to_str().unwrap());
         let models = payload["data"].as_array().unwrap();
         assert!(!models.is_empty());
-        assert_eq!(models[0]["id"], "openai/gpt-5.6@Seven-X");
+        // The catalog must expose only codex-CLI-servable slugs, never the
+        // ChatGPT-side catalog models (e.g. `gpt-5-6-t-mini`, `gpt-5.6-luna-wm`).
+        let ids: Vec<&str> = models.iter().map(|model| model["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"openai/gpt-5.6-sol@Seven-X-openai-1a0c5fd1"));
+        assert!(ids.contains(&"openai/gpt-5.6-luna@Seven-X-openai-1a0c5fd1"));
+        assert!(ids.iter().all(|id| !id.contains("gpt-reserve") && !id.contains("codex-auto-review")));
+        assert!(ids.iter().all(|id| !id.contains("gpt-5-6-t-mini") && !id.contains("gpt-5.6-luna-wm")));
         assert!(models.iter().all(|model| {
             model["id"]
                 .as_str()
@@ -122,11 +155,12 @@ mod tests {
             r#"{
                 "codexAccounts": [],
                 "geminiConnections": [{
+                    "id": {"rawValue": "9C3D876B-A93F-4123-9191-B193BEE4118F"},
                     "label":"OAuth User",
                     "credentialHandle":"oauth-handle",
                     "isEnabled":true,
                     "authenticationState":"connected",
-                    "availableModelIDs":["gemini-3.6-flash"]
+                    "availableModelIDs":["gemini-3.6-flash", "gemini-catalog-test-tiered"]
                 }],
                 "deepSeekConnections": [],
                 "openCodeConnections": []
@@ -142,11 +176,463 @@ mod tests {
         let payload = GatewayServer::get_dynamic_models_payload_for_home(home.to_str().unwrap());
         let models = payload["data"].as_array().unwrap();
         assert!(models.iter().any(|model| {
-            model["id"] == "google/gemini-3.6-flash@OAuth-User"
+            model["id"] == "google/gemini-3.6-flash@OAuth-User-google-9c3d876b"
                 && model["provider"] == "Google Gemini"
+                && model["account"] == "OAuth User (Google · 9c3d876b)"
+        }));
+        assert!(models.iter().any(|model| {
+            model["id"] == "google/gemini-catalog-test-tiered@OAuth-User-google-9c3d876b"
+                && model["display_name"] == "Google · Gemini Catalog Test (OAuth User (Google · 9c3d876b))"
         }));
 
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn preserves_provider_catalog_model_ids_for_account_routes() {
+        let account = serde_json::json!({
+            "availableModelIDs": [
+                "deepseek-v4-pro",
+                "gpt-5.6-luna",
+                "gemini-3.7-flash-tiered"
+            ]
+        });
+
+        // OpenCode may expose models branded by other vendors.  Its selected
+        // route must preserve the OpenCode catalog's exact upstream ID.
+        assert_eq!(
+            GatewayServer::connection_model_id(&account, "deepseek-v4-pro"),
+            Some("deepseek-v4-pro".into())
+        );
+        assert_eq!(
+            GatewayServer::connection_model_id(&account, "gpt-5.6-luna"),
+            Some("gpt-5.6-luna".into())
+        );
+        assert_eq!(
+            GatewayServer::connection_model_id(&account, "not-in-catalog"),
+            None
+        );
+    }
+
+    #[test]
+    fn routes_opencode_aggregation_models_with_explicit_and_discovered_scoping() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(support.join("opencode_credentials")).unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [],
+                "geminiConnections": [],
+                "deepSeekConnections": [],
+                "openCodeConnections": [{
+                    "label": "go",
+                    "plan": "go",
+                    "credentialHandle": "opencode-cred-handle",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["deepseek-v4-pro", "claude-3-7-sonnet"]
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("opencode_credentials/opencode-cred-handle.key"),
+            "opencode-test-api-key\n",
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // 1. Account-first discovery: bare `deepseek-v4-pro@go` routes to OpenCode, NOT DeepSeek
+        let ep1 = GatewayServer::resolve_upstream_endpoint_for_home(home_str, "deepseek-v4-pro@go")
+            .unwrap();
+        assert_eq!(ep1.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep1.target_model, "deepseek-v4-pro");
+        assert_eq!(ep1.auth_header, "Bearer opencode-test-api-key");
+        assert_eq!(ep1.url, "https://opencode.ai/zen/go/v1/chat/completions");
+
+        // 2. Explicit provider prefix: `opencode/deepseek-v4-pro@go`
+        let ep2 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "opencode/deepseek-v4-pro@go",
+        )
+        .unwrap();
+        assert_eq!(ep2.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep2.target_model, "deepseek-v4-pro");
+
+        // 3. Provider appended to account slug: `deepseek-v4-pro@go-opencode`
+        let ep3 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "deepseek-v4-pro@go-opencode",
+        )
+        .unwrap();
+        assert_eq!(ep3.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep3.target_model, "deepseek-v4-pro");
+
+        // 4. Hermes picker label: `OpenCode·deepseek-v4-pro·go`
+        let ep4 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "OpenCode·deepseek-v4-pro·go",
+        )
+        .unwrap();
+        assert_eq!(ep4.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep4.target_model, "deepseek-v4-pro");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn routes_google_cloud_code_3p_models_without_cross_provider_rejection() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(support.join("gemini_oauth")).unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [],
+                "geminiConnections": [{
+                    "label": "x-seven",
+                    "displayName": "X Seven",
+                    "email": "x-seven@gmail.com",
+                    "credentialHandle": "oauth-handle",
+                    "id": {"rawValue": "9c3d876b-a93f-4123-9191-b193bee4118f"},
+                    "projectId": "test-project-123",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["gemini-2.5-flash", "claude-opus-4-6-thinking", "claude-sonnet-4-6"]
+                }],
+                "deepSeekConnections": [],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("gemini_oauth/oauth-handle.json"),
+            r#"{"accessToken":"oauth-test-token","refreshToken":"oauth-refresh-token"}"#,
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // 1. Account-first discovery: `claude-opus-4-6-thinking@x-seven`
+        let ep1 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-opus-4-6-thinking@x-seven",
+        )
+        .unwrap();
+        assert_eq!(ep1.provider_name, "Google Gemini");
+        assert_eq!(ep1.target_model, "claude-opus-4-6-thinking");
+        assert_eq!(ep1.auth_header, "Bearer oauth-test-token");
+        assert_eq!(ep1.project.as_deref(), Some("test-project-123"));
+
+        // 2. Explicit provider prefix: `google/claude-opus-4-6-thinking@x-seven`
+        let ep2 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "google/claude-opus-4-6-thinking@x-seven",
+        )
+        .unwrap();
+        assert_eq!(ep2.provider_name, "Google Gemini");
+        assert_eq!(ep2.target_model, "claude-opus-4-6-thinking");
+
+        // 3. Provider appended to account slug: `claude-opus-4-6-thinking@x-seven-google`
+        let ep3 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-opus-4-6-thinking@x-seven-google",
+        )
+        .unwrap();
+        assert_eq!(ep3.provider_name, "Google Gemini");
+        assert_eq!(ep3.target_model, "claude-opus-4-6-thinking");
+
+        // 4. Hermes picker label: `Google·claude-opus-4-6-thinking·x-seven`
+        let ep4 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "Google·claude-opus-4-6-thinking·x-seven",
+        )
+        .unwrap();
+        assert_eq!(ep4.provider_name, "Google Gemini");
+        assert_eq!(ep4.target_model, "claude-opus-4-6-thinking");
+
+        // 5. Composite three-part slug: `claude-sonnet-4-6@x-seven-google-9c3d876b`
+        let ep5 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-sonnet-4-6@x-seven-google-9c3d876b",
+        )
+        .unwrap();
+        assert_eq!(ep5.provider_name, "Google Gemini");
+        assert_eq!(ep5.target_model, "claude-sonnet-4-6");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn routes_codex_only_catalog_servable_models_and_rejects_others() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        let codex_home = support.join("Runtimes/Codex/abc123-def456");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            codex_home.join("oauth_token.json"),
+            r#"{"accessToken":"codex-token"}"#,
+        )
+        .unwrap();
+        fs::write(
+            codex_home.join("models_cache.json"),
+            r#"{
+                "models": [
+                    {"slug":"gpt-reserve","visibility":"hide","display_name":"Reserve"},
+                    {"slug":"gpt-5.6-sol","visibility":"list","display_name":"GPT-5.6 Sol"},
+                    {"slug":"gpt-5.6-luna","visibility":"list","display_name":"GPT-5.6 Luna"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [{
+                    "id":{"rawValue":"1A0C5FD1-5B60-46BC-9C9E-3067003DB35B"},
+                    "label":"x-seven",
+                    "relativeHomeDirectory":"abc123-def456",
+                    "isEnabled":true,
+                    "authenticationState":"connected",
+                    "availableModelIDs":["gpt-5-6-t-mini","gpt-5.6-sol-wm","gpt-5-5"]
+                }],
+                "geminiConnections": [],
+                "deepSeekConnections": [],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // A codex-CLI-servable slug routes straight through, preserving the slug.
+        let ep_ok = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "gpt-5.6-sol@x-seven-openai",
+        )
+        .unwrap();
+        assert_eq!(ep_ok.provider_name, "OpenAI / Codex");
+        assert_eq!(ep_ok.target_model, "gpt-5.6-sol");
+
+        // A ChatGPT-catalog `-wm` suffix is normalized to the CLI-servable slug.
+        let ep_wm = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "gpt-5.6-sol-wm@x-seven-openai",
+        )
+        .unwrap();
+        assert_eq!(ep_wm.provider_name, "OpenAI / Codex");
+        assert_eq!(ep_wm.target_model, "gpt-5.6-sol");
+
+        // A ChatGPT-only model (e.g. `gpt-5-6-t-mini`) is rejected with a clear
+        // error instead of being passed to the CLI for a confusing 400.
+        let err = match GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "gpt-5-6-t-mini@x-seven-openai",
+        ) {
+            Ok(_) => panic!("expected an error for gpt-5-6-t-mini"),
+            Err(e) => e,
+        };
+        assert!(err.contains("不支持模型 [gpt-5-6-t-mini]"), "got: {err}");
+        assert!(err.contains("gpt-5.6-sol"), "got: {err}");
+
+        // A dash-form ChatGPT model (`gpt-5-5`) is not servable either.
+        let err2 = match GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "gpt-5-5@x-seven-openai",
+        ) {
+            Ok(_) => panic!("expected an error for gpt-5-5"),
+            Err(e) => e,
+        };
+        assert!(err2.contains("不支持模型 [gpt-5-5]"), "got: {err2}");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn parse_visible_codex_models_filters_hidden_and_internal_slugs() {
+        // Mirrors the shape of `codex debug models` output (and `models_cache.json`):
+        // the servable set is whatever the CLI lists with `visibility: "list"`.
+        let json = serde_json::json!({
+            "models": [
+                {"slug":"gpt-reserve","visibility":"hide","display_name":"Reserve"},
+                {"slug":"codex-auto-review","visibility":"hide","display_name":"Review"},
+                {"slug":"gpt-5.6-sol","visibility":"list","display_name":"GPT-5.6 Sol"},
+                {"slug":"gpt-5.6-terra","visibility":"list","display_name":"GPT-5.6 Terra"},
+                {"slug":"brand-new-model","visibility":"list"}
+            ]
+        });
+        let catalog = GatewayServer::parse_visible_codex_models(&json);
+        let slugs: Vec<&str> = catalog
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|s| s.as_str()))
+            .collect();
+        assert_eq!(slugs, vec!["gpt-5.6-sol", "gpt-5.6-terra", "brand-new-model"]);
+        assert!(slugs.iter().all(|s| *s != "gpt-reserve" && *s != "codex-auto-review"));
+        // Models without an explicit display name fall back to their slug.
+        assert_eq!(catalog[2]["display_name"], "brand-new-model");
+    }
+
+    #[test]
+    fn codex_catalog_returns_empty_when_no_servable_source_exists() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        let codex_home = support.join("Runtimes/Codex/abc123-def456");
+        fs::create_dir_all(&codex_home).unwrap();
+        // No `models_cache.json` at all: in a test build the CLI is never
+        // shelled out, so the catalog must come back empty (never fabricated).
+        let catalog = GatewayServer::codex_catalog(codex_home.to_str().unwrap());
+        assert!(catalog.is_empty());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn disambiguates_accounts_sharing_identical_name_across_channels() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(support.join("opencode_credentials")).unwrap();
+        fs::create_dir_all(support.join("gemini_oauth")).unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [],
+                "geminiConnections": [{
+                    "id": {"rawValue": "9C3D876B-A93F-4123-9191-B193BEE4118F"},
+                    "label": "work",
+                    "displayName": "Work Account",
+                    "credentialHandle": "google-work-handle",
+                    "projectId": "work-project",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["gemini-2.5-flash", "claude-3-7-sonnet"]
+                }],
+                "deepSeekConnections": [],
+                "openCodeConnections": [{
+                    "id": {"rawValue": "1E29E790-7565-4D03-923A-91BA5E18E174"},
+                    "label": "work",
+                    "plan": "zen",
+                    "credentialHandle": "opencode-work-handle",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["deepseek-v4-pro", "claude-3-7-sonnet"]
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("opencode_credentials/opencode-work-handle.key"),
+            "opencode-work-key\n",
+        )
+        .unwrap();
+        fs::write(
+            support.join("gemini_oauth/google-work-handle.json"),
+            r#"{"accessToken":"google-work-token","refreshToken":"work-refresh-token"}"#,
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // 1. Target OpenCode account explicitly via three-part slug (account + provider + short_id)
+        let ep_opencode_full = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@work-opencode-1e29e790",
+        )
+        .unwrap();
+        assert_eq!(ep_opencode_full.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep_opencode_full._account_name, "work (OpenCode · 1e29e790)");
+
+        // 2. Target Google account explicitly via three-part slug (account + provider + short_id)
+        let ep_google_full = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@work-account-google-9c3d876b",
+        )
+        .unwrap();
+        assert_eq!(ep_google_full.provider_name, "Google Gemini");
+        assert_eq!(ep_google_full._account_name, "Work Account (Google · 9c3d876b)");
+
+        // 3. Target OpenCode account by short_id directly
+        let ep_opencode_id = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@1e29e790",
+        )
+        .unwrap();
+        assert_eq!(ep_opencode_id.provider_name, "OpenCode 聚合平台");
+
+        // 4. Target Google account by short_id directly
+        let ep_google_id = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@9c3d876b",
+        )
+        .unwrap();
+        assert_eq!(ep_google_id.provider_name, "Google Gemini");
+
+        // 5. Target OpenCode account explicitly via account suffix without ID
+        let ep_opencode = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@work-opencode",
+        )
+        .unwrap();
+        assert_eq!(ep_opencode.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep_opencode.auth_header, "Bearer opencode-work-key");
+        assert_eq!(ep_opencode.url, "https://opencode.ai/zen/v1/chat/completions");
+
+        // 6. Target Google account explicitly via account suffix without ID
+        let ep_google = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "claude-3-7-sonnet@work-account-google",
+        )
+        .unwrap();
+        assert_eq!(ep_google.provider_name, "Google Gemini");
+        assert_eq!(ep_google.auth_header, "Bearer google-work-token");
+
+        // 7. Target OpenCode via explicit provider prefix
+        let ep_opencode_prefix = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "opencode/claude-3-7-sonnet@work",
+        )
+        .unwrap();
+        assert_eq!(ep_opencode_prefix.provider_name, "OpenCode 聚合平台");
+
+        // 8. Target Google via explicit provider prefix
+        let ep_google_prefix = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "google/claude-3-7-sonnet@work",
+        )
+        .unwrap();
+        assert_eq!(ep_google_prefix.provider_name, "Google Gemini");
+
+        // 9. For a model only present in OpenCode (deepseek-v4-pro), bare `@work` routes to OpenCode
+        let ep_unique = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "deepseek-v4-pro@work",
+        )
+        .unwrap();
+        assert_eq!(ep_unique.provider_name, "OpenCode 聚合平台");
+
+        // 10. For gemini native model, bare `@work` routes to Google Gemini
+        let ep_gemini_native = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "gemini-2.5-flash@work",
+        )
+        .unwrap();
+        assert_eq!(ep_gemini_native.provider_name, "Google Gemini");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn does_not_register_legacy_cross_provider_fallback_aliases() {
+        let server = GatewayServer::new("test-token");
+        for alias in [
+            "coding-smart",
+            "coding-fast",
+            "coding-reasoner",
+            "claude-3-7-sonnet",
+            "gpt-4o",
+        ] {
+            assert!(server.route_table.resolve(&ModelSelector::alias(alias), None).is_err(), "{alias}");
+        }
     }
 
     #[test]
@@ -214,6 +700,24 @@ mod tests {
     }
 
     #[test]
+    fn restores_gemini_thought_signature_when_client_rewrites_tool_call_id() {
+        let server = GatewayServer::new("test-token");
+        let response = serde_json::json!({"response":{"candidates":[{"content":{"parts":[{
+            "functionCall":{"name":"bash","args":{"command":"git status"}},
+            "thoughtSignature":"signature-from-gemini"
+        }]}}]}});
+        let message = server.cloud_code_response_message(&response).unwrap();
+        let function = &message["tool_calls"][0]["function"];
+        let args: serde_json::Value =
+            serde_json::from_str(function["arguments"].as_str().unwrap()).unwrap();
+
+        assert_eq!(
+            server.gemini_thought_signature_for_call("rewritten_by_pi", "bash", &args),
+            Some("signature-from-gemini".into())
+        );
+    }
+
+    #[test]
     fn parses_swift_oauth_expiry_dates() {
         assert_eq!(
             GatewayServer::parse_rfc3339_utc("1970-01-01T00:00:00Z"),
@@ -252,6 +756,53 @@ mod tests {
             &["徐金琦", "xujinqi777@gmail.com", "xujinqi777@gmail.com"],
         ));
     }
+
+    #[test]
+    fn matches_gateway_account_slug_with_non_ascii_case() {
+        assert!(GatewayServer::gateway_account_filter_matches(
+            "qintelli-zø",
+            &["Qintelli ZØ", "qintellizo@gmail.com"],
+        ));
+    }
+
+    #[test]
+    fn infers_agent_name_from_pi_user_agent_and_headers() {
+        // Explicit header
+        assert_eq!(
+            GatewayServer::infer_agent_name("X-Agent-Name: Pi\r\nHost: 127.0.0.1", None),
+            "Pi"
+        );
+        // Pi AI default macOS user agent
+        assert_eq!(
+            GatewayServer::infer_agent_name("User-Agent: pi (darwin 24.3.0; arm64)\r\nHost: 127.0.0.1", None),
+            "Pi"
+        );
+        // Pi AI default linux user agent
+        assert_eq!(
+            GatewayServer::infer_agent_name("User-Agent: pi (linux 6.6.0; x64)\r\nHost: 127.0.0.1", None),
+            "Pi"
+        );
+        // Pi AI browser user agent
+        assert_eq!(
+            GatewayServer::infer_agent_name("User-Agent: pi (browser)\r\nHost: 127.0.0.1", None),
+            "Pi"
+        );
+        // Hermes user agent
+        assert_eq!(
+            GatewayServer::infer_agent_name("User-Agent: hermes/0.9.1\r\nHost: 127.0.0.1", None),
+            "Hermes"
+        );
+        // Fallback with custom product UA
+        assert_eq!(
+            GatewayServer::infer_agent_name("User-Agent: CustomTool/1.0\r\nHost: 127.0.0.1", None),
+            "CustomTool"
+        );
+        // Fallback without headers
+        assert_eq!(
+            GatewayServer::infer_agent_name("Host: 127.0.0.1", None),
+            "API Client"
+        );
+    }
 }
 
 pub struct UpstreamEndpoint {
@@ -277,6 +828,7 @@ pub struct GatewayServer {
     pub total_tool_calls: Arc<AtomicUsize>,
     pub is_running: Arc<AtomicBool>,
     pub recent_requests: Arc<Mutex<VecDeque<GatewayRequestRecord>>>,
+    pub telemetry_store: Arc<TelemetryStore>,
     /// Hermes keeps standard OpenAI tool-call IDs but may discard vendor
     /// extension fields. Cache Gemini's required thought signatures by ID so
     /// a subsequent tool result can be replayed correctly.
@@ -285,95 +837,10 @@ pub struct GatewayServer {
 
 impl GatewayServer {
     pub fn new(token: impl Into<String>) -> Self {
-        let mut route_table = RouteTable::new();
-
-        // 1. Direct Bridge: Gemini Models (Backed by Google session)
-        let mut gemini_pro = ModelAliasDefinition::new("gemini-2.5-pro");
-        gemini_pro = gemini_pro
-            .add_candidate(RouteCandidate::new("gemini", "gemini-2.5-pro").with_priority(100));
-        route_table.register_alias(gemini_pro);
-
-        let mut gemini_flash25 = ModelAliasDefinition::new("gemini-2.5-flash");
-        gemini_flash25 = gemini_flash25
-            .add_candidate(RouteCandidate::new("gemini", "gemini-2.5-flash").with_priority(100));
-        route_table.register_alias(gemini_flash25);
-
-        let mut gemini_flash = ModelAliasDefinition::new("gemini-2.0-flash");
-        gemini_flash = gemini_flash
-            .add_candidate(RouteCandidate::new("gemini", "gemini-2.0-flash").with_priority(100));
-        route_table.register_alias(gemini_flash);
-
-        // 2. Direct Bridge: DeepSeek Models (Backed by DeepSeek account)
-        let mut ds_chat = ModelAliasDefinition::new("deepseek-chat");
-        ds_chat = ds_chat
-            .add_candidate(RouteCandidate::new("deepseek", "deepseek-chat").with_priority(100));
-        route_table.register_alias(ds_chat);
-
-        let mut ds_reasoner = ModelAliasDefinition::new("deepseek-reasoner");
-        ds_reasoner = ds_reasoner
-            .add_candidate(RouteCandidate::new("deepseek", "deepseek-reasoner").with_priority(100));
-        route_table.register_alias(ds_reasoner);
-
-        // 3. Compatibility & Fallback Mappings
-        let mut claude = ModelAliasDefinition::new("claude-3-7-sonnet");
-        claude =
-            claude.add_candidate(RouteCandidate::new("gemini", "gemini-2.5-pro").with_priority(10));
-        route_table.register_alias(claude);
-
-        let mut claude35 = ModelAliasDefinition::new("claude-3-5-sonnet");
-        claude35 = claude35
-            .add_candidate(RouteCandidate::new("gemini", "gemini-2.5-pro").with_priority(10));
-        route_table.register_alias(claude35);
-
-        let mut gpt4o = ModelAliasDefinition::new("gpt-4o");
-        gpt4o =
-            gpt4o.add_candidate(RouteCandidate::new("deepseek", "deepseek-chat").with_priority(10));
-        route_table.register_alias(gpt4o);
-
-        let mut o3 = ModelAliasDefinition::new("o3-mini");
-        o3 = o3
-            .add_candidate(RouteCandidate::new("deepseek", "deepseek-reasoner").with_priority(10));
-        route_table.register_alias(o3);
-
-        // 4. Smart Scheduling Aliases
-        let mut smart = ModelAliasDefinition::new("coding-smart").require(
-            CapabilitySet::new()
-                .with(Capability::NativeTools)
-                .with(Capability::Reasoning),
-        );
-        smart = smart.add_candidate(
-            RouteCandidate::new("gemini", "gemini-2.5-pro")
-                .with_capabilities(
-                    CapabilitySet::new()
-                        .with(Capability::NativeTools)
-                        .with(Capability::Reasoning),
-                )
-                .with_priority(10),
-        );
-        route_table.register_alias(smart);
-
-        let mut fast = ModelAliasDefinition::new("coding-fast")
-            .require(CapabilitySet::new().with(Capability::NativeTools));
-        fast = fast.add_candidate(
-            RouteCandidate::new("deepseek", "deepseek-chat")
-                .with_capabilities(CapabilitySet::new().with(Capability::NativeTools))
-                .with_priority(20),
-        );
-        route_table.register_alias(fast);
-
-        let mut reasoner = ModelAliasDefinition::new("coding-reasoner")
-            .require(CapabilitySet::new().with(Capability::Reasoning));
-        reasoner = reasoner.add_candidate(
-            RouteCandidate::new("deepseek", "deepseek-reasoner")
-                .with_capabilities(CapabilitySet::new().with(Capability::Reasoning))
-                .with_priority(30),
-        );
-        route_table.register_alias(reasoner);
-
-        let mut mini = ModelAliasDefinition::new("coding-mini");
-        mini =
-            mini.add_candidate(RouteCandidate::new("gemini", "gemini-2.0-flash").with_priority(10));
-        route_table.register_alias(mini);
+        // Models are discovered per account from the upstream provider. An
+        // empty table is deliberate: legacy aliases used to silently map
+        // Claude/GPT/coding-* names to unrelated paid providers.
+        let route_table = RouteTable::new();
 
         Self {
             token: token.into(),
@@ -385,6 +852,12 @@ impl GatewayServer {
             total_tool_calls: Arc::new(AtomicUsize::new(0)),
             is_running: Arc::new(AtomicBool::new(true)),
             recent_requests: Arc::new(Mutex::new(VecDeque::new())),
+            telemetry_store: Arc::new(
+                TelemetryStore::new(TelemetryStore::default_db_path()).unwrap_or_else(|_| {
+                    TelemetryStore::new_in_memory()
+                        .expect("in-memory telemetry store failed to open")
+                }),
+            ),
             gemini_thought_signatures: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -511,7 +984,7 @@ impl GatewayServer {
         if method == "POST" && (path == "/v1/chat/completions" || path == "/chat/completions") {
             self.active_requests.fetch_add(1, Ordering::SeqCst);
             self.total_requests.fetch_add(1, Ordering::Relaxed);
-            let _ = self.proxy_chat_completions(body, &mut stream);
+            let _ = self.proxy_chat_completions(&request, body, &mut stream);
             self.active_requests.fetch_sub(1, Ordering::SeqCst);
             return Ok(false);
         }
@@ -589,6 +1062,134 @@ impl GatewayServer {
                     Self::response("200 OK", "application/json", r#"{"stopping":true}"#)
                 }
             }
+            ("GET", "/telemetry/summary") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let query_str = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    let filter = Self::parse_telemetry_filter(query_str);
+                    match self.telemetry_store.query_summary(&filter) {
+                        Ok(summary) => {
+                            let json_body = serde_json::to_string(&summary).unwrap_or_default();
+                            Self::response("200 OK", "application/json", &json_body)
+                        }
+                        Err(err) => {
+                            let err_json = serde_json::json!({"error": err.to_string()});
+                            Self::response(
+                                "500 Internal Server Error",
+                                "application/json",
+                                &err_json.to_string(),
+                            )
+                        }
+                    }
+                }
+            }
+            ("GET", "/telemetry/timeseries") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let query_str = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    let filter = Self::parse_telemetry_filter(query_str);
+                    let map = Self::parse_query_map(query_str);
+                    let interval = map.get("interval").map(|s| s.as_str()).unwrap_or("hour");
+                    let metric = map.get("metric").map(|s| s.as_str()).unwrap_or("tokens");
+                    match self
+                        .telemetry_store
+                        .query_timeseries(&filter, interval, metric)
+                    {
+                        Ok(timeseries) => {
+                            let json_body = serde_json::to_string(&timeseries).unwrap_or_default();
+                            Self::response("200 OK", "application/json", &json_body)
+                        }
+                        Err(err) => {
+                            let err_json = serde_json::json!({"error": err.to_string()});
+                            Self::response(
+                                "500 Internal Server Error",
+                                "application/json",
+                                &err_json.to_string(),
+                            )
+                        }
+                    }
+                }
+            }
+            ("GET", "/telemetry/breakdown") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let query_str = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    let filter = Self::parse_telemetry_filter(query_str);
+                    let map = Self::parse_query_map(query_str);
+                    let dimension = map
+                        .get("dimension")
+                        .map(|s| s.as_str())
+                        .unwrap_or("provider");
+                    match self.telemetry_store.query_breakdown(&filter, dimension) {
+                        Ok(breakdown) => {
+                            let json_body = serde_json::to_string(&breakdown).unwrap_or_default();
+                            Self::response("200 OK", "application/json", &json_body)
+                        }
+                        Err(err) => {
+                            let err_json = serde_json::json!({"error": err.to_string()});
+                            Self::response(
+                                "500 Internal Server Error",
+                                "application/json",
+                                &err_json.to_string(),
+                            )
+                        }
+                    }
+                }
+            }
+            ("GET", "/telemetry/requests") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let query_str = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    let filter = Self::parse_telemetry_filter(query_str);
+                    let map = Self::parse_query_map(query_str);
+                    let limit = map
+                        .get("limit")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(50);
+                    let offset = map
+                        .get("offset")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let sort = map.get("sort").map(|s| s.as_str());
+                    match self
+                        .telemetry_store
+                        .query_requests(&filter, limit, offset, sort)
+                    {
+                        Ok(reqs_resp) => {
+                            let json_body = serde_json::to_string(&reqs_resp).unwrap_or_default();
+                            Self::response("200 OK", "application/json", &json_body)
+                        }
+                        Err(err) => {
+                            let err_json = serde_json::json!({"error": err.to_string()});
+                            Self::response(
+                                "500 Internal Server Error",
+                                "application/json",
+                                &err_json.to_string(),
+                            )
+                        }
+                    }
+                }
+            }
             _ => Self::response(
                 "404 Not Found",
                 "application/json",
@@ -599,6 +1200,147 @@ impl GatewayServer {
         stream.write_all(&response_bytes)?;
         stream.flush()?;
         Ok(should_stop)
+    }
+
+    fn parse_query_map(query_str: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for pair in query_str.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = pair.split_once('=') {
+                map.insert(k.to_string(), v.to_string());
+            } else {
+                map.insert(pair.to_string(), String::new());
+            }
+        }
+        map
+    }
+
+    pub fn infer_agent_name(headers: &str, requested_model: Option<&str>) -> String {
+        // 1. Explicit custom headers take top priority
+        for line in headers.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("x-agent-name:")
+                || lower.starts_with("x-agent:")
+                || lower.starts_with("x-codexling-agent:")
+                || lower.starts_with("x-client-name:")
+                || lower.starts_with("x-requested-by:")
+            {
+                if let Some((_, val)) = trimmed.split_once(':') {
+                    let v = val.trim();
+                    if !v.is_empty() {
+                        return v.to_string();
+                    }
+                }
+            }
+        }
+
+        // 2. User-Agent inspection
+        for line in headers.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("user-agent:") {
+                if let Some((_, val)) = trimmed.split_once(':') {
+                    let ua = val.trim();
+                    let ua_lower = ua.to_lowercase();
+                    if ua_lower.contains("pi-coding-agent")
+                        || ua_lower.contains("@earendil-works/pi")
+                        || ua_lower.contains("pi-ai")
+                        || ua_lower.starts_with("pi/")
+                        || ua_lower.starts_with("pi ")
+                        || ua_lower.starts_with("pi(")
+                        || ua_lower.contains("pi (")
+                        || ua_lower == "pi"
+                    {
+                        return "Pi".into();
+                    }
+                    if ua_lower.contains("hermes") {
+                        return "Hermes".into();
+                    }
+                    if ua_lower.contains("claude-code") || ua_lower.contains("@anthropic-ai/claude-code") {
+                        return "Claude Code".into();
+                    }
+                    if ua_lower.contains("cursor") {
+                        return "Cursor".into();
+                    }
+                    if ua_lower.contains("continue") {
+                        return "Continue".into();
+                    }
+                    if ua_lower.contains("opencode") {
+                        return "OpenCode".into();
+                    }
+                    if ua_lower.contains("aider") {
+                        return "Aider".into();
+                    }
+                    if ua_lower.contains("roo-cline") || ua_lower.contains("roo-code") {
+                        return "Roo Code".into();
+                    }
+                    if ua_lower.contains("cline") {
+                        return "Cline".into();
+                    }
+                    if ua_lower.contains("deepseek-harness") || ua_lower.contains("dsh") {
+                        return "DSH".into();
+                    }
+                    if ua_lower.contains("antigravity") || ua_lower.contains("agy") {
+                        return "Antigravity".into();
+                    }
+                    if ua_lower.contains("codex") {
+                        return "Codex".into();
+                    }
+                    if ua_lower.contains("curl") {
+                        return "cURL".into();
+                    }
+                    if ua_lower.contains("postman") {
+                        return "Postman".into();
+                    }
+                    if ua_lower.contains("insomnia") {
+                        return "Insomnia".into();
+                    }
+                    if !ua.is_empty() {
+                        let product = ua.split('/').next().unwrap_or(ua).trim();
+                        if !product.is_empty() && product.len() <= 24 {
+                            return product.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Model prefix check
+        if let Some(m) = requested_model {
+            let lower = m.to_lowercase();
+            if lower.starts_with("pi:") || lower.starts_with("pi/") {
+                return "Pi".into();
+            }
+            if lower.starts_with("hermes:") || lower.starts_with("hermes/") {
+                return "Hermes".into();
+            }
+            if lower.starts_with("cursor:") || lower.starts_with("cursor/") {
+                return "Cursor".into();
+            }
+        }
+
+        "API Client".into()
+    }
+
+    fn parse_telemetry_filter(query_str: &str) -> TelemetryQueryFilter {
+        let map = Self::parse_query_map(query_str);
+        TelemetryQueryFilter {
+            from: map.get("from").and_then(|s| s.parse::<i64>().ok()),
+            to: map.get("to").and_then(|s| s.parse::<i64>().ok()),
+            tz_offset_minutes: map
+                .get("tz_offset_minutes")
+                .or_else(|| map.get("timezoneOffset"))
+                .and_then(|s| s.parse::<i32>().ok()),
+            agent: map.get("agent").cloned().filter(|s| !s.is_empty()),
+            provider: map.get("provider").cloned().filter(|s| !s.is_empty()),
+            account: map.get("account").cloned().filter(|s| !s.is_empty()),
+            model: map.get("model").cloned().filter(|s| !s.is_empty()),
+            status: map.get("status").cloned().filter(|s| !s.is_empty()),
+            fidelity: map.get("fidelity").cloned().filter(|s| !s.is_empty()),
+        }
     }
 
     fn decode_body(raw_body: &str) -> String {
@@ -711,7 +1453,12 @@ impl GatewayServer {
         result
     }
 
-    fn proxy_chat_completions(&self, body: &str, stream: &mut TcpStream) -> std::io::Result<bool> {
+    fn proxy_chat_completions(
+        &self,
+        headers: &str,
+        body: &str,
+        stream: &mut TcpStream,
+    ) -> std::io::Result<bool> {
         let clean_json = Self::decode_body(body);
         let raw_req: serde_json::Value = match serde_json::from_str(&clean_json) {
             Ok(v) => v,
@@ -734,10 +1481,22 @@ impl GatewayServer {
             }
         };
 
-        let requested_model = raw_req
+        let Some(requested_model) = raw_req
             .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or("gpt-5.6");
+            .and_then(|model| model.as_str())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        else {
+            let response = Self::response(
+                "400 Bad Request",
+                "application/json",
+                r#"{"error":{"message":"model is required; select a model exported by /v1/models","type":"invalid_request_error"}}"#,
+            );
+            stream.write_all(&response)?;
+            stream.flush()?;
+            return Ok(true);
+        };
+        let agent = Self::infer_agent_name(headers, Some(requested_model));
         let is_stream = raw_req
             .get("stream")
             .and_then(|s| s.as_bool())
@@ -787,8 +1546,10 @@ impl GatewayServer {
 
         if let Some(codex_home) = upstream.codex_home.as_deref() {
             return self.proxy_codex_subscription(
+                &agent,
                 requested_model,
                 &upstream.target_model,
+                &upstream._account_name,
                 codex_home,
                 &clean_messages,
                 is_stream,
@@ -805,6 +1566,7 @@ impl GatewayServer {
 
         if upstream.provider_name == "Google Gemini" {
             return self.proxy_gemini_oauth(
+                &agent,
                 requested_model,
                 &upstream,
                 &raw_req,
@@ -1010,7 +1772,7 @@ impl GatewayServer {
         let record = GatewayRequestRecord {
             id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
             time: time_str,
-            agent: "Hermes".into(),
+            agent: agent.clone(),
             ingress_protocol: "OpenAI Chat".into(),
             model_alias: requested_model.to_string(),
             target_provider: upstream.provider_name.clone(),
@@ -1029,6 +1791,32 @@ impl GatewayServer {
             }
         }
 
+        self.telemetry_store.record_event(TelemetryEvent {
+            id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
+            timestamp: (now_unix * 1000) as i64,
+            agent: agent.clone(),
+            ingress_protocol: "OpenAI Chat".into(),
+            provider: upstream.provider_name.clone(),
+            account: upstream._account_name.clone(),
+            model_alias: requested_model.to_string(),
+            target_model: upstream.target_model.clone(),
+            input_tokens: Some(input_tokens as i64),
+            output_tokens: Some(output_tokens as i64),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            total_tokens: Some((input_tokens + output_tokens) as i64),
+            latency_ms: latency_ms as i64,
+            ttft_ms: (if ttft_ms > 0 { ttft_ms } else { latency_ms / 3 }) as i64,
+            status_code: 200,
+            status: "success".into(),
+            error_category: None,
+            fidelity: "actual".into(),
+            is_stream,
+            tool_calls_count: 0,
+            estimated_cost: None,
+            currency: None,
+        });
+
         Ok(true)
     }
 
@@ -1038,6 +1826,7 @@ impl GatewayServer {
     /// different provider.
     fn proxy_gemini_oauth(
         &self,
+        agent: &str,
         requested_model: &str,
         upstream: &UpstreamEndpoint,
         raw_req: &serde_json::Value,
@@ -1050,6 +1839,8 @@ impl GatewayServer {
     ) -> std::io::Result<bool> {
         let mut system_parts = Vec::new();
         let mut contents = Vec::new();
+        let mut replayed_gemini_call_ids = std::collections::HashSet::new();
+        let mut skipped_gemini_call_ids = std::collections::HashSet::new();
         for message in messages {
             let role = message
                 .get("role")
@@ -1102,13 +1893,28 @@ impl GatewayServer {
                                 call.get("id")
                                     .and_then(|value| value.as_str())
                                     .and_then(|id| {
-                                        self.gemini_thought_signatures.lock().ok()?.get(id).cloned()
+                                        self.gemini_thought_signature_for_call(id, name, &args)
                                     })
-                            });
+                            })
+                            .or_else(|| self.gemini_thought_signature_for_call("", name, &args));
                         if let Some(signature) = signature {
                             native_part["thoughtSignature"] = serde_json::json!(signature);
+                            if let Some(call_id) = call.get("id").and_then(|value| value.as_str()) {
+                                replayed_gemini_call_ids.insert(call_id.to_string());
+                            }
+                            parts.push(native_part);
+                        } else {
+                            // A conversation created before this Gateway started
+                            // may contain a Gemini tool call whose opaque thought
+                            // signature is no longer recoverable. Never invent a
+                            // signature: replaying that part would make Gemini
+                            // reject the entire request. Skip this obsolete call
+                            // and its paired result instead of leaking an internal
+                            // compatibility marker into the user's conversation.
+                            if let Some(call_id) = call.get("id").and_then(|value| value.as_str()) {
+                                skipped_gemini_call_ids.insert(call_id.to_string());
+                            }
                         }
-                        parts.push(native_part);
                     }
                 }
             } else if role == "tool" {
@@ -1116,6 +1922,16 @@ impl GatewayServer {
                     .get("tool_call_id")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
+                if skipped_gemini_call_ids.contains(call_id) {
+                    continue;
+                }
+                if !replayed_gemini_call_ids.contains(call_id) {
+                    // A standalone tool result has no replayable signed
+                    // functionCall in this request window. It cannot form a
+                    // valid Gemini turn, so omit it rather than presenting the
+                    // result as user text.
+                    continue;
+                }
                 let Some(name) = Self::openai_tool_name_for_call(messages, call_id) else {
                     return Self::write_gateway_error(
                         stream,
@@ -1196,37 +2012,71 @@ impl GatewayServer {
             &format!("codexling-{now_unix}"),
         );
 
-        let mut cmd = std::process::Command::new("curl");
-        cmd.arg("-s")
-            .arg("-X")
-            .arg("POST")
-            .arg(&upstream.url)
-            .arg("-H")
-            .arg(format!("Authorization: {}", upstream.auth_header))
-            .arg("-H")
-            .arg("Content-Type: application/json")
-            .arg("-H")
-            .arg("User-Agent: antigravity")
-            .arg("-H")
-            .arg(r#"Client-Metadata: {"ideType":"ANTIGRAVITY"}"#)
-            .arg("-d")
-            .arg(payload.to_string())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        for (name, value) in &upstream.extra_headers {
-            cmd.arg("-H").arg(format!("{name}: {value}"));
-        }
-        let output = match cmd.output() {
-            Ok(output) => output,
-            Err(error) => {
-                return Self::write_gateway_error(
-                    stream,
-                    requested_model,
-                    is_stream,
-                    now_unix,
-                    &format!("无法启动 Gemini OAuth 请求：{error}"),
-                )
+        let output = match Self::run_gemini_cloud_code_request(upstream, &payload, false) {
+            Ok(output) if output.status.success() => output,
+            Ok(output) => {
+                let configured_route_error = Self::curl_failure_message(&output);
+                match Self::run_gemini_cloud_code_request(upstream, &payload, true) {
+                    Ok(direct_output) if direct_output.status.success() => direct_output,
+                    Ok(direct_output) => {
+                        let message = format!(
+                            "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{}）",
+                            Self::curl_failure_message(&direct_output)
+                        );
+                        Self::log_gateway_error(&message);
+                        return Self::write_gateway_error(
+                            stream,
+                            requested_model,
+                            is_stream,
+                            now_unix,
+                            &message,
+                        );
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{error}）"
+                        );
+                        Self::log_gateway_error(&message);
+                        return Self::write_gateway_error(
+                            stream,
+                            requested_model,
+                            is_stream,
+                            now_unix,
+                            &message,
+                        );
+                    }
+                }
             }
+            Err(error) => match Self::run_gemini_cloud_code_request(upstream, &payload, true) {
+                Ok(direct_output) if direct_output.status.success() => direct_output,
+                Ok(direct_output) => {
+                    let message = format!(
+                        "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{}）",
+                        Self::curl_failure_message(&direct_output)
+                    );
+                    Self::log_gateway_error(&message);
+                    return Self::write_gateway_error(
+                        stream,
+                        requested_model,
+                        is_stream,
+                        now_unix,
+                        &message,
+                    );
+                }
+                Err(direct_error) => {
+                    let message = format!(
+                        "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{direct_error}）"
+                    );
+                    Self::log_gateway_error(&message);
+                    return Self::write_gateway_error(
+                        stream,
+                        requested_model,
+                        is_stream,
+                        now_unix,
+                        &message,
+                    );
+                }
+            },
         };
         let body: serde_json::Value = match serde_json::from_slice(&output.stdout) {
             Ok(body) => body,
@@ -1275,6 +2125,7 @@ impl GatewayServer {
         let message_json = serde_json::to_string(&message)
             .unwrap_or_else(|_| "{\"role\":\"assistant\",\"content\":\"\"}".into());
         let tool_calls = message.get("tool_calls").cloned();
+        let has_tools = tool_calls.is_some();
         let response = if is_stream {
             if let Some(tool_calls) = tool_calls {
                 let tool_calls_json =
@@ -1304,7 +2155,7 @@ impl GatewayServer {
             records.push_front(GatewayRequestRecord {
                 id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
                 time: time_str.into(),
-                agent: "Hermes".into(),
+                agent: agent.to_string(),
                 ingress_protocol: "OpenAI Chat".into(),
                 model_alias: requested_model.into(),
                 target_provider: "Google Gemini".into(),
@@ -1316,6 +2167,31 @@ impl GatewayServer {
                 status: "200 OK".into(),
             });
         }
+        self.telemetry_store.record_event(TelemetryEvent {
+            id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
+            timestamp: (now_unix * 1000) as i64,
+            agent: agent.to_string(),
+            ingress_protocol: "OpenAI Chat".into(),
+            provider: "Google Gemini".into(),
+            account: upstream._account_name.clone(),
+            model_alias: requested_model.into(),
+            target_model: upstream.target_model.clone(),
+            input_tokens: Some((messages.len() * 10) as i64),
+            output_tokens: Some(((answer_len / 4).max(1)) as i64),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            total_tokens: Some(((messages.len() * 10) + (answer_len / 4).max(1)) as i64),
+            latency_ms: latency_ms as i64,
+            ttft_ms: latency_ms as i64,
+            status_code: 200,
+            status: "success".into(),
+            error_category: None,
+            fidelity: "actual".into(),
+            is_stream,
+            tool_calls_count: if has_tools { 1 } else { 0 },
+            estimated_cost: None,
+            currency: None,
+        });
         Ok(true)
     }
 
@@ -1531,6 +2407,108 @@ impl GatewayServer {
         })
     }
 
+    /// Sends the OAuth Cloud Code request through the inherited network route
+    /// or, on retry, directly. It deliberately never places credentials in
+    /// returned diagnostics.
+    fn run_gemini_cloud_code_request(
+        upstream: &UpstreamEndpoint,
+        payload: &serde_json::Value,
+        bypass_proxy: bool,
+    ) -> Result<std::process::Output, String> {
+        let mut command = std::process::Command::new("curl");
+        command
+            .arg("-sS")
+            // HTTP 4xx/5xx must be an actionable failure too. Without this,
+            // curl exits successfully for a body-less 502 and the Gateway
+            // cannot perform its direct-network retry.
+            .arg("--fail-with-body")
+            .arg("--connect-timeout")
+            .arg("5")
+            .arg("--max-time")
+            .arg("90")
+            .arg("-X")
+            .arg("POST")
+            .arg(&upstream.url)
+            .arg("-H")
+            .arg(format!("Authorization: {}", upstream.auth_header))
+            .arg("-H")
+            .arg("Content-Type: application/json")
+            .arg("-H")
+            .arg("User-Agent: antigravity")
+            .arg("-H")
+            .arg(r#"Client-Metadata: {"ideType":"ANTIGRAVITY"}"#)
+            .arg("-d")
+            .arg(payload.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if bypass_proxy {
+            command.arg("--noproxy").arg("*");
+        }
+        for (name, value) in &upstream.extra_headers {
+            command.arg("-H").arg(format!("{name}: {value}"));
+        }
+        command
+            .output()
+            .map_err(|error| format!("无法启动 Gemini OAuth 请求：{error}"))
+    }
+
+    fn curl_failure_message(output: &std::process::Output) -> String {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.trim();
+        if message.is_empty() {
+            format!("curl 退出码 {:?}", output.status.code())
+        } else {
+            message.chars().take(400).collect()
+        }
+    }
+
+    fn log_gateway_error(message: &str) {
+        use std::io::Write;
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        let directory = std::path::Path::new(&home).join("Library/Application Support/Codexling");
+        if std::fs::create_dir_all(&directory).is_err() {
+            return;
+        }
+        let path = directory.join("gateway.log");
+        if std::fs::metadata(&path)
+            .map(|metadata| metadata.len() > 512 * 1024)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::write(&path, "");
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let timestamp = Self::current_unix_seconds();
+            let _ = writeln!(file, "[{timestamp}] {message}");
+        }
+    }
+
+    /// Pi and Hermes may recreate OpenAI-compatible tool-call IDs when they
+    /// reconstruct a conversation. Gemini requires the original thought
+    /// signature nevertheless, so retain it under both the generated ID and
+    /// a stable function-name/arguments key.
+    fn gemini_thought_signature_key(name: &str, args: &serde_json::Value) -> String {
+        let arguments = serde_json::to_string(args).unwrap_or_else(|_| "{}".into());
+        format!("function:{name}:{arguments}")
+    }
+
+    fn gemini_thought_signature_for_call(
+        &self,
+        call_id: &str,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Option<String> {
+        let cache = self.gemini_thought_signatures.lock().ok()?;
+        cache.get(call_id).cloned().or_else(|| {
+            cache
+                .get(&Self::gemini_thought_signature_key(name, args))
+                .cloned()
+        })
+    }
+
     fn cloud_code_response_message(&self, body: &serde_json::Value) -> Option<serde_json::Value> {
         let parts = body
             .pointer("/response/candidates/0/content/parts")
@@ -1571,6 +2549,10 @@ impl GatewayServer {
                             cache.clear();
                         }
                         cache.insert(call_id.clone(), signature.to_string());
+                        cache.insert(
+                            Self::gemini_thought_signature_key(name, &args),
+                            signature.to_string(),
+                        );
                     }
                 }
                 Some(serde_json::json!({"id": call_id, "type":"function", "function":function}))
@@ -1592,8 +2574,10 @@ impl GatewayServer {
     /// ever consulted.
     fn proxy_codex_subscription(
         &self,
+        agent: &str,
         requested_model: &str,
         target_model: &str,
+        account_name: &str,
         codex_home: &str,
         messages: &[serde_json::Value],
         is_stream: bool,
@@ -1704,7 +2688,7 @@ impl GatewayServer {
             lock.push_front(GatewayRequestRecord {
                 id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
                 time: time_str.into(),
-                agent: "Hermes".into(),
+                agent: agent.to_string(),
                 ingress_protocol: "OpenAI Chat".into(),
                 model_alias: requested_model.into(),
                 target_provider: "OpenAI / Codex".into(),
@@ -1716,6 +2700,31 @@ impl GatewayServer {
                 status: "200 OK".into(),
             });
         }
+        self.telemetry_store.record_event(TelemetryEvent {
+            id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
+            timestamp: (now_unix * 1000) as i64,
+            agent: agent.to_string(),
+            ingress_protocol: "OpenAI Chat".into(),
+            provider: "OpenAI / Codex".into(),
+            account: account_name.into(),
+            model_alias: requested_model.into(),
+            target_model: target_model.into(),
+            input_tokens: Some((messages.len() * 10) as i64),
+            output_tokens: Some(((answer.len() / 4).max(1)) as i64),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            total_tokens: Some(((messages.len() * 10) + (answer.len() / 4).max(1)) as i64),
+            latency_ms: latency_ms as i64,
+            ttft_ms: latency_ms as i64,
+            status_code: 200,
+            status: "success".into(),
+            error_category: None,
+            fidelity: "actual".into(),
+            is_stream,
+            tool_calls_count: 0,
+            estimated_cost: None,
+            currency: None,
+        });
         Ok(true)
     }
 
@@ -1783,8 +2792,11 @@ impl GatewayServer {
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\ndata: {{\"id\":\"resp_error\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{message}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"resp_error\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n"
             )
         } else {
+            let body =
+                format!("{{\"error\":{{\"message\":{message},\"type\":\"upstream_error\"}}}}");
             format!(
-                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{{\"error\":{{\"message\":{message},\"type\":\"upstream_error\"}}}}"
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{body}",
+                body.len()
             )
         };
         stream.write_all(response.as_bytes())?;
@@ -1794,8 +2806,14 @@ impl GatewayServer {
 
     fn resolve_upstream_endpoint(model: &str) -> Result<UpstreamEndpoint, String> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        Self::resolve_upstream_endpoint_for_home(&home, model)
+    }
+
+    fn resolve_upstream_endpoint_for_home(home: &str, model: &str) -> Result<UpstreamEndpoint, String> {
         let app_support = format!("{home}/Library/Application Support/Codexling");
         let mut lower = model.to_lowercase();
+
+        let mut explicit_provider = None;
 
         // Hermes custom providers only accept model IDs in their configured
         // allowlist, and render that ID directly in the picker. Codexling
@@ -1805,57 +2823,66 @@ impl GatewayServer {
         let picker_parts: Vec<&str> = lower.split('·').map(str::trim).collect();
         if picker_parts.len() == 3 && picker_parts.iter().all(|part| !part.is_empty()) {
             let provider_label = picker_parts[0];
-            if provider_label.starts_with("openai") {
-                lower = format!("openai/{}@{}", picker_parts[1], picker_parts[2]);
-            } else if provider_label.starts_with("google") {
-                lower = format!("google/{}@{}", picker_parts[1], picker_parts[2]);
+            if provider_label.starts_with("openai") || provider_label.starts_with("codex") {
+                explicit_provider = Some("openai");
+                lower = format!("{}@{}", picker_parts[1], picker_parts[2]);
+            } else if provider_label.starts_with("google") || provider_label.starts_with("gemini") {
+                explicit_provider = Some("google");
+                lower = format!("{}@{}", picker_parts[1], picker_parts[2]);
             } else if provider_label.starts_with("deepseek") {
-                lower = format!("deepseek/{}@{}", picker_parts[1], picker_parts[2]);
+                explicit_provider = Some("deepseek");
+                lower = format!("{}@{}", picker_parts[1], picker_parts[2]);
             } else if provider_label.starts_with("opencode") {
-                lower = format!("opencode/{}@{}", picker_parts[1], picker_parts[2]);
+                explicit_provider = Some("opencode");
+                lower = format!("{}@{}", picker_parts[1], picker_parts[2]);
             }
         }
 
-        let mut explicit_provider = None;
-        if lower.starts_with("openai · ")
-            || lower.starts_with("openai / codex · ")
-            || lower.starts_with("openai/")
-        {
-            explicit_provider = Some("openai");
-        } else if lower.starts_with("google · ")
-            || lower.starts_with("google gemini · ")
-            || lower.starts_with("google/")
-        {
-            explicit_provider = Some("google");
-        } else if lower.starts_with("deepseek · ")
-            || lower.starts_with("deepseek 官方 · ")
-            || lower.starts_with("deepseek/")
-        {
-            explicit_provider = Some("deepseek");
-        } else if lower.starts_with("opencode · ")
-            || lower.starts_with("opencode 聚合平台 · ")
-            || lower.starts_with("opencode/")
-        {
-            explicit_provider = Some("opencode");
-        }
+        if explicit_provider.is_none() {
+            if lower.starts_with("openai · ")
+                || lower.starts_with("openai / codex · ")
+                || lower.starts_with("openai/")
+                || lower.starts_with("codex/")
+            {
+                explicit_provider = Some("openai");
+            } else if lower.starts_with("google · ")
+                || lower.starts_with("google gemini · ")
+                || lower.starts_with("google/")
+                || lower.starts_with("gemini/")
+            {
+                explicit_provider = Some("google");
+            } else if lower.starts_with("deepseek · ")
+                || lower.starts_with("deepseek 官方 · ")
+                || lower.starts_with("deepseek/")
+            {
+                explicit_provider = Some("deepseek");
+            } else if lower.starts_with("opencode · ")
+                || lower.starts_with("opencode 聚合平台 · ")
+                || lower.starts_with("opencode/")
+            {
+                explicit_provider = Some("opencode");
+            }
 
-        for prefix in &[
-            "openai · ",
-            "openai / codex · ",
-            "google · ",
-            "google gemini · ",
-            "deepseek · ",
-            "deepseek 官方 · ",
-            "opencode · ",
-            "opencode 聚合平台 · ",
-            "openai/",
-            "google/",
-            "deepseek/",
-            "opencode/",
-        ] {
-            if lower.starts_with(prefix) {
-                lower = lower[prefix.len()..].trim().to_string();
-                break;
+            for prefix in &[
+                "openai · ",
+                "openai / codex · ",
+                "google · ",
+                "google gemini · ",
+                "deepseek · ",
+                "deepseek 官方 · ",
+                "opencode · ",
+                "opencode 聚合平台 · ",
+                "openai/",
+                "codex/",
+                "google/",
+                "gemini/",
+                "deepseek/",
+                "opencode/",
+            ] {
+                if lower.starts_with(prefix) {
+                    lower = lower[prefix.len()..].trim().to_string();
+                    break;
+                }
             }
         }
 
@@ -1896,22 +2923,202 @@ impl GatewayServer {
                 (None, lower.as_str())
             };
 
-        let is_google = explicit_provider == Some("google") || base_model.contains("gemini");
-        let is_openai = explicit_provider == Some("openai")
-            || base_model.starts_with("gpt-")
-            || base_model.starts_with("o1")
-            || base_model.starts_with("o3")
-            || base_model.starts_with("o4");
-        let is_deepseek = explicit_provider == Some("deepseek")
-            || (base_model.contains("deepseek") && !base_model.contains("opencode"));
-        let is_opencode = explicit_provider == Some("opencode")
-            || base_model.contains("qwen")
-            || base_model.contains("kimi")
-            || base_model.contains("minimax")
-            || base_model.contains("glm")
-            || base_model.contains("hy3")
-            || base_model.contains("hy4")
-            || base_model.contains("grok");
+        // Extract provider and clean account info from account_filter if present (e.g. `go-opencode`, `x-seven-google`, `seven-x-openai`).
+        let (inferred_prov, clean_account_filter, filter_short_id) = match account_filter {
+            Some(af) => Self::parse_account_filter(af),
+            None => (None, None, None),
+        };
+        if explicit_provider.is_none() {
+            explicit_provider = inferred_prov;
+        }
+
+        // When explicit provider is not given, inspect connections-v1.json first
+        // to discover which account actually owns this model, rather than guessing by substring.
+        if explicit_provider.is_none() {
+            let conn_path = format!("{app_support}/connections-v1.json");
+            if let Ok(content) = std::fs::read_to_string(&conn_path) {
+                if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let normalized_requested = base_model
+                        .trim()
+                        .trim_start_matches("models/")
+                        .to_ascii_lowercase()
+                        .replace('_', "-");
+
+                    let account_matches_and_has_model =
+                        |accounts: Option<&Vec<serde_json::Value>>, provider_suffix: &str| -> (bool, bool) {
+                            let mut account_found = false;
+                            let mut model_found = false;
+                            if let Some(accs) = accounts {
+                                for acc in accs {
+                                    if !acc
+                                        .get("isEnabled")
+                                        .and_then(|e| e.as_bool())
+                                        .unwrap_or(true)
+                                    {
+                                        continue;
+                                    }
+                                    let id = Self::connection_id(acc);
+                                    let short_id = Self::connection_short_id(acc);
+                                    let label = acc.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                                    let display = acc
+                                        .get("displayName")
+                                        .or_else(|| {
+                                            acc.get("usage").and_then(|u| u.get("accountName"))
+                                        })
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(label);
+                                    let email =
+                                        acc.get("email").and_then(|v| v.as_str()).unwrap_or("");
+                                    let (slug, friendly_name) =
+                                        Self::friendly_account_slug(Some(display), Some(email), label);
+                                    let scoped_slug = format!("{slug}-{provider_suffix}");
+                                    let full_slug = format!("{slug}-{provider_suffix}-{short_id}");
+                                    let id_slug = format!("{slug}-{short_id}");
+                                    let account_display = format!("{friendly_name} ({provider_suffix} · {short_id})");
+
+                                    let is_acc_match = match account_filter {
+                                        Some(filter) => {
+                                            if let Some(prov) = explicit_provider {
+                                                if prov != provider_suffix {
+                                                    continue;
+                                                }
+                                            }
+                                            if let Some(ref sid) = filter_short_id {
+                                                sid.eq_ignore_ascii_case(&short_id) || id.to_lowercase().replace('-', "").starts_with(sid)
+                                            } else {
+                                                Self::gateway_account_filter_matches(
+                                                    filter,
+                                                    &[display, label, email, &slug, &scoped_slug, &full_slug, &id_slug, &short_id, &id, &account_display],
+                                                ) || clean_account_filter.as_deref().map_or(false, |cf| {
+                                                    Self::gateway_account_filter_matches(
+                                                        cf,
+                                                        &[display, label, email, &slug, &id_slug, &short_id],
+                                                    )
+                                                })
+                                            }
+                                        }
+                                        None => true,
+                                    };
+
+                                    if is_acc_match {
+                                        account_found = true;
+                                        let has_model = acc
+                                            .get("availableModelIDs")
+                                            .and_then(|m| m.as_array())
+                                            .map_or(false, |models| {
+                                                models.iter().filter_map(|m| m.as_str()).any(|cand| {
+                                                    cand.eq_ignore_ascii_case(base_model)
+                                                        || cand
+                                                            .strip_suffix("-tiered")
+                                                            .map_or(false, |t| {
+                                                                t.eq_ignore_ascii_case(base_model)
+                                                            })
+                                                        || cand
+                                                            .trim_start_matches("models/")
+                                                            .replace('_', "-")
+                                                            .eq_ignore_ascii_case(
+                                                                &normalized_requested,
+                                                            )
+                                                })
+                                            });
+                                        if has_model {
+                                            model_found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            (account_found, model_found)
+                        };
+
+                    let gemini_accs = registry.get("geminiConnections").and_then(|a| a.as_array());
+                    let opencode_accs = registry.get("openCodeConnections").and_then(|a| a.as_array());
+                    let deepseek_accs = registry.get("deepSeekConnections").and_then(|a| a.as_array());
+                    let codex_accs = registry.get("codexAccounts").and_then(|a| a.as_array());
+
+                    let (gemini_acc, gemini_model) =
+                        account_matches_and_has_model(gemini_accs, "google");
+                    let (opencode_acc, opencode_model) =
+                        account_matches_and_has_model(opencode_accs, "opencode");
+                    let (deepseek_acc, deepseek_model) =
+                        account_matches_and_has_model(deepseek_accs, "deepseek");
+                    let (codex_acc, codex_model) =
+                        account_matches_and_has_model(codex_accs, "openai");
+
+                    let matched_with_model: Vec<(&str, bool)> = [
+                        ("google", gemini_model),
+                        ("opencode", opencode_model),
+                        ("deepseek", deepseek_model),
+                        ("openai", codex_model),
+                    ]
+                    .iter()
+                    .filter_map(|(p, has_m)| if *has_m { Some((*p, true)) } else { None })
+                    .collect();
+
+                    if matched_with_model.len() == 1 {
+                        explicit_provider = Some(matched_with_model[0].0);
+                    } else if matched_with_model.len() > 1 {
+                        // Disambiguate by model's native/primary platform ownership:
+                        if base_model.contains("gemini") {
+                            explicit_provider = Some("google");
+                        } else if base_model.starts_with("gpt-") || base_model.starts_with("o1") || base_model.starts_with("o3") || base_model.starts_with("o4") {
+                            explicit_provider = Some("openai");
+                        } else if base_model.starts_with("deepseek") && deepseek_model {
+                            explicit_provider = Some("deepseek");
+                        } else if opencode_model {
+                            explicit_provider = Some("opencode");
+                        } else {
+                            explicit_provider = Some(matched_with_model[0].0);
+                        }
+                    } else if account_filter.is_some() {
+                        let matched_providers = [
+                            ("google", gemini_acc),
+                            ("opencode", opencode_acc),
+                            ("deepseek", deepseek_acc),
+                            ("openai", codex_acc),
+                        ];
+                        let active: Vec<&str> = matched_providers
+                            .iter()
+                            .filter_map(|(p, matched)| if *matched { Some(*p) } else { None })
+                            .collect();
+                        if active.len() == 1 {
+                            explicit_provider = Some(active[0]);
+                        }
+                    }
+                }
+            }
+        }
+
+        let is_google = match explicit_provider {
+            Some(provider) => provider == "google",
+            None => base_model.contains("gemini"),
+        };
+        let is_openai = match explicit_provider {
+            Some(provider) => provider == "openai",
+            None => {
+                base_model.starts_with("gpt-")
+                    || base_model.starts_with("o1")
+                    || base_model.starts_with("o3")
+                    || base_model.starts_with("o4")
+            }
+        };
+        let is_deepseek = match explicit_provider {
+            Some(provider) => provider == "deepseek",
+            None => base_model.contains("deepseek") && !base_model.contains("opencode"),
+        };
+        let is_opencode = match explicit_provider {
+            Some(provider) => provider == "opencode",
+            None => {
+                base_model.contains("qwen")
+                    || base_model.contains("kimi")
+                    || base_model.contains("minimax")
+                    || base_model.contains("glm")
+                    || base_model.contains("hy3")
+                    || base_model.contains("hy4")
+                    || base_model.contains("grok")
+                    || base_model.contains("claude")
+            }
+        };
 
         // 1. Google Gemini 专属通道（严格隔离，只使用已登录账号的 OAuth 凭证）
         if is_google {
@@ -1941,11 +3148,34 @@ impl GatewayServer {
                                 .and_then(|h| h.as_str())
                                 .unwrap_or("");
 
+                            let (slug, friendly_name) = Self::friendly_account_slug(
+                                Some(display_name),
+                                Some(email),
+                                label,
+                            );
+                            let id = Self::connection_id(acc);
+                            let short_id = Self::connection_short_id(acc);
+                            let scoped_slug = format!("{slug}-google");
+                            let full_slug = format!("{slug}-google-{short_id}");
+                            let id_slug = format!("{slug}-{short_id}");
+                            let account_display = format!("{friendly_name} (Google · {short_id})");
+
                             let matched = match account_filter {
-                                Some(filter) => Self::gateway_account_filter_matches(
-                                    filter,
-                                    &[display_name, email, label],
-                                ),
+                                Some(filter) => {
+                                    if let Some(ref sid) = filter_short_id {
+                                        sid.eq_ignore_ascii_case(&short_id) || id.to_lowercase().replace('-', "").starts_with(sid)
+                                    } else {
+                                        Self::gateway_account_filter_matches(
+                                            filter,
+                                            &[display_name, email, label, &slug, &scoped_slug, &full_slug, &id_slug, &short_id, &id, &account_display],
+                                        ) || clean_account_filter.as_deref().map_or(false, |cf| {
+                                            Self::gateway_account_filter_matches(
+                                                cf,
+                                                &[display_name, email, label, &slug, &id_slug, &short_id],
+                                            )
+                                        })
+                                    }
+                                }
                                 None => true,
                             };
 
@@ -1986,7 +3216,7 @@ impl GatewayServer {
                                             .map(str::to_owned),
                                         target_model,
                                         provider_name: "Google Gemini".into(),
-                                        _account_name: if !display_name.is_empty() { display_name.to_string() } else { email.to_string() },
+                                        _account_name: account_display,
                                         codex_home: None,
                                     });
                                     }
@@ -2009,6 +3239,7 @@ impl GatewayServer {
         // 2. OpenAI / Codex 专属通道 (严格隔离，绝不降级)
         if is_openai {
             let conn_path = format!("{app_support}/connections-v1.json");
+            let mut found_session_home: Option<String> = None;
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry.get("codexAccounts").and_then(|a| a.as_array())
@@ -2032,13 +3263,38 @@ impl GatewayServer {
                                 .and_then(|u| u.get("accountName"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or(label);
-                            let slug = Self::friendly_account_slug(Some(display), None, label)
-                                .0
-                                .to_lowercase();
-                            if let Some(filter) = account_filter {
-                                if filter.replace('-', "") != slug.replace('-', "") {
-                                    continue;
+                            let (slug, friendly_name) = Self::friendly_account_slug(
+                                Some(display),
+                                None,
+                                label,
+                            );
+                            let id = Self::connection_id(account);
+                            let short_id = Self::connection_short_id(account);
+                            let scoped_slug = format!("{slug}-openai");
+                            let full_slug = format!("{slug}-openai-{short_id}");
+                            let id_slug = format!("{slug}-{short_id}");
+                            let account_display = format!("{friendly_name} (OpenAI · {short_id})");
+
+                            let matched = match account_filter {
+                                Some(filter) => {
+                                    if let Some(ref sid) = filter_short_id {
+                                        sid.eq_ignore_ascii_case(&short_id) || id.to_lowercase().replace('-', "").starts_with(sid)
+                                    } else {
+                                        Self::gateway_account_filter_matches(
+                                            filter,
+                                            &[display, label, &slug, &scoped_slug, &full_slug, &id_slug, &short_id, &id, &account_display],
+                                        ) || clean_account_filter.as_deref().map_or(false, |cf| {
+                                            Self::gateway_account_filter_matches(
+                                                cf,
+                                                &[display, label, &slug, &id_slug, &short_id],
+                                            )
+                                        })
+                                    }
                                 }
+                                None => true,
+                            };
+                            if !matched {
+                                continue;
                             }
                             let relative_home = account
                                 .get("relativeHomeDirectory")
@@ -2049,22 +3305,21 @@ impl GatewayServer {
                             }
                             let codex_home =
                                 format!("{app_support}/Runtimes/Codex/{relative_home}");
-                            if std::path::Path::new(&codex_home)
-                                .join("oauth_token.json")
-                                .is_file()
-                            {
+                            if std::path::Path::new(&codex_home).join("oauth_token.json").is_file() {
+                                found_session_home = Some(codex_home.clone());
+                                let Some(target_model) =
+                                    Self::resolve_codex_model(&codex_home, base_model)
+                                else {
+                                    continue;
+                                };
                                 return Ok(UpstreamEndpoint {
                                     url: String::new(),
                                     auth_header: String::new(),
                                     extra_headers: vec![],
                                     project: None,
-                                    target_model: if base_model.is_empty() {
-                                        "gpt-5.6".into()
-                                    } else {
-                                        base_model.to_string()
-                                    },
+                                    target_model,
                                     provider_name: "OpenAI / Codex".into(),
-                                    _account_name: display.into(),
+                                    _account_name: account_display,
                                     codex_home: Some(codex_home),
                                 });
                             }
@@ -2072,13 +3327,25 @@ impl GatewayServer {
                     }
                 }
             }
+            if let Some(codex_home) = found_session_home {
+                let available = Self::codex_catalog(&codex_home)
+                    .iter()
+                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "OpenAI / Codex 订阅不支持模型 [{}]。该账号仅支持: {}. 请改用列表中的模型。",
+                    base_model, available
+                ));
+            }
             return Err("OpenAI / Codex 会话未就绪，请在 Codexling 中检查登录状态。".into());
         }
 
         // 3. DeepSeek 官方直连 (严格隔离，仅选 DeepSeek 时调用)
         if is_deepseek {
             let conn_path = format!("{app_support}/connections-v1.json");
-            let mut selected_handle = None;
+            let mut selected_connection: Option<(String, String, String)> = None;
+            let mut matched_account = false;
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry
@@ -2096,33 +3363,62 @@ impl GatewayServer {
                                 continue;
                             }
                             let label = account.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                            let slug = Self::friendly_account_slug(Some(label), None, label)
-                                .0
-                                .to_lowercase();
-                            let matched = account_filter.map_or(true, |filter| {
-                                filter.replace('-', "") == slug.replace('-', "")
-                            });
+                            let (slug, friendly_name) = Self::friendly_account_slug(Some(label), None, label);
+                            let id = Self::connection_id(account);
+                            let short_id = Self::connection_short_id(account);
+                            let scoped_slug = format!("{slug}-deepseek");
+                            let full_slug = format!("{slug}-deepseek-{short_id}");
+                            let id_slug = format!("{slug}-{short_id}");
+                            let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
+
+                            let matched = match account_filter {
+                                Some(filter) => {
+                                    if let Some(ref sid) = filter_short_id {
+                                        sid.eq_ignore_ascii_case(&short_id) || id.to_lowercase().replace('-', "").starts_with(sid)
+                                    } else {
+                                        Self::gateway_account_filter_matches(
+                                            filter,
+                                            &[label, &slug, &scoped_slug, &full_slug, &id_slug, &short_id, &id, &account_display],
+                                        ) || clean_account_filter.as_deref().map_or(false, |cf| {
+                                            Self::gateway_account_filter_matches(cf, &[label, &slug, &id_slug, &short_id])
+                                        })
+                                    }
+                                }
+                                None => true,
+                            };
                             if matched {
-                                selected_handle = account
-                                    .get("credentialHandle")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string);
-                                break;
+                                matched_account = true;
+                                if let (Some(handle), Some(target_model)) = (
+                                    account.get("credentialHandle").and_then(|v| v.as_str()),
+                                    Self::connection_model_id(account, base_model),
+                                ) {
+                                    selected_connection =
+                                        Some((handle.to_string(), target_model, account_display));
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
-            if account_filter.is_some() && selected_handle.is_none() {
+            if account_filter.is_some() && selected_connection.is_none() {
+                let detail = if matched_account {
+                    format!("DeepSeek 账号 [{}] 不提供模型 [{}]；已阻止回退。", account_filter.unwrap(), base_model)
+                } else {
+                    format!("DeepSeek 账号 [{}] 未启用或认证未就绪；已阻止回退。", account_filter.unwrap())
+                };
+                return Err(detail);
+            }
+            if account_filter.is_none() && selected_connection.is_none() {
                 return Err(format!(
-                    "DeepSeek 账号 [{}] 未启用或认证未就绪；已阻止回退。",
-                    account_filter.unwrap()
+                    "DeepSeek 当前没有已启用账号提供模型 [{}]；已阻止回退。",
+                    base_model
                 ));
             }
             let key_dir = format!("{app_support}/deepseek_credentials");
             if let Ok(entries) = std::fs::read_dir(&key_dir) {
                 for entry in entries.flatten() {
-                    if let Some(handle) = selected_handle.as_deref() {
+                    if let Some((handle, _, _)) = selected_connection.as_ref() {
                         let file_name = entry.file_name();
                         let name = file_name.to_string_lossy();
                         if name != format!("{handle}.key") && name != format!("{handle}.json") {
@@ -2132,23 +3428,18 @@ impl GatewayServer {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let key = content.trim().to_string();
                         if !key.is_empty() {
-                            let actual_model = if base_model.contains("reason")
-                                || base_model.contains("r1")
-                                || base_model.contains("o1")
-                                || base_model.contains("thinking")
-                            {
-                                "deepseek-reasoner"
-                            } else {
-                                "deepseek-chat"
-                            };
+                            let (target_model, account_name) = selected_connection
+                                .as_ref()
+                                .map(|(_, model, acc_name)| (model.clone(), acc_name.clone()))
+                                .expect("selected connection is checked above");
                             return Ok(UpstreamEndpoint {
                                 url: "https://api.deepseek.com/chat/completions".into(),
                                 auth_header: format!("Bearer {key}"),
                                 extra_headers: vec![],
                                 project: None,
-                                target_model: actual_model.to_string(),
+                                target_model,
                                 provider_name: "DeepSeek 官方".into(),
-                                _account_name: "DeepSeek Harness".into(),
+                                _account_name: account_name,
                                 codex_home: None,
                             });
                         }
@@ -2161,7 +3452,9 @@ impl GatewayServer {
         // 4. OpenCode 聚合平台 (严格隔离)
         if is_opencode {
             let conn_path = format!("{app_support}/connections-v1.json");
-            let mut selected_handle = None;
+            let mut selected_connection: Option<(String, String, String)> = None;
+            let mut matched_account = false;
+            let mut selected_plan = "go".to_string();
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry
@@ -2179,33 +3472,65 @@ impl GatewayServer {
                                 continue;
                             }
                             let label = account.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                            let slug = Self::friendly_account_slug(Some(label), None, label)
-                                .0
-                                .to_lowercase();
-                            let matched = account_filter.map_or(true, |filter| {
-                                filter.replace('-', "") == slug.replace('-', "")
-                            });
+                            let (slug, friendly_name) = Self::friendly_account_slug(Some(label), None, label);
+                            let id = Self::connection_id(account);
+                            let short_id = Self::connection_short_id(account);
+                            let scoped_slug = format!("{slug}-opencode");
+                            let full_slug = format!("{slug}-opencode-{short_id}");
+                            let id_slug = format!("{slug}-{short_id}");
+                            let account_display = format!("{friendly_name} (OpenCode · {short_id})");
+
+                            let matched = match account_filter {
+                                Some(filter) => {
+                                    if let Some(ref sid) = filter_short_id {
+                                        sid.eq_ignore_ascii_case(&short_id) || id.to_lowercase().replace('-', "").starts_with(sid)
+                                    } else {
+                                        Self::gateway_account_filter_matches(
+                                            filter,
+                                            &[label, &slug, &scoped_slug, &full_slug, &id_slug, &short_id, &id, &account_display],
+                                        ) || clean_account_filter.as_deref().map_or(false, |cf| {
+                                            Self::gateway_account_filter_matches(cf, &[label, &slug, &id_slug, &short_id])
+                                        })
+                                    }
+                                }
+                                None => true,
+                            };
                             if matched {
-                                selected_handle = account
-                                    .get("credentialHandle")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string);
-                                break;
+                                matched_account = true;
+                                if let (Some(handle), Some(target_model)) = (
+                                    account.get("credentialHandle").and_then(|v| v.as_str()),
+                                    Self::connection_model_id(account, base_model),
+                                ) {
+                                    if let Some(plan) = account.get("plan").and_then(|p| p.as_str()) {
+                                        selected_plan = plan.to_string();
+                                    }
+                                    selected_connection =
+                                        Some((handle.to_string(), target_model, account_display));
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
-            if account_filter.is_some() && selected_handle.is_none() {
+            if account_filter.is_some() && selected_connection.is_none() {
+                let detail = if matched_account {
+                    format!("OpenCode 账号 [{}] 不提供模型 [{}]；已阻止回退。", account_filter.unwrap(), base_model)
+                } else {
+                    format!("OpenCode 账号 [{}] 未启用或认证未就绪；已阻止回退。", account_filter.unwrap())
+                };
+                return Err(detail);
+            }
+            if account_filter.is_none() && selected_connection.is_none() {
                 return Err(format!(
-                    "OpenCode 账号 [{}] 未启用或认证未就绪；已阻止回退。",
-                    account_filter.unwrap()
+                    "OpenCode 当前没有已启用账号提供模型 [{}]；已阻止回退。",
+                    base_model
                 ));
             }
             let key_dir = format!("{app_support}/opencode_credentials");
             if let Ok(entries) = std::fs::read_dir(&key_dir) {
                 for entry in entries.flatten() {
-                    if let Some(handle) = selected_handle.as_deref() {
+                    if let Some((handle, _, _)) = selected_connection.as_ref() {
                         let file_name = entry.file_name();
                         let name = file_name.to_string_lossy();
                         if name != format!("{handle}.key") && name != format!("{handle}.json") {
@@ -2215,14 +3540,23 @@ impl GatewayServer {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let key = content.trim().to_string();
                         if !key.is_empty() {
+                            let (target_model, account_name) = selected_connection
+                                .as_ref()
+                                .map(|(_, model, acc_name)| (model.clone(), acc_name.clone()))
+                                .expect("selected connection is checked above");
+                            let url = if selected_plan.eq_ignore_ascii_case("zen") {
+                                "https://opencode.ai/zen/v1/chat/completions".into()
+                            } else {
+                                "https://opencode.ai/zen/go/v1/chat/completions".into()
+                            };
                             return Ok(UpstreamEndpoint {
-                                url: "https://opencode.ai/zen/go/v1/chat/completions".into(),
+                                url,
                                 auth_header: format!("Bearer {key}"),
                                 extra_headers: vec![],
                                 project: None,
-                                target_model: base_model.to_string(),
+                                target_model,
                                 provider_name: "OpenCode 聚合平台".into(),
-                                _account_name: "OpenCode".into(),
+                                _account_name: account_name,
                                 codex_home: None,
                             });
                         }
@@ -2236,6 +3570,174 @@ impl GatewayServer {
             "无法识别该模型的目标供应商 [{}]，已阻止跨供应商降级以保护余额。",
             model
         ))
+    }
+
+    /// The upstream model ID comes solely from the account's discovered
+    /// catalog. Display
+    /// aliases never become upstream IDs by string rewriting: this preserves
+    /// model spelling, provider ownership, and account eligibility exactly as
+    /// they were advertised by the corresponding service.
+    fn connection_model_id(account: &serde_json::Value, requested_model: &str) -> Option<String> {
+        let normalize = |value: &str| {
+            value
+                .trim()
+                .trim_start_matches("models/")
+                .to_ascii_lowercase()
+                .replace('_', "-")
+        };
+        let requested = normalize(requested_model);
+        if requested.is_empty() {
+            return None;
+        }
+
+        account
+            .get("availableModelIDs")
+            .and_then(|models| models.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model.as_str())
+            .find(|model| {
+                model.eq_ignore_ascii_case(requested_model)
+                    || model
+                        .strip_suffix("-tiered")
+                        .map_or(false, |t| t.eq_ignore_ascii_case(requested_model))
+                    || normalize(model) == requested
+            })
+            .map(str::to_string)
+    }
+
+    /// The codex CLI validates `--model` against its own catalog
+    /// (`models_cache.json`), not against the model list that chatgpt.com's
+    /// `backend-api/models` returns. For a ChatGPT-subscription account those
+    /// two lists are disjoint, so a model in `availableModelIDs` can never be
+    /// routed through `codex exec` without a 400 (e.g. `gpt-5-6-t-mini`).
+    ///
+    /// This returns the user-selectable model slugs the CLI can actually
+    /// serve, keeping hidden/internal entries (`gpt-reserve`, `codex-auto-review`)
+    /// out. Rather than maintaining a (staleable) allowlist, the source of truth
+    /// is the codex CLI itself: `codex debug models` renders the CLI's own
+    /// catalog and transparently re-fetches it whenever the on-disk cache is
+    /// stale, so newly released models are picked up automatically. Results are
+    /// cached in-process for a short TTL so the hot routing path does not spawn
+    /// the CLI on every request.
+    fn codex_catalog(codex_home: &str) -> Vec<serde_json::Value> {
+        const TTL: Duration = Duration::from_secs(120);
+        let cache = CODEX_CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(guard) = cache.lock() {
+            if let Some(entry) = guard.get(codex_home) {
+                if entry.fetched.elapsed() < TTL {
+                    return entry.catalog.clone();
+                }
+            }
+        }
+        let catalog = Self::fetch_codex_catalog(codex_home);
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(
+                codex_home.to_string(),
+                CodexCatalogEntry {
+                    fetched: Instant::now(),
+                    catalog: catalog.clone(),
+                },
+            );
+        }
+        catalog
+    }
+
+    /// Sources the codex-CLI-servable model catalog. The CLI's `debug models`
+    /// command is authoritative and re-fetches a stale `models_cache.json`
+    /// automatically, so this is what makes new models detectable without a
+    /// manual allowlist. We only shell out in a non-test build; unit tests read
+    /// the on-disk cache so the expected catalog stays deterministic and
+    /// network-independent. If the CLI is unavailable the command fails and we
+    /// degrade to reading `models_cache.json` (the CLI refreshes it every time a
+    /// real request is routed through `codex exec`).
+    fn fetch_codex_catalog(codex_home: &str) -> Vec<serde_json::Value> {
+        if !cfg!(test) {
+            if let Ok(output) = std::process::Command::new("codex")
+                .args(["debug", "models"])
+                .env("CODEX_HOME", codex_home)
+                .stdin(std::process::Stdio::null())
+                .output()
+            {
+                if output.status.success() {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        let catalog = Self::parse_visible_codex_models(&json);
+                        if !catalog.is_empty() {
+                            return catalog;
+                        }
+                    }
+                }
+            }
+        }
+        let path = std::path::Path::new(codex_home).join("models_cache.json");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let catalog = Self::parse_visible_codex_models(&json);
+                if !catalog.is_empty() {
+                    return catalog;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Filters a codex model catalog JSON (either `codex debug models` output or
+    /// the on-disk `models_cache.json`) down to the user-selectable entries the
+    /// CLI can actually serve, dropping hidden/internal slugs.
+    fn parse_visible_codex_models(json: &serde_json::Value) -> Vec<serde_json::Value> {
+        let mut catalog = Vec::new();
+        if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
+            for model in models {
+                let Some(slug) = model.get("slug").and_then(|s| s.as_str()) else {
+                    continue;
+                };
+                if slug.trim().is_empty() || slug == "codex-auto-review" {
+                    continue;
+                }
+                // `gpt-reserve` and other internal entries are hidden from the
+                // picker, so only `list` visibility models are servable.
+                if model.get("visibility").and_then(|v| v.as_str()) == Some("hide") {
+                    continue;
+                }
+                let display = model
+                    .get("display_name")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or(slug);
+                catalog.push(serde_json::json!({
+                    "slug": slug,
+                    "display_name": display,
+                }));
+            }
+        }
+        catalog
+    }
+
+    /// Resolve a requested model to a slug the codex CLI can actually serve.
+    /// The ChatGPT API's `-wm` suffix is dropped by the CLI (e.g.
+    /// `gpt-5.6-sol-wm` -> `gpt-5.6-sol`). Returns `None` when there is no
+    /// servable match, so the caller can reject clearly instead of letting the
+    /// CLI emit a confusing English 400.
+    fn resolve_codex_model(codex_home: &str, requested_model: &str) -> Option<String> {
+        let requested = requested_model.trim();
+        if requested.is_empty() {
+            return None;
+        }
+        let accepted = Self::codex_catalog(codex_home);
+        let find = |candidate: &str| -> Option<String> {
+            accepted
+                .iter()
+                .find(|m| {
+                    let slug = m.get("slug").and_then(|s| s.as_str()).unwrap_or("");
+                    slug.eq_ignore_ascii_case(candidate)
+                })
+                .and_then(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+        };
+        find(requested).or_else(|| {
+            requested
+                .strip_suffix("-wm")
+                .map(str::trim)
+                .and_then(find)
+        })
     }
 
     /// Loads the user-owned Gemini OAuth session and refreshes it when a
@@ -2522,16 +4024,19 @@ impl GatewayServer {
     /// dots or `@` as meaningful separators.
     fn gateway_account_filter_matches(filter: &str, candidates: &[&str]) -> bool {
         let normalize = |value: &str| {
-            value
-                .chars()
-                .map(|character| {
-                    if character.is_alphanumeric() {
-                        character.to_ascii_lowercase()
-                    } else {
-                        ' '
-                    }
-                })
-                .collect::<String>()
+            let mut normalized = String::new();
+            for character in value.chars() {
+                if character.is_alphanumeric() {
+                    // Account labels are user-controlled and may contain
+                    // non-ASCII letters. ASCII lowercasing leaves `Ø`
+                    // untouched, so `qintelli-zø` could not find
+                    // `Qintelli ZØ` even though it was the same account.
+                    normalized.extend(character.to_lowercase());
+                } else {
+                    normalized.push(' ');
+                }
+            }
+            normalized
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -2605,6 +4110,80 @@ impl GatewayServer {
         (slug, clean_name)
     }
 
+    fn connection_id(acc: &serde_json::Value) -> String {
+        if let Some(id_obj) = acc.get("id").and_then(|v| v.get("rawValue")).and_then(|s| s.as_str()) {
+            id_obj.to_string()
+        } else if let Some(id_str) = acc.get("id").and_then(|s| s.as_str()) {
+            id_str.to_string()
+        } else if let Some(handle) = acc.get("credentialHandle").and_then(|s| s.as_str()) {
+            handle.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    fn connection_short_id(acc: &serde_json::Value) -> String {
+        let raw = Self::connection_id(acc);
+        let clean = raw.replace('-', "").to_lowercase();
+        if clean.len() >= 8 {
+            clean[..8].to_string()
+        } else if !clean.is_empty() {
+            clean
+        } else {
+            "default".to_string()
+        }
+    }
+
+    fn parse_account_filter(
+        filter: &str,
+    ) -> (Option<&'static str>, Option<String>, Option<String>) {
+        let lower = filter.trim().to_lowercase();
+        let mut explicit_provider = None;
+        if lower.contains("opencode") {
+            explicit_provider = Some("opencode");
+        } else if lower.contains("google") || lower.contains("gemini") {
+            explicit_provider = Some("google");
+        } else if lower.contains("deepseek") {
+            explicit_provider = Some("deepseek");
+        } else if lower.contains("openai") || lower.contains("codex") {
+            explicit_provider = Some("openai");
+        }
+
+        let parts: Vec<&str> = lower.split('-').collect();
+        let mut short_id = None;
+        if !parts.is_empty() {
+            let last = parts.last().unwrap();
+            if last.len() == 8 && last.chars().all(|c| c.is_ascii_hexdigit()) {
+                short_id = Some(last.to_string());
+            }
+        }
+
+        let mut clean = lower.clone();
+        for p in &[
+            "-opencode", "_opencode", "opencode-", "opencode_",
+            "-google", "_google", "google-", "google_",
+            "-gemini", "_gemini", "gemini-", "gemini_",
+            "-deepseek", "_deepseek", "deepseek-", "deepseek_",
+            "-openai", "_openai", "openai-", "openai_",
+            "-codex", "_codex", "codex-", "codex_",
+        ] {
+            clean = clean.replace(p, "");
+        }
+        if let Some(ref sid) = short_id {
+            clean = clean.replace(&format!("-{sid}"), "").replace(&format!("_{sid}"), "");
+            if clean == *sid {
+                clean.clear();
+            }
+        }
+        let clean_opt = if clean.trim().is_empty() {
+            None
+        } else {
+            Some(clean.trim().to_string())
+        };
+
+        (explicit_provider, clean_opt, short_id)
+    }
+
     /// `/v1/models` IDs are protocol values, not display labels. Keep them
     /// whitespace-free so clients such as Hermes can switch to them, while
     /// `name`/`display_name` retain the friendly provider and account copy.
@@ -2613,12 +4192,25 @@ impl GatewayServer {
     }
 
     /// Cloud Code uses a routing suffix for tiered models. Keep it in the
-    /// protocol ID, but show the product name users recognize.
+    /// protocol ID, but show every Gemini generation with a consistent
+    /// product name so future catalog additions need no source change.
     fn google_model_display_name(model: &str) -> String {
-        match model {
-            "gemini-3.7-flash-tiered" => "Gemini 3.7 Flash".into(),
-            _ => model.replace('-', " "),
-        }
+        let concise = model.trim_end_matches("-tiered");
+        concise
+            .split('-')
+            .map(|part| {
+                if part.chars().next().is_some_and(|character| character.is_ascii_digit()) {
+                    part.to_string()
+                } else {
+                    let mut letters = part.chars();
+                    match letters.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + letters.as_str(),
+                        None => String::new(),
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn get_dynamic_models_payload() -> serde_json::Value {
@@ -2627,7 +4219,7 @@ impl GatewayServer {
     }
 
     fn get_dynamic_models_payload_for_home(home: &str) -> serde_json::Value {
-        let mut models = Vec::new();
+        let mut models: Vec<serde_json::Value> = Vec::new();
         let conn_path = format!("{home}/Library/Application Support/Codexling/connections-v1.json");
         if let Ok(content) = std::fs::read_to_string(&conn_path) {
             if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -2682,99 +4274,52 @@ impl GatewayServer {
                             format!("额度: {}%", remaining)
                         };
 
-                        let (slug, friendly_name) =
+                        let (slug_base, friendly_name) =
                             Self::friendly_account_slug(account_name, email, label);
+                        let short_id = Self::connection_short_id(acc);
+                        let slug = format!("{slug_base}-openai-{short_id}");
+                        let account_display = format!("{friendly_name} (OpenAI · {short_id})");
 
-                        let primary_scoped = vec![
-                            "gpt-5.6",
-                            "gpt-5.6-thinking",
-                            "gpt-5.6-sol",
-                            "gpt-5.6-terra",
-                            "gpt-5.6-luna",
-                            "gpt-5.6-mini",
-                            "gpt-5.5",
-                            "gpt-5",
-                            "o3-mini",
-                        ];
-                        for mid in primary_scoped {
-                            let sid = Self::scoped_model_id("openai", mid, &slug);
-                            if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
-                                let variant_note = if mid.ends_with("-sol") {
-                                    " · Sol 太阳版"
-                                } else if mid.ends_with("-terra") {
-                                    " · Terra 地球版"
-                                } else if mid.ends_with("-luna") {
-                                    " · Luna 月亮版"
-                                } else if mid == "gpt-5.6-mini" {
-                                    " · Mini 轻量版"
-                                } else if mid.ends_with("-thinking") {
-                                    " · Thinking 深度思考"
-                                } else {
-                                    ""
-                                };
+                        // The codex CLI serves `--model` only from its own
+                        // `models_cache.json`. The ChatGPT account catalog
+                        // (`availableModelIDs`, from `backend-api/models`) lists
+                        // models the CLI rejects (e.g. `gpt-5-6-t-mini`), so it
+                        // is NOT the source of exported models here. Only the
+                        // CLI-servable slugs are advertised, and their raw slug
+                        // is kept in the scoped route key.
+                        let relative_home = acc
+                            .get("relativeHomeDirectory")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let codex_home = if relative_home.contains('/') || relative_home.contains("..") {
+                            String::new()
+                        } else {
+                            format!(
+                                "{home}/Library/Application Support/Codexling/Runtimes/Codex/{relative_home}"
+                            )
+                        };
+                        for entry in Self::codex_catalog(&codex_home) {
+                            let Some(raw_mid) = entry.get("slug").and_then(|s| s.as_str()) else {
+                                continue;
+                            };
+                            if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) {
+                                continue;
+                            }
+                            let sid = Self::scoped_model_id("openai", raw_mid, &slug);
+                            if !models.iter().any(|existing| existing["id"] == sid) {
                                 models.push(serde_json::json!({
                                     "id": sid,
-                                    "name": format!("OpenAI · {mid} ({friendly_name})"),
-                                    "display_name": format!("OpenAI · {mid} ({friendly_name})"),
+                                    "name": format!("OpenAI · {raw_mid} ({account_display})"),
+                                    "display_name": format!("OpenAI · {raw_mid} ({account_display})"),
                                     "object": "model",
                                     "created": 1700000000,
                                     "provider": "OpenAI / Codex",
                                     "owned_by": "openai",
-                                    "account": friendly_name,
+                                    "account": account_display,
                                     "permission_tier": plan,
                                     "quota_remaining": quota_desc,
-                                    "description": format!("OpenAI {}{} [账号: {} · {} | {}]", mid, variant_note, friendly_name, plan, quota_desc)
+                                    "description": format!("OpenAI {} [{}]", raw_mid, account_display)
                                 }));
-                            }
-                        }
-
-                        // The account's discovered catalog is authoritative for
-                        // its exported model list; it is scoped to this account.
-                        if true {
-                            if let Some(mids) =
-                                acc.get("availableModelIDs").and_then(|m| m.as_array())
-                            {
-                                for m in mids {
-                                    if let Some(raw_mid) = m.as_str() {
-                                        let mut clean_mid = raw_mid.to_string();
-                                        if clean_mid.ends_with("-wm") {
-                                            clean_mid =
-                                                clean_mid[..clean_mid.len() - 3].to_string();
-                                        }
-                                        clean_mid = clean_mid
-                                            .replace("gpt-5-6", "gpt-5.6")
-                                            .replace("gpt-5-5", "gpt-5.5")
-                                            .replace("gpt-5-4", "gpt-5.4")
-                                            .replace("gpt-5-3", "gpt-5.3");
-
-                                        if clean_mid == "auto"
-                                            || clean_mid == "research"
-                                            || clean_mid.contains("-instant")
-                                        {
-                                            continue;
-                                        }
-                                        if clean_mid.chars().any(char::is_whitespace) {
-                                            continue;
-                                        }
-                                        let sid =
-                                            Self::scoped_model_id("openai", &clean_mid, &slug);
-                                        if !models.iter().any(|existing| existing["id"] == sid) {
-                                            models.push(serde_json::json!({
-                                            "id": sid,
-                                            "name": format!("OpenAI · {clean_mid} ({friendly_name})"),
-                                            "display_name": format!("OpenAI · {clean_mid} ({friendly_name})"),
-                                            "object": "model",
-                                            "created": 1700000000,
-                                            "provider": "OpenAI / Codex",
-                                            "owned_by": "openai",
-                                            "account": friendly_name,
-                                            "permission_tier": plan,
-                                            "quota_remaining": quota_desc,
-                                            "description": format!("OpenAI {} [账号: {} · {} | {}]", clean_mid, friendly_name, plan, quota_desc)
-                                        }));
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -2826,8 +4371,11 @@ impl GatewayServer {
                                 format!("5h: {:.0}%, 周: {:.0}%", five_hour * 100.0, weekly * 100.0)
                             };
 
-                        let (slug, friendly_name) =
+                        let (slug_base, friendly_name) =
                             Self::friendly_account_slug(display_name, email, label);
+                        let short_id = Self::connection_short_id(acc);
+                        let slug = format!("{slug_base}-google-{short_id}");
+                        let account_display = format!("{friendly_name} (Google · {short_id})");
 
                         let model_ids = acc
                             .get("availableModelIDs")
@@ -2846,16 +4394,16 @@ impl GatewayServer {
                             if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
                                 models.push(serde_json::json!({
                                     "id": sid,
-                                    "name": format!("Google · {display_model} ({friendly_name})"),
-                                    "display_name": format!("Google · {display_model} ({friendly_name})"),
+                                    "name": format!("Google · {display_model} ({account_display})"),
+                                    "display_name": format!("Google · {display_model} ({account_display})"),
                                     "object": "model",
                                     "created": 1700000000,
                                     "provider": "Google Gemini",
                                     "owned_by": "google",
-                                    "account": friendly_name,
+                                    "account": account_display,
                                     "permission_tier": tier,
                                     "quota_remaining": quota_desc,
-                                    "description": format!("Google {} [账号: {} · {} | 配额: {}]", mid, friendly_name, tier, quota_desc)
+                                    "description": format!("Google {} [{}]", mid, account_display)
                                 }));
                             }
                         }
@@ -2887,26 +4435,30 @@ impl GatewayServer {
                             .and_then(|t| t.as_f64())
                             .unwrap_or(0.0);
                         let balance_desc = format!("¥{:.2}", balance_val);
-                        let (slug, friendly_name) = Self::friendly_account_slug(None, None, label);
+                        let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
+                        let short_id = Self::connection_short_id(acc);
+                        let slug = format!("{slug_base}-deepseek-{short_id}");
+                        let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
 
-                        let primary_scoped =
-                            vec!["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"];
-                        for mid in primary_scoped {
-                            let sid = Self::scoped_model_id("deepseek", mid, &slug);
-                            if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
-                                models.push(serde_json::json!({
-                                    "id": sid,
-                                    "name": format!("DeepSeek · {mid} ({friendly_name})"),
-                                    "display_name": format!("DeepSeek · {mid} ({friendly_name})"),
-                                    "object": "model",
-                                    "created": 1700000000,
-                                    "provider": "DeepSeek 官方",
-                                    "owned_by": "deepseek",
-                                    "account": friendly_name,
-                                    "permission_tier": "官方直连",
-                                    "quota_remaining": balance_desc,
-                                    "description": format!("DeepSeek {} [账号: {} · 官方直连 | 余额: {}]", mid, friendly_name, balance_desc)
-                                }));
+                        if let Some(mids) = acc.get("availableModelIDs").and_then(|m| m.as_array()) {
+                            for raw_mid in mids.iter().filter_map(|model| model.as_str()) {
+                                if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) { continue; }
+                                let sid = Self::scoped_model_id("deepseek", raw_mid, &slug);
+                                if !models.iter().any(|model: &serde_json::Value| model["id"] == sid) {
+                                    models.push(serde_json::json!({
+                                        "id": sid,
+                                        "name": format!("DeepSeek · {raw_mid} ({account_display})"),
+                                        "display_name": format!("DeepSeek · {raw_mid} ({account_display})"),
+                                        "object": "model",
+                                        "created": 1700000000,
+                                        "provider": "DeepSeek 官方",
+                                        "owned_by": "deepseek",
+                                        "account": account_display,
+                                        "permission_tier": "官方直连",
+                                        "quota_remaining": balance_desc,
+                                        "description": format!("DeepSeek {} [{}]", raw_mid, account_display)
+                                    }));
+                                }
                             }
                         }
                     }
@@ -2936,7 +4488,10 @@ impl GatewayServer {
                             .and_then(|p| p.as_str())
                             .unwrap_or("go")
                             .to_uppercase();
-                        let (slug, friendly_name) = Self::friendly_account_slug(None, None, label);
+                        let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
+                        let short_id = Self::connection_short_id(acc);
+                        let slug = format!("{slug_base}-opencode-{short_id}");
+                        let account_display = format!("{friendly_name} (OpenCode · {short_id})");
 
                         if let Some(avail_models) =
                             acc.get("availableModelIDs").and_then(|m| m.as_array())
@@ -2952,16 +4507,16 @@ impl GatewayServer {
                                     if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
                                         models.push(serde_json::json!({
                                             "id": sid,
-                                            "name": format!("OpenCode · {mid} ({friendly_name})"),
-                                            "display_name": format!("OpenCode · {mid} ({friendly_name})"),
+                                            "name": format!("OpenCode · {mid} ({account_display})"),
+                                            "display_name": format!("OpenCode · {mid} ({account_display})"),
                                             "object": "model",
                                             "created": 1700000000,
                                             "provider": "OpenCode 聚合平台",
                                             "owned_by": "opencode",
-                                            "account": friendly_name,
+                                            "account": account_display,
                                             "permission_tier": format!("OpenCode {plan}"),
                                             "quota_remaining": quota_desc,
-                                            "description": format!("OpenCode {} [账号: {} · {} | 状态: {}]", mid, friendly_name, plan, quota_desc)
+                                            "description": format!("OpenCode {} [{}]", mid, account_display)
                                         }));
                                     }
                                 }

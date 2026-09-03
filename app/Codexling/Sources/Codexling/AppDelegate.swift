@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // The Gateway is a background service for Pi/Hermes as well as the
+        // Gateway window.  Start its supervisor at app launch rather than
+        // waiting for a SwiftUI Gateway view to be instantiated.
+        GatewaySupervisor.shared.start()
         settingsStore.applyAppearance()
         settingsStore.onAutoRefreshIntervalChanged = { [weak self] _ in
             self?.startAutoRefreshTimer()
@@ -263,6 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             let outcome = await self.multiAgentSettingsStore.refreshAllConnections()
+            // Account refresh is also the dynamic model-catalog refresh. If
+            // Hermes/Pi are already connected, update their allowlists only
+            // when this official catalog actually changed.
+            await GatewayStore.shared.syncConfiguredAgentCatalogsIfNeeded()
             self.syncSelectedCodexProjection()
             self.statusController?.refreshStatusTitle()
             self.snapshotStore.setUnifiedRefreshing(false)

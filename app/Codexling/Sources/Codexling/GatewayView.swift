@@ -5,7 +5,7 @@ private enum GatewayLayoutMetrics {
     static let sidebarWidth: CGFloat = 166
     static let sidebarTopInset: CGFloat = 14
     static let windowTopInset: CGFloat = 14
-    static let windowBottomInset: CGFloat = 12
+    static let windowBottomInset: CGFloat = 26
     static let minWindowWidth: CGFloat = 860
     static let minWindowHeight: CGFloat = 600
 }
@@ -17,6 +17,14 @@ private enum GatewayScrollCoordinateSpace {
 private enum GatewayAgentConnectTarget {
     case hermes
     case pi
+}
+
+private struct GatewayTableWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
 }
 
 private enum GatewayHeaderMinYKey: PreferenceKey {
@@ -37,12 +45,14 @@ public struct GatewayView: View {
     @State private var copiedModelId: String?
     @State private var addingModelGroupId: String?
     @State private var customModelInput: String = ""
+    @State private var tableContainerWidth: CGFloat = 0
     @State private var expandedGroupIds: Set<String> = []
     @State private var selectedAccountBySection: [String: String] = [:]
     @State private var showsStickyTitle: Bool = false
     @State private var agentConfigMessage: String? = nil
     @State private var agentConfigSucceeded = true
     @State private var configuringAgent: GatewayAgentConnectTarget? = nil
+    @State private var unconfiguringAgent: GatewayAgentConnectTarget? = nil
 
     /// Injected by GatewayWindowController; used to route proxy toggles through
     /// MultiAgentSettingsStore so in-memory account state stays consistent.
@@ -119,6 +129,12 @@ public struct GatewayView: View {
             }
         }
         .animation(.easeInOut(duration: 0.24), value: showsStickyTitle)
+        .sheet(isPresented: Binding(
+            get: { store.isColumnSettingsPresented },
+            set: { store.isColumnSettingsPresented = $0 }
+        )) {
+            GatewayColumnSettingsSheet(store: store)
+        }
     }
 
     private var stickyGatewayTitle: some View {
@@ -148,12 +164,30 @@ public struct GatewayView: View {
     // MARK: - Header
     private var tabHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(store.selectedTab.rawValue)
-                .font(.system(size: 20, weight: .bold))
+            HStack(spacing: 8) {
+                Text(store.selectedTab.rawValue)
+                    .font(.system(size: 20, weight: .bold))
+
+                if (store.selectedTab == .overview && (store.isTelemetryLoading || store.isSummaryLoading || store.isBreakdownLoading)) ||
+                   (store.selectedTab == .requests && (store.isRequestsLoading || store.isTelemetryLoading)) {
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("正在加载...")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.codexMist.opacity(0.8), in: Capsule())
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                }
+            }
             Text(store.selectedTab.subtitle)
                 .font(.system(size: 11))
                 .foregroundStyle(Color.codexMuted)
         }
+        .animation(.easeInOut(duration: 0.2), value: store.isTelemetryLoading || store.isRequestsLoading || store.isBreakdownLoading)
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(
@@ -176,6 +210,10 @@ public struct GatewayView: View {
 
             ForEach(GatewayNavTab.allCases) { tab in
                 Button {
+                    // Changing tabs can replace a dense provider/model tree.
+                    // Animating that entire tree forces SwiftUI to lay out the
+                    // old and new pages together, which made navigation feel
+                    // stalled as the discovered catalog grew.
                     store.selectedTab = tab
                 } label: {
                     HStack(spacing: 9) {
@@ -186,6 +224,12 @@ public struct GatewayView: View {
                             .font(.system(size: 11, weight: store.selectedTab == tab ? .semibold : .medium))
                             .lineLimit(1)
                         Spacer(minLength: 0)
+
+                        if (tab == .overview && (store.isTelemetryLoading || store.isSummaryLoading)) ||
+                           (tab == .requests && (store.isRequestsLoading || store.isTelemetryLoading)) {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
                     }
                     .foregroundStyle(store.selectedTab == tab ? Color.codexInk : Color.codexMuted)
                     .padding(.horizontal, 10)
@@ -250,9 +294,16 @@ public struct GatewayView: View {
             CodexDivider(.horizontal)
 
             // ==========================================
-            // 区块二：本地对外标准网关与遥测 (127.0.0.1:58349)
+            // 区块二：本地对外标准网关与持久化遥测 (127.0.0.1:58349)
             // ==========================================
             gatewayProxyTelemetryBlock
+
+            CodexDivider(.horizontal)
+
+            // ==========================================
+            // 区块三：维度透视与用量分解 (Breakdown)
+            // ==========================================
+            telemetryBreakdownSection
         }
     }
 
@@ -352,7 +403,7 @@ public struct GatewayView: View {
     // MARK: - 区块二: Gateway 流量遥测与桥接拓扑
     private var gatewayProxyTelemetryBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
+            HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 7) {
                         Image(systemName: "waveform.path.ecg")
@@ -369,23 +420,229 @@ public struct GatewayView: View {
                             .background(Color.blue.opacity(0.12), in: Capsule())
                             .foregroundStyle(.blue)
                     }
-                    Text("经由本地网关中继转译的实际 API 调用、Token 消耗与流式延迟")
+                    Text("经由本地网关中继转译的实际 API 调用、Token 消耗与流式延迟 · 持久化 SQLite 账本")
                         .font(.system(size: 10.5))
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                Spacer()
+                .layoutPriority(0)
+
+                Spacer(minLength: 6)
+
+                // 手动刷新按钮
+                Button {
+                    Task {
+                        await store.refreshTelemetryAnalytics()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(store.isSummaryLoading ? 360 : 0))
+                            .animation(store.isSummaryLoading ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: store.isSummaryLoading)
+                        Text("刷新")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(Color.codexInk)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+                    )
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 5))
+                .disabled(store.isSummaryLoading || store.isTelemetryLoading)
+                .help("刷新遥测指标与图表")
+
+                // 日期范围切换 Picker
+                dateRangeSelectorView
+                    .layoutPriority(1)
             }
 
-            // 9-Grid Telemetry
-            LazyVGrid(columns: [GridItem(.flexible(minimum: 180)), GridItem(.flexible(minimum: 180)), GridItem(.flexible(minimum: 180))], spacing: 8) {
+            if store.selectedDateRange == .custom {
+                customDateRangePickerBar
+            }
+
+            // 7-Grid Telemetry
+            LazyVGrid(columns: [GridItem(.flexible(minimum: 150)), GridItem(.flexible(minimum: 150)), GridItem(.flexible(minimum: 150))], spacing: 8) {
                 ForEach(store.telemetryItems) { item in
                     telemetryCard(for: item)
                 }
             }
+            .opacity(store.isSummaryLoading ? 0.65 : 1.0)
+            .animation(.easeInOut(duration: 0.2), value: store.isSummaryLoading)
 
             // Bridge Flow
             bridgeTopologyFlowSection
+        }
+    }
+
+    // MARK: - 区块三: 维度透视与用量分解 (Breakdown)
+    private var telemetryBreakdownSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("用量与性能维度分析")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.codexInk)
+                            .lineLimit(1)
+
+                        if store.isBreakdownLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+                    Text("按 Agent、供应商、账号或模型细分统计消耗与首字延迟")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .layoutPriority(0)
+
+                Spacer(minLength: 6)
+
+                Picker("", selection: Binding(
+                    get: { store.selectedBreakdownDimension },
+                    set: { newValue in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            store.selectedBreakdownDimension = newValue
+                        }
+                    }
+                )) {
+                    ForEach(GatewayBreakdownDimension.allCases) { dim in
+                        Text(dim.rawValue).tag(dim)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(width: 220)
+                .layoutPriority(1)
+            }
+
+            if store.isBreakdownLoading && store.breakdownItems.isEmpty {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载 \(store.selectedBreakdownDimension.rawValue) 数据...")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .padding(.vertical, 24)
+                    Spacer()
+                }
+                .background(Color.codexCard)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else if store.breakdownItems.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("所选时间段暂无统计数据")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.vertical, 16)
+                    Spacer()
+                }
+                .background(Color.codexCard)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                ZStack {
+                    VStack(spacing: 6) {
+                        HStack(spacing: 6) {
+                            Text(store.selectedBreakdownDimension.rawValue)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
+                            Text("总请求")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 50, maxWidth: 70, alignment: .trailing)
+                            Text("输入 Tokens")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 70, maxWidth: 90, alignment: .trailing)
+                            Text("输出 Tokens")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 70, maxWidth: 90, alignment: .trailing)
+                            Text("平均 TTFT")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 55, maxWidth: 75, alignment: .trailing)
+                            Text("成功率")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(minWidth: 45, maxWidth: 65, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+
+                        ForEach(store.breakdownItems) { item in
+                            HStack(spacing: 6) {
+                                Text(item.key)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text("\(item.totalRequests)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .frame(minWidth: 50, maxWidth: 70, alignment: .trailing)
+                                    .lineLimit(1)
+                                Text(GatewayStore.formatTokens(Int(item.inputTokens)))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .frame(minWidth: 70, maxWidth: 90, alignment: .trailing)
+                                    .lineLimit(1)
+                                Text(GatewayStore.formatTokens(Int(item.outputTokens)))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .frame(minWidth: 70, maxWidth: 90, alignment: .trailing)
+                                    .lineLimit(1)
+                                Text(item.avgTtftMs > 0 ? "\(Int(item.avgTtftMs))ms" : "--")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .frame(minWidth: 55, maxWidth: 75, alignment: .trailing)
+                                    .lineLimit(1)
+                                Text(String(format: "%.0f%%", item.successRate * 100))
+                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(item.successRate >= 0.95 ? Color.green : Color.orange)
+                                    .frame(minWidth: 45, maxWidth: 65, alignment: .trailing)
+                                    .lineLimit(1)
+                            }
+                            .padding(10)
+                            .background(Color.codexCard)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        }
+                    }
+                    .opacity(store.isBreakdownLoading ? 0.45 : 1.0)
+                    .animation(.easeInOut(duration: 0.2), value: store.isBreakdownLoading)
+
+                    if store.isBreakdownLoading {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("正在更新 \(store.selectedBreakdownDimension.rawValue)...")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.codexCard.opacity(0.95))
+                        .clipShape(Capsule())
+                        .shadow(color: Color.black.opacity(0.12), radius: 6, y: 2)
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
+                        )
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+                }
+            }
         }
     }
 
@@ -1184,10 +1441,110 @@ public struct GatewayView: View {
         )
     }
 
-    // MARK: - Tab 3: Requests Content
+    // MARK: - Tab 3: Requests Content (实时流 + 账本历史追溯)
     private var requestsContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if store.requestsList.isEmpty {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Gateway 请求流与明细")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.codexInk)
+                            .lineLimit(1)
+
+                        if store.isRequestsLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+                    Text("记录入向协议、出向路由、TTFT 首字延迟、真实/估算 Token 保真度及错误状态")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .layoutPriority(0)
+
+                Spacer(minLength: 6)
+
+                // 列设置按钮
+                Button {
+                    store.isColumnSettingsPresented = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("列设置")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(Color.codexInk)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+                    )
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 5))
+                .help("自定义请求流列表显示列（勾选/取消字段）")
+
+                // 手动刷新按钮
+                Button {
+                    Task {
+                        await store.refreshRequestsList()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(store.isRequestsLoading ? 360 : 0))
+                            .animation(store.isRequestsLoading ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: store.isRequestsLoading)
+                        Text("刷新")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(Color.codexInk)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+                    )
+                }
+                .buttonStyle(CodexPressableStyle(cornerRadius: 5))
+                .disabled(store.isRequestsLoading)
+                .help("手动刷新请求列表与状态")
+
+                dateRangeSelectorView
+                    .layoutPriority(1)
+            }
+
+            if store.selectedDateRange == .custom {
+                customDateRangePickerBar
+            }
+
+            if store.isRequestsLoading && store.detailedRequestsList.isEmpty && store.requestsList.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("正在查询请求流与明细日志...")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                    Text("正在连接本地 SQLite 遥测账本检索数据...")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
+                .background(Color.codexCard)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+                )
+            } else if store.detailedRequestsList.isEmpty && store.requestsList.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "waveform.path.badge.plus")
                         .font(.system(size: 30))
@@ -1196,7 +1553,7 @@ public struct GatewayView: View {
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(Color.codexInk)
                         .lineLimit(1)
-                    Text("本地多协议网关已在 http://127.0.0.1:\(String(supervisor.port)) 准备就绪。\n当第三方 Agent 发送请求时，协议转换、TTFT 延迟与 Token 消耗将在此实时记录。")
+                    Text("本地多协议网关已在 http://127.0.0.1:\(String(supervisor.port)) 准备就绪。\n当第三方 Agent 发送请求时，协议转换、TTFT 延迟与 Token 消耗将在此实时记录并持久化。")
                         .font(.system(size: 10.5))
                         .foregroundStyle(Color.codexMuted)
                         .multilineTextAlignment(.center)
@@ -1210,57 +1567,761 @@ public struct GatewayView: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
                 )
-            } else {
-                VStack(spacing: 6) {
-                    ForEach(store.requestsList) { req in
-                        HStack(spacing: 10) {
-                            Text(req.time)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.codexMuted)
-                                .lineLimit(1)
-                            Text(req.agent)
+            } else if !store.detailedRequestsList.isEmpty {
+                ZStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                requestsTableHeaderView
+
+                                VStack(spacing: 6) {
+                                    ForEach(store.detailedRequestsList) { req in
+                                        detailedRequestRow(for: req)
+                                    }
+                                }
+                            }
+                            .frame(width: effectiveTableWidth, alignment: .leading)
+                        }
+
+                        requestsPaginationBar
+                    }
+                    .opacity(store.isRequestsLoading ? 0.45 : 1.0)
+                    .animation(.easeInOut(duration: 0.2), value: store.isRequestsLoading)
+
+                    if store.isRequestsLoading {
+                        HStack(spacing: 7) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在加载第 \(store.requestsCurrentPage) 页...")
                                 .font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(Color.codexInk)
-                                .frame(width: 80, alignment: .leading)
-                                .lineLimit(1)
-                            Text(req.ingressProtocol)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.codexMuted)
-                                .frame(width: 130, alignment: .leading)
-                                .lineLimit(1)
-                            Text(req.targetModel)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.codexInk)
-                                .frame(width: 140, alignment: .leading)
-                                .lineLimit(1)
-                            Spacer()
-                            Text("\(req.latencyMs)ms")
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(Color.codexInk)
-                                .lineLimit(1)
-                            Text(req.fidelity)
-                                .font(.system(size: 9, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.12), in: Capsule())
-                                .foregroundStyle(.blue)
-                                .lineLimit(1)
-                            Text(req.status)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.green)
-                                .lineLimit(1)
                         }
-                        .padding(10)
-                        .background(Color.codexCard)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.codexCard.opacity(0.95))
+                        .clipShape(Capsule())
+                        .shadow(color: Color.black.opacity(0.12), radius: 8, y: 3)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+                            Capsule()
+                                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
                         )
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+                }
+            } else {
+                // Table Header / Column Titles for In-memory Fallback List
+                ZStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                requestsTableHeaderView
+
+                                VStack(spacing: 6) {
+                                    ForEach(store.requestsList) { req in
+                                        fallbackRequestRow(for: req)
+                                    }
+                                }
+                            }
+                            .frame(width: effectiveTableWidth, alignment: .leading)
+                        }
+                    }
+                    .opacity(store.isRequestsLoading ? 0.45 : 1.0)
+                    .animation(.easeInOut(duration: 0.2), value: store.isRequestsLoading)
+
+                    if store.isRequestsLoading {
+                        HStack(spacing: 7) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在更新请求数据...")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.codexCard.opacity(0.95))
+                        .clipShape(Capsule())
+                        .shadow(color: Color.black.opacity(0.12), radius: 8, y: 3)
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
+                        )
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
                 }
             }
+
+            Spacer(minLength: 16)
         }
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(key: GatewayTableWidthKey.self, value: geo.size.width)
+            }
+        }
+        .onPreferenceChange(GatewayTableWidthKey.self) { newWidth in
+            if newWidth > 0 && abs(tableContainerWidth - newWidth) > 1 {
+                tableContainerWidth = newWidth
+            }
+        }
+    }
+
+    // MARK: - 请求流动态列渲染组件
+
+    private var minTableWidth: CGFloat {
+        let colWidths = store.orderedVisibleColumns.reduce(CGFloat(0)) { $0 + $1.minWidth }
+        let spacing = CGFloat(max(0, store.orderedVisibleColumns.count - 1)) * 6.0
+        return colWidths + spacing + 20.0
+    }
+
+    private var effectiveTableWidth: CGFloat {
+        max(minTableWidth, tableContainerWidth)
+    }
+
+    private func columnWidth(for col: GatewayRequestColumn) -> CGFloat {
+        let base = col.minWidth
+        let availableExtra = max(0, effectiveTableWidth - minTableWidth)
+        let totalFlexWeight = store.orderedVisibleColumns.reduce(CGFloat(0)) { $0 + $1.flexWeight }
+        guard availableExtra > 0, totalFlexWeight > 0 else {
+            return base
+        }
+        return base + (col.flexWeight / totalFlexWeight) * availableExtra
+    }
+
+    private var requestsTableHeaderView: some View {
+        HStack(spacing: 6) {
+            ForEach(store.orderedVisibleColumns) { col in
+                requestHeaderCell(for: col)
+            }
+        }
+        .font(.system(size: 10.5, weight: .semibold))
+        .foregroundStyle(Color.codexMuted)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(width: effectiveTableWidth, alignment: .leading)
+        .background(Color.codexMist.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
+        )
+    }
+
+    @ViewBuilder
+    private func requestHeaderCell(for column: GatewayRequestColumn) -> some View {
+        Text(column.title)
+            .frame(width: columnWidth(for: column), alignment: column.alignment)
+            .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private func detailedRequestRow(for req: GatewayTelemetryEventDetail) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(store.orderedVisibleColumns) { col in
+                    detailedRequestCell(for: col, req: req)
+                }
+            }
+
+            if let err = req.errorMessage, !err.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9.5))
+                    Text(err)
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(Color.red)
+                .lineLimit(1)
+            }
+        }
+        .padding(10)
+        .frame(width: effectiveTableWidth, alignment: .leading)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+        )
+    }
+
+    @ViewBuilder
+    private func detailedRequestCell(for column: GatewayRequestColumn, req: GatewayTelemetryEventDetail) -> some View {
+        Group {
+            switch column {
+            case .time:
+                Text(req.formattedTime)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .help(req.formattedDateTime)
+
+            case .id:
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(req.id, forType: .string)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(String(req.id.suffix(7)))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.codexMuted.opacity(0.6))
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("请求 ID: \(req.id)\n点击复制")
+
+            case .agent:
+                Text(req.agent)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .ingressProtocol:
+                Text(req.ingressProtocol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .provider:
+                Text(req.provider.isEmpty ? "-" : req.provider)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .account:
+                Text(req.account.isEmpty ? "-" : req.account)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .targetModel:
+                Text(req.targetModel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(req.modelAlias.isEmpty || req.modelAlias == req.targetModel ? req.targetModel : "请求别名: \(req.modelAlias)\n目标模型: \(req.targetModel)")
+
+            case .stream:
+                Text(req.isStream ? "SSE" : "Sync")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1.5)
+                    .background(req.isStream ? Color.blue.opacity(0.12) : Color.codexMuted.opacity(0.12), in: Capsule())
+                    .foregroundStyle(req.isStream ? Color.blue : Color.codexMuted)
+                    .lineLimit(1)
+
+            case .tokens:
+                Group {
+                    if let inTok = req.inputTokens, let outTok = req.outputTokens {
+                        Text("\(inTok)↓ \(outTok)↑")
+                    } else if let total = req.totalTokens, total > 0 {
+                        Text("\(total) toks")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+
+            case .cacheTokens:
+                Group {
+                    if let read = req.cacheReadTokens, read > 0 {
+                        Text("读:\(read)")
+                    } else if let write = req.cacheWriteTokens, write > 0 {
+                        Text("写:\(write)")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+
+            case .tools:
+                Group {
+                    if req.toolCallsCount > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "wrench.and.screwdriver")
+                                .font(.system(size: 8))
+                            Text("\(req.toolCallsCount)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundStyle(Color.purple)
+                    } else {
+                        Text("-")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                }
+                .lineLimit(1)
+
+            case .cost:
+                Group {
+                    if let cost = req.estimatedCost, cost > 0 {
+                        Text("$\(String(format: "%.4f", cost))")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+
+            case .ttft:
+                Group {
+                    if let ttft = req.ttftMs {
+                        Text("\(ttft)ms")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+
+            case .latency:
+                Text("\(req.latencyMs)ms")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+
+            case .fidelity:
+                Text(req.fidelity == "actual" ? "实际" : (req.fidelity == "estimated" ? "估算" : "无"))
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(req.fidelity == "actual" ? Color.green.opacity(0.12) : Color.orange.opacity(0.12), in: Capsule())
+                    .foregroundStyle(req.fidelity == "actual" ? Color.green : Color.orange)
+                    .lineLimit(1)
+
+            case .status:
+                Text(req.isSuccess ? "200 OK" : "\(req.statusCode)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(req.isSuccess ? Color.green : Color.red)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: columnWidth(for: column), alignment: column.alignment)
+    }
+
+    @ViewBuilder
+    private func fallbackRequestRow(for req: GatewayRequestRow) -> some View {
+        HStack(spacing: 6) {
+            ForEach(store.orderedVisibleColumns) { col in
+                fallbackRequestCell(for: col, req: req)
+            }
+        }
+        .padding(10)
+        .frame(width: effectiveTableWidth, alignment: .leading)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+        )
+    }
+
+    @ViewBuilder
+    private func fallbackRequestCell(for column: GatewayRequestColumn, req: GatewayRequestRow) -> some View {
+        Group {
+            switch column {
+            case .time:
+                Text(req.time)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+            case .id:
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(req.id, forType: .string)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(String(req.id.suffix(7)))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.codexMuted.opacity(0.6))
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("请求 ID: \(req.id)\n点击复制")
+
+            case .agent:
+                Text(req.agent)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .ingressProtocol:
+                Text(req.ingressProtocol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .provider:
+                Text(req.targetProvider.isEmpty ? "-" : req.targetProvider)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+            case .account:
+                Text("-")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+            case .targetModel:
+                Text(req.targetModel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+            case .stream:
+                Text("Sync")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1.5)
+                    .background(Color.codexMuted.opacity(0.12), in: Capsule())
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+            case .tokens:
+                Group {
+                    if req.tokens > 0 {
+                        Text("\(req.tokens) toks")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+
+            case .cacheTokens:
+                Text("-")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+            case .tools:
+                Text("-")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+            case .cost:
+                Text("-")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+
+            case .ttft:
+                Group {
+                    if req.ttftMs > 0 {
+                        Text("\(req.ttftMs)ms")
+                    } else {
+                        Text("-")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+
+            case .latency:
+                Text("\(req.latencyMs)ms")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+
+            case .fidelity:
+                Text(req.fidelity == "actual" ? "实际" : (req.fidelity == "estimated" ? "估算" : req.fidelity))
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.12), in: Capsule())
+                    .foregroundStyle(Color.blue)
+                    .lineLimit(1)
+
+            case .status:
+                Text(req.status)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.green)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: columnWidth(for: column), alignment: column.alignment)
+    }
+
+    // MARK: - 共享日期筛选组件与分页栏
+
+    private var dateRangeSelectorView: some View {
+        HStack(spacing: 2) {
+            ForEach(GatewayDateRange.allCases) { r in
+                let isSelected = store.selectedDateRange == r
+                Button {
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                        store.selectedDateRange = r
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        if r == .custom {
+                            Image(systemName: "slider.horizontal.below.rectangle")
+                                .font(.system(size: 9))
+                        }
+                        Text(r.shortLabel)
+                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(
+                        isSelected
+                            ? Color.codexCard
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                    )
+                    .shadow(color: isSelected ? Color.black.opacity(0.08) : Color.clear, radius: 1.5, y: 0.5)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                            .stroke(isSelected ? Color.codexLine.opacity(0.4) : Color.clear, lineWidth: 0.6)
+                    )
+                    .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2.5)
+        .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+        )
+    }
+
+    private var customDateRangePickerBar: some View {
+        HStack(spacing: 8) {
+            // 左侧：时间区间选择胶囊
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexPrimary)
+
+                HStack(spacing: 4) {
+                    Text("从")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+                    DatePicker("", selection: $store.customStartDate, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                        .controlSize(.small)
+                }
+
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted.opacity(0.8))
+
+                HStack(spacing: 4) {
+                    Text("至")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+                    DatePicker("", selection: $store.customEndDate, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.codexMist.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+            )
+
+            // 应用筛选按钮
+            Button {
+                store.applyCustomDateRange(start: store.customStartDate, end: store.customEndDate)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("应用")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 6))
+
+            Spacer(minLength: 8)
+
+            // 快捷区间预设
+            HStack(spacing: 4) {
+                customPresetChip("近1小时", hours: 1)
+                customPresetChip("近6小时", hours: 6)
+                customPresetChip("近24小时", hours: 24)
+                customPresetChip("近3天", days: 3)
+                customPresetChip("近7天", days: 7)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private func customPresetChip(_ label: String, hours: Int? = nil, days: Int? = nil) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                if let hours {
+                    store.setCustomPreset(hours: hours)
+                } else if let days {
+                    store.setCustomPreset(days: days)
+                }
+            }
+        } label: {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3.5)
+                .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .foregroundStyle(Color.codexInk)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.6)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var requestsPaginationBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Text("共 \(store.requestsTotalCount) 条记录")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+                if store.isRequestsLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            HStack(spacing: 4) {
+                Text("每页")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+
+                Picker("", selection: Binding(
+                    get: { store.requestsPageSize },
+                    set: { store.setPageSize($0) }
+                )) {
+                    Text("10 条").tag(10)
+                    Text("20 条").tag(20)
+                    Text("50 条").tag(50)
+                    Text("100 条").tag(100)
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .frame(width: 80)
+                .disabled(store.isRequestsLoading)
+            }
+
+            Divider()
+                .frame(height: 14)
+
+            HStack(spacing: 4) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        store.goToPage(1)
+                    }
+                }) {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 10))
+                        .padding(4)
+                }
+                .disabled(store.requestsCurrentPage <= 1 || store.isRequestsLoading)
+                .buttonStyle(.plain)
+                .foregroundStyle((store.requestsCurrentPage <= 1 || store.isRequestsLoading) ? Color.codexMuted.opacity(0.35) : Color.codexInk)
+
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        store.prevPage()
+                    }
+                }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .padding(4)
+                }
+                .disabled(store.requestsCurrentPage <= 1 || store.isRequestsLoading)
+                .buttonStyle(.plain)
+                .foregroundStyle((store.requestsCurrentPage <= 1 || store.isRequestsLoading) ? Color.codexMuted.opacity(0.35) : Color.codexInk)
+
+                Text("第 \(store.requestsCurrentPage) / \(store.requestsTotalPages) 页")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .padding(.horizontal, 4)
+                    .lineLimit(1)
+
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        store.nextPage()
+                    }
+                }) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .padding(4)
+                }
+                .disabled(store.requestsCurrentPage >= store.requestsTotalPages || store.isRequestsLoading)
+                .buttonStyle(.plain)
+                .foregroundStyle((store.requestsCurrentPage >= store.requestsTotalPages || store.isRequestsLoading) ? Color.codexMuted.opacity(0.35) : Color.codexInk)
+
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        store.goToPage(store.requestsTotalPages)
+                    }
+                }) {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 10))
+                        .padding(4)
+                }
+                .disabled(store.requestsCurrentPage >= store.requestsTotalPages || store.isRequestsLoading)
+                .buttonStyle(.plain)
+                .foregroundStyle((store.requestsCurrentPage >= store.requestsTotalPages || store.isRequestsLoading) ? Color.codexMuted.opacity(0.35) : Color.codexInk)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+        )
     }
 
     // MARK: - Tab: Agents Content (Hermes & Pi 一键接入)
@@ -1291,26 +2352,33 @@ public struct GatewayView: View {
             // Hermes Agent Card
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.orange.opacity(0.12))
-                            .frame(width: 28, height: 28)
-                        Image(systemName: "brain.head.profile")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.orange)
-                    }
+                    BrandIconView(asset: .hermesAgent, size: 34, cornerRadius: 8)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             Text("Hermes Agent")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.codexInk)
-                            if store.isHermesInstalled() {
-                                Text("已检测到配置")
+                            if !store.hasLoadedAgentIntegrationStatus || store.isRefreshingAgentIntegrationStatus {
+                                Text("正在检测…")
+                                    .font(.system(size: 9.5))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.codexMuted.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(Color.codexMuted)
+                            } else if store.hermesAgentConfigured {
+                                Text("已接入 Gateway")
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1.5)
                                     .background(Color.green.opacity(0.12), in: Capsule())
                                     .foregroundStyle(.green)
+                            } else if store.hermesAgentInstalled {
+                                Text("已安装 / 未接入")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(.blue)
                             } else {
                                 Text("未检测到 ~/.hermes")
                                     .font(.system(size: 9.5))
@@ -1325,39 +2393,77 @@ public struct GatewayView: View {
                             .foregroundStyle(Color.codexMuted)
                     }
                     Spacer()
-                    Button {
-                        guard configuringAgent == nil else { return }
-                        configuringAgent = .hermes
-                        agentConfigMessage = nil
-                        Task {
-                            let res = await store.configureHermesAgent()
-                            agentConfigSucceeded = res.success
-                            agentConfigMessage = res.message
-                            configuringAgent = nil
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            if configuringAgent == .hermes {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .tint(Color.codexOnPrimary)
-                                Text("接入中…")
-                            } else {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 10))
-                                Text("一键接入 Gateway")
+                    HStack(spacing: 8) {
+                        if store.hermesAgentConfigured {
+                            Button {
+                                guard configuringAgent == nil && unconfiguringAgent == nil else { return }
+                                unconfiguringAgent = .hermes
+                                agentConfigMessage = nil
+                                Task {
+                                    let result = await store.unconfigureHermesAgent()
+                                    agentConfigSucceeded = result.success
+                                    agentConfigMessage = result.message
+                                    unconfiguringAgent = nil
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if unconfiguringAgent == .hermes {
+                                        ProgressView().controlSize(.small)
+                                        Text("移除中…")
+                                    } else {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 10))
+                                        Text("移除")
+                                    }
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .foregroundStyle(Color.red.opacity(0.9))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(Color.red.opacity(0.25), lineWidth: 0.8)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .disabled(configuringAgent != nil || unconfiguringAgent != nil)
                         }
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(minWidth: 118)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .foregroundStyle(Color.codexOnPrimary)
+
+                        Button {
+                            guard configuringAgent == nil && unconfiguringAgent == nil else { return }
+                            configuringAgent = .hermes
+                            agentConfigMessage = nil
+                            Task {
+                                let res = await store.configureHermesAgent()
+                                agentConfigSucceeded = res.success
+                                agentConfigMessage = res.message
+                                configuringAgent = nil
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if configuringAgent == .hermes {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .tint(Color.codexOnPrimary)
+                                    Text("接入中…")
+                                } else {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 10))
+                                    Text(store.hermesAgentConfigured ? "更新接入配置" : "一键接入 Gateway")
+                                }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(minWidth: store.hermesAgentConfigured ? 92 : 118)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .foregroundStyle(Color.codexOnPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(configuringAgent != nil || unconfiguringAgent != nil)
+                        .opacity(configuringAgent != nil && configuringAgent != .hermes ? 0.55 : 1)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(configuringAgent != nil)
-                    .opacity(configuringAgent != nil && configuringAgent != .hermes ? 0.55 : 1)
                 }
 
                 CodexDivider(.horizontal)
@@ -1403,26 +2509,33 @@ public struct GatewayView: View {
             // Pi Agent Card
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.purple.opacity(0.12))
-                            .frame(width: 28, height: 28)
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.purple)
-                    }
+                    BrandIconView(asset: .piAgent, size: 34, cornerRadius: 8)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             Text("Pi Agent")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.codexInk)
-                            if store.isPiInstalled() {
-                                Text("已检测到环境")
+                            if !store.hasLoadedAgentIntegrationStatus || store.isRefreshingAgentIntegrationStatus {
+                                Text("正在检测…")
+                                    .font(.system(size: 9.5))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.codexMuted.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(Color.codexMuted)
+                            } else if store.piAgentConfigured {
+                                Text("已接入 Gateway")
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1.5)
                                     .background(Color.green.opacity(0.12), in: Capsule())
                                     .foregroundStyle(.green)
+                            } else if store.piAgentInstalled {
+                                Text("已安装 / 未接入")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(.blue)
                             } else {
                                 Text("未检测到 ~/.pi")
                                     .font(.system(size: 9.5))
@@ -1437,39 +2550,77 @@ public struct GatewayView: View {
                             .foregroundStyle(Color.codexMuted)
                     }
                     Spacer()
-                    Button {
-                        guard configuringAgent == nil else { return }
-                        configuringAgent = .pi
-                        agentConfigMessage = nil
-                        Task {
-                            let res = await store.configurePiAgent()
-                            agentConfigSucceeded = res.success
-                            agentConfigMessage = res.message
-                            configuringAgent = nil
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            if configuringAgent == .pi {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .tint(Color.codexOnPrimary)
-                                Text("接入中…")
-                            } else {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 10))
-                                Text("一键接入 Gateway")
+                    HStack(spacing: 8) {
+                        if store.piAgentConfigured {
+                            Button {
+                                guard configuringAgent == nil && unconfiguringAgent == nil else { return }
+                                unconfiguringAgent = .pi
+                                agentConfigMessage = nil
+                                Task {
+                                    let result = await store.unconfigurePiAgent()
+                                    agentConfigSucceeded = result.success
+                                    agentConfigMessage = result.message
+                                    unconfiguringAgent = nil
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if unconfiguringAgent == .pi {
+                                        ProgressView().controlSize(.small)
+                                        Text("移除中…")
+                                    } else {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 10))
+                                        Text("移除")
+                                    }
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .foregroundStyle(Color.red.opacity(0.9))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(Color.red.opacity(0.25), lineWidth: 0.8)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .disabled(configuringAgent != nil || unconfiguringAgent != nil)
                         }
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(minWidth: 118)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .foregroundStyle(Color.codexOnPrimary)
+
+                        Button {
+                            guard configuringAgent == nil && unconfiguringAgent == nil else { return }
+                            configuringAgent = .pi
+                            agentConfigMessage = nil
+                            Task {
+                                let res = await store.configurePiAgent()
+                                agentConfigSucceeded = res.success
+                                agentConfigMessage = res.message
+                                configuringAgent = nil
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if configuringAgent == .pi {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .tint(Color.codexOnPrimary)
+                                    Text("接入中…")
+                                } else {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 10))
+                                    Text(store.piAgentConfigured ? "更新接入配置" : "一键接入 Gateway")
+                                }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(minWidth: store.piAgentConfigured ? 92 : 118)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .foregroundStyle(Color.codexOnPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(configuringAgent != nil || unconfiguringAgent != nil)
+                        .opacity(configuringAgent != nil && configuringAgent != .pi ? 0.55 : 1)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(configuringAgent != nil)
-                    .opacity(configuringAgent != nil && configuringAgent != .pi ? 0.55 : 1)
                 }
 
                 CodexDivider(.horizontal)
@@ -1528,6 +2679,9 @@ public struct GatewayView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
             )
+        }
+        .task {
+            await store.refreshAgentIntegrationStatus()
         }
     }
 

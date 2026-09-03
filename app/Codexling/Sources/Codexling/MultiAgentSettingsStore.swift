@@ -298,16 +298,35 @@ final class MultiAgentSettingsStore {
             do {
                 let service = CodexUsageService(tokenStore: tokenStore)
                 let snapshot = try await service.fetchWithStoredToken()
-                let models = await service.fetchAvailableModels()
-                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: snapshot, availableModels: models)
+                let models = try await service.fetchAvailableModels()
+                return CodexAccountRefreshResult(
+                    id: connection.id,
+                    state: .connected,
+                    usage: snapshot,
+                    availableModels: models,
+                    didFetchAvailableModels: true
+                )
             } catch let codexError as CodexUsageError where codexError == .noStoredToken || codexError == .invalidTokenResponse {
                 // 令牌缺失或已失效 → 需要重新登录。
                 return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
             } catch CodexUsageError.quotaUnavailable {
                 // 令牌有效但额度接口暂不可用 → 保持「已连接」，仅保留旧额度。
                 let service = CodexUsageService(tokenStore: tokenStore)
-                let models = await service.fetchAvailableModels()
-                return CodexAccountRefreshResult(id: connection.id, state: .connected, usage: connection.usage, availableModels: models)
+                guard let models = try? await service.fetchAvailableModels() else {
+                    return CodexAccountRefreshResult(
+                        id: connection.id,
+                        state: .connected,
+                        usage: connection.usage,
+                        availableModels: connection.availableModelIDs
+                    )
+                }
+                return CodexAccountRefreshResult(
+                    id: connection.id,
+                    state: .connected,
+                    usage: connection.usage,
+                    availableModels: models,
+                    didFetchAvailableModels: true
+                )
             } catch {
                 // 网络抖动等瞬时错误 → 不降级，保留原状态。
                 return CodexAccountRefreshResult(id: connection.id, state: connection.authenticationState, usage: connection.usage, availableModels: connection.availableModelIDs)
@@ -346,7 +365,7 @@ final class MultiAgentSettingsStore {
                 codexAccounts[index].usage = usage
                 changed = true
             }
-            if !result.availableModels.isEmpty && codexAccounts[index].availableModelIDs != result.availableModels {
+            if result.didFetchAvailableModels && codexAccounts[index].availableModelIDs != result.availableModels {
                 codexAccounts[index].availableModelIDs = result.availableModels
                 changed = true
             }
@@ -398,7 +417,7 @@ final class MultiAgentSettingsStore {
                 isCodexOAuthInProgress = false
             }
             let snapshot = try await service.connectAndFetch(forceLogin: true)
-            let models = await service.fetchAvailableModels()
+            let models = (try? await service.fetchAvailableModels()) ?? []
             connection.label = normalizedLabel(
                 snapshot.accountName ?? snapshot.accountEmail,
                 fallback: fallback
@@ -453,7 +472,7 @@ final class MultiAgentSettingsStore {
                 isCodexOAuthInProgress = false
             }
             let snapshot = try await service.connectAndFetch(forceLogin: true)
-            let models = await service.fetchAvailableModels()
+            let models = (try? await service.fetchAvailableModels()) ?? []
             guard let index = codexAccounts.firstIndex(where: { $0.id == connection.id }) else {
                 return false
             }
@@ -1055,11 +1074,27 @@ final class MultiAgentSettingsStore {
                 token = try await geminiOAuthService.refreshToken(token)
                 try geminiOAuthTokenStore.save(token, handle: connection.credentialHandle)
             } catch {
+                // An expired access token is expected: Google normally issues
+                // one-hour access tokens and Codexling owns a refresh token
+                // for the long-lived session.  Do not persist a transient
+                // network/proxy/configuration error as "unauthorized" — that
+                // made every account look logged out after a short outage and
+                // hid otherwise usable Gateway routes.  Only an explicit
+                // OAuth credential rejection requires user interaction.
+                let requiresReauthentication = Self.geminiRefreshRequiresReauthentication(error)
                 if let index = geminiConnections.firstIndex(where: { $0.id == connection.id }) {
-                    geminiConnections[index].authenticationState = .invalid
+                    geminiConnections[index].authenticationState = requiresReauthentication ? .invalid : .connected
+                    geminiConnections[index].rateLimitState = requiresReauthentication
+                        ? "unauthorized"
+                        : "refresh_pending"
                     try? saveRegistry()
                 }
-                let message = "\(connection.label)：Google 账号 Token 续期失败，请重新登录"
+                let message: String
+                if requiresReauthentication {
+                    message = "\(connection.label)：Google 已拒绝该 OAuth 凭证，请重新登录"
+                } else {
+                    message = "\(connection.label)：OAuth 自动续期暂时不可达，已保留连接；Gateway 会在下次请求时继续自动续期"
+                }
                 if publishesMessage { lastMessage = message }
                 return RefreshOutcome(failures: [message])
             }
@@ -1075,15 +1110,11 @@ final class MultiAgentSettingsStore {
         if let email = snapshot.userEmail, !email.isEmpty {
             geminiConnections[index].email = email
         }
-        // A quota/network/OAuth failure does not mean that the account lost
-        // every previously discovered Cloud Code model.  Keep the last known
-        // registry until a successful Cloud Code response supplies a new
-        // non-empty catalog; otherwise a background refresh would erase the
-        // entire Gateway model list before the user can reauthorize.
-        if !snapshot.availableModels.isEmpty {
-            geminiConnections[index].availableModelCount = snapshot.availableModelCount
-            geminiConnections[index].availableModelIDs = snapshot.availableModels
-        }
+        // This snapshot is a successful official Cloud Code response.  Its
+        // catalog (including an explicitly empty one) is authoritative; do
+        // not keep stale models after upstream has removed access.
+        geminiConnections[index].availableModelCount = snapshot.availableModelCount
+        geminiConnections[index].availableModelIDs = snapshot.availableModels
         if let projectID = snapshot.projectId, !projectID.isEmpty {
             geminiConnections[index].projectId = projectID
         }
@@ -1123,6 +1154,25 @@ final class MultiAgentSettingsStore {
             }
         }
         return RefreshOutcome(successCount: 1)
+    }
+
+    /// Google only requires a fresh browser login when it explicitly rejects
+    /// the refresh grant.  Transport errors (including a temporarily stale
+    /// system proxy) must stay recoverable and never change the saved account
+    /// into the visually equivalent "未授权" state.
+    private static func geminiRefreshRequiresReauthentication(_ error: Error) -> Bool {
+        guard let oauthError = error as? GeminiOAuthError else { return false }
+        switch oauthError {
+        case .unauthorized:
+            return true
+        case .tokenRefreshFailed(let response):
+            let normalized = response.lowercased()
+            return normalized.contains("invalid_grant")
+                || normalized.contains("token has been expired or revoked")
+                || normalized.contains("token has been revoked")
+        default:
+            return false
+        }
     }
 
     func removeGeminiConnection(_ connection: GeminiAccountConnection) {
@@ -1384,4 +1434,5 @@ private struct CodexAccountRefreshResult: Sendable {
     let state: ConnectionAuthenticationState
     let usage: CodexUsageSnapshot?
     var availableModels: [String] = []
+    var didFetchAvailableModels = false
 }

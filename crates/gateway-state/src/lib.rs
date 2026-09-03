@@ -1,6 +1,12 @@
 pub mod ledger;
+pub mod telemetry;
 
 pub use ledger::{LedgerError, ToolCallEntry, ToolCallIdLedger};
+pub use telemetry::{
+    BreakdownItem, BreakdownResponse, RequestsListResponse, TelemetryEvent, TelemetryQueryFilter,
+    TelemetryStore, TelemetrySummary, TimeseriesBucket, TimeseriesResponse,
+};
+
 
 #[cfg(test)]
 mod tests {

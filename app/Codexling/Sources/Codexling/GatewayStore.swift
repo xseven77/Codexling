@@ -267,7 +267,17 @@ public struct GatewayDoctorCheck: Identifiable {
 public final class GatewayStore {
     public static let shared = GatewayStore()
 
-    public var selectedTab: GatewayNavTab = .connect
+    public var selectedTab: GatewayNavTab = .connect {
+        didSet {
+            if oldValue != selectedTab {
+                if selectedTab == .overview {
+                    Task { await refreshTelemetryAnalytics() }
+                } else if selectedTab == .requests {
+                    Task { await refreshRequestsList() }
+                }
+            }
+        }
+    }
     public var selectedRequestId: String?
 
     // ==========================================
@@ -277,9 +287,22 @@ public final class GatewayStore {
     private weak var companionStatsStore: CompanionStatsStore?
     private let hermesConfigurator: HermesGatewayConfigurator
     private let piConfigurator: PiGatewayConfigurator
+    private let agentCatalogDefaults = UserDefaults.standard
+    private let hermesCatalogFingerprintKey = "Codexling.hermesCatalogFingerprint"
+    private let piCatalogFingerprintKey = "Codexling.piCatalogFingerprint"
+
+    // Agent status is discovered off the main actor when the Agents page is
+    // opened. Never invoke `hermes config get` from a SwiftUI body: it starts
+    // a process synchronously and can block a single render several times.
+    public private(set) var hermesAgentInstalled = false
+    public private(set) var hermesAgentConfigured = false
+    public private(set) var piAgentInstalled = false
+    public private(set) var piAgentConfigured = false
+    public private(set) var isRefreshingAgentIntegrationStatus = false
+    public private(set) var hasLoadedAgentIntegrationStatus = false
 
     // ==========================================
-    // 维度二：Gateway 本地反代与网络遥测数据
+    // 维度二：Gateway 本地反代与持久化遥测数据
     // ==========================================
     public private(set) var totalRequests: Int = 0
     public private(set) var totalInputTokens: Int = 0
@@ -287,6 +310,186 @@ public final class GatewayStore {
     public private(set) var totalToolCalls: Int = 0
 
     public private(set) var requestsList: [GatewayRequestRow] = []
+
+    // 遥测分析与筛选状态
+    public var selectedDateRange: GatewayDateRange = .today {
+        didSet {
+            requestsCurrentPage = 1
+            Task { await refreshSelectedTabData() }
+        }
+    }
+    public var customStartDate: Date = Calendar.current.date(byAdding: .hour, value: -1, to: Date()) ?? Date()
+    public var customEndDate: Date = Date()
+    public var showsCustomDatePicker: Bool = false
+
+    public var selectedMetricTab: GatewayMetricTab = .tokens
+    public var selectedBreakdownDimension: GatewayBreakdownDimension = .model {
+        didSet {
+            guard selectedTab == .overview else { return }
+            Task { await refreshBreakdown() }
+        }
+    }
+
+    public var filterAgent: String? = nil {
+        didSet {
+            requestsCurrentPage = 1
+            Task { await refreshSelectedTabData() }
+        }
+    }
+    public var filterProvider: String? = nil {
+        didSet {
+            requestsCurrentPage = 1
+            Task { await refreshSelectedTabData() }
+        }
+    }
+    public var filterAccount: String? = nil {
+        didSet {
+            requestsCurrentPage = 1
+            Task { await refreshSelectedTabData() }
+        }
+    }
+    public var filterModel: String? = nil {
+        didSet {
+            requestsCurrentPage = 1
+            Task { await refreshSelectedTabData() }
+        }
+    }
+
+    public private(set) var telemetrySummary: GatewayTelemetrySummary = .zero
+    public private(set) var timeseriesBuckets: [GatewayTimeseriesBucket] = []
+    public private(set) var breakdownItems: [GatewayBreakdownItem] = []
+    public private(set) var detailedRequestsList: [GatewayTelemetryEventDetail] = []
+    public private(set) var isTelemetryLoading: Bool = false
+    public private(set) var isSummaryLoading: Bool = false
+    public private(set) var isTimeseriesLoading: Bool = false
+    public private(set) var isBreakdownLoading: Bool = false
+    public private(set) var isRequestsLoading: Bool = false
+
+    // 分页状态管理
+    public var requestsCurrentPage: Int = 1 {
+        didSet {
+            if oldValue != requestsCurrentPage, selectedTab == .requests {
+                Task { await refreshRequestsList() }
+            }
+        }
+    }
+    public var requestsPageSize: Int = 20 {
+        didSet {
+            if oldValue != requestsPageSize {
+                requestsCurrentPage = 1
+                if selectedTab == .requests {
+                    Task { await refreshRequestsList() }
+                }
+            }
+        }
+    }
+    public private(set) var requestsTotalCount: Int64 = 0
+
+    public var requestsTotalPages: Int {
+        guard requestsTotalCount > 0 else { return 1 }
+        return max(1, Int(ceil(Double(requestsTotalCount) / Double(requestsPageSize))))
+    }
+
+    public func goToPage(_ page: Int) {
+        let target = max(1, min(page, requestsTotalPages))
+        if target != requestsCurrentPage {
+            requestsCurrentPage = target
+        }
+    }
+
+    public func nextPage() {
+        if requestsCurrentPage < requestsTotalPages {
+            requestsCurrentPage += 1
+        }
+    }
+
+    public func prevPage() {
+        if requestsCurrentPage > 1 {
+            requestsCurrentPage -= 1
+        }
+    }
+
+    public func setPageSize(_ size: Int) {
+        guard size > 0, size != requestsPageSize else { return }
+        requestsPageSize = size
+    }
+
+    // ==========================================
+    // 维度三：请求流表格列自定义显示设置
+    // ==========================================
+    public static let visibleColumnsDefaultsKey = "codexling.gateway.visibleColumns"
+
+    public var isColumnSettingsPresented: Bool = false
+
+    public var visibleColumns: Set<GatewayRequestColumn> = {
+        if let saved = UserDefaults.standard.stringArray(forKey: "codexling.gateway.visibleColumns") {
+            let cols = saved.compactMap { GatewayRequestColumn(rawValue: $0) }
+            if !cols.isEmpty {
+                return Set(cols)
+            }
+        }
+        return Set(GatewayRequestColumn.defaultColumns)
+    }() {
+        didSet {
+            let rawValues = Array(visibleColumns.map(\.rawValue))
+            UserDefaults.standard.set(rawValues, forKey: Self.visibleColumnsDefaultsKey)
+        }
+    }
+
+    public var orderedVisibleColumns: [GatewayRequestColumn] {
+        GatewayRequestColumn.allCases.filter { visibleColumns.contains($0) }
+    }
+
+    public func isColumnVisible(_ col: GatewayRequestColumn) -> Bool {
+        visibleColumns.contains(col)
+    }
+
+    public func toggleColumn(_ col: GatewayRequestColumn) {
+        if visibleColumns.contains(col) {
+            if visibleColumns.count > 1 {
+                visibleColumns.remove(col)
+            }
+        } else {
+            visibleColumns.insert(col)
+        }
+    }
+
+    public func setColumnVisible(_ col: GatewayRequestColumn, isVisible: Bool) {
+        if isVisible {
+            visibleColumns.insert(col)
+        } else {
+            if visibleColumns.count > 1 {
+                visibleColumns.remove(col)
+            }
+        }
+    }
+
+    public func selectAllColumns() {
+        visibleColumns = Set(GatewayRequestColumn.allCases)
+    }
+
+    public func resetColumnsToDefault() {
+        visibleColumns = Set(GatewayRequestColumn.defaultColumns)
+    }
+
+    public func setCustomPreset(hours: Int) {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .hour, value: -hours, to: now) ?? now
+        applyCustomDateRange(start: start, end: now)
+    }
+
+    public func setCustomPreset(days: Int) {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: now) ?? now
+        applyCustomDateRange(start: start, end: now)
+    }
+
+    public func applyCustomDateRange(start: Date, end: Date) {
+        self.customStartDate = start
+        self.customEndDate = end
+        self.selectedDateRange = .custom
+        self.requestsCurrentPage = 1
+    }
 
     // 用户自定义或额外添加的透传模型
     private var customModelsByGroup: [String: [String]] = [:]
@@ -379,6 +582,193 @@ public final class GatewayStore {
         self.requestsList = rows
     }
 
+    // ==========================================
+    // 持久化遥测接口请求与更新
+    // ==========================================
+
+    private func buildQueryItems(additional: [String: String] = [:]) -> [URLQueryItem] {
+        let (from, to) = selectedDateRange.calculateTimestamps(customStart: customStartDate, customEnd: customEndDate)
+        let tz = TimeZone.current.identifier
+        var items = [
+            URLQueryItem(name: "from", value: "\(from)"),
+            URLQueryItem(name: "to", value: "\(to)"),
+            URLQueryItem(name: "timezone", value: tz),
+        ]
+        if let agent = filterAgent, !agent.isEmpty, agent != "全部 Agent" {
+            items.append(URLQueryItem(name: "agent", value: agent))
+        }
+        if let provider = filterProvider, !provider.isEmpty, provider != "全部供应商" {
+            items.append(URLQueryItem(name: "provider", value: provider))
+        }
+        if let account = filterAccount, !account.isEmpty, account != "全部账号" {
+            items.append(URLQueryItem(name: "account", value: account))
+        }
+        if let model = filterModel, !model.isEmpty, model != "全部模型" {
+            items.append(URLQueryItem(name: "model", value: model))
+        }
+        for (k, v) in additional {
+            items.append(URLQueryItem(name: k, value: v))
+        }
+        return items
+    }
+
+    public func refreshTelemetryAnalytics() async {
+        guard !isTelemetryLoading else { return }
+        isTelemetryLoading = true
+        defer { isTelemetryLoading = false }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.refreshSummary() }
+            group.addTask { await self.refreshTimeseries() }
+            group.addTask { await self.refreshBreakdown() }
+        }
+    }
+
+    /// Data is intentionally lazy: a page owns its own requests.  Switching
+    /// to Connect, Agents or Doctor never starts telemetry work in the
+    /// background, and changing filters only refreshes the page being viewed.
+    private func refreshSelectedTabData() async {
+        switch selectedTab {
+        case .overview:
+            await refreshTelemetryAnalytics()
+        case .requests:
+            await refreshRequestsList()
+        case .connect, .agents, .doctor:
+            break
+        }
+    }
+
+    public func refreshSummary() async {
+        guard !isSummaryLoading else { return }
+        isSummaryLoading = true
+        defer { isSummaryLoading = false }
+
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        var components = URLComponents(url: base.appendingPathComponent("telemetry/summary"), resolvingAgainstBaseURL: false)
+        components?.queryItems = buildQueryItems()
+        guard let url = components?.url else { return }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 3
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let decoder = JSONDecoder()
+            let summary = try decoder.decode(GatewayTelemetrySummary.self, from: data)
+            self.telemetrySummary = summary
+            self.updateGatewayMetrics(
+                totalRequests: Int(summary.totalRequests),
+                inputTokens: Int(summary.totalInputTokens),
+                outputTokens: Int(summary.totalOutputTokens),
+                toolCalls: Int(summary.toolCallsCount)
+            )
+        } catch {
+            print("[GatewayStore] refreshSummary error: \(error)")
+        }
+    }
+
+    public func refreshTimeseries() async {
+        guard !isTimeseriesLoading else { return }
+        isTimeseriesLoading = true
+        defer { isTimeseriesLoading = false }
+
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        var components = URLComponents(url: base.appendingPathComponent("telemetry/timeseries"), resolvingAgainstBaseURL: false)
+        let (from, to) = selectedDateRange.calculateTimestamps(customStart: customStartDate, customEnd: customEndDate)
+        let durationMs = max(0, to - from)
+
+        let interval: String
+        switch selectedDateRange {
+        case .last10Minutes:
+            interval = "minute"
+        case .today, .yesterday:
+            interval = "hour"
+        case .last7Days, .last30Days:
+            interval = "day"
+        case .custom:
+            if durationMs <= 3600 * 1000 {
+                interval = "minute"
+            } else if durationMs <= 48 * 3600 * 1000 {
+                interval = "hour"
+            } else if durationMs <= 60 * 86400 * 1000 {
+                interval = "day"
+            } else {
+                interval = "week"
+            }
+        }
+
+        components?.queryItems = buildQueryItems(additional: ["interval": interval, "metric": selectedMetricTab.rawValue])
+        guard let url = components?.url else { return }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 3
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let decoder = JSONDecoder()
+            let resp = try decoder.decode(GatewayTimeseriesResponse.self, from: data)
+            self.timeseriesBuckets = resp.buckets
+        } catch {
+            print("[GatewayStore] refreshTimeseries error: \(error)")
+        }
+    }
+
+    public func refreshBreakdown() async {
+        guard !isBreakdownLoading else { return }
+        isBreakdownLoading = true
+        defer { isBreakdownLoading = false }
+
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        var components = URLComponents(url: base.appendingPathComponent("telemetry/breakdown"), resolvingAgainstBaseURL: false)
+        components?.queryItems = buildQueryItems(additional: ["dimension": selectedBreakdownDimension.apiDimension])
+        guard let url = components?.url else { return }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 3
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let decoder = JSONDecoder()
+            let resp = try decoder.decode(GatewayBreakdownResponse.self, from: data)
+            self.breakdownItems = resp.items
+        } catch {
+            print("[GatewayStore] refreshBreakdown error: \(error)")
+        }
+    }
+
+    public func refreshRequestsList() async {
+        guard !isRequestsLoading else { return }
+        isRequestsLoading = true
+        defer { isRequestsLoading = false }
+
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        var components = URLComponents(url: base.appendingPathComponent("telemetry/requests"), resolvingAgainstBaseURL: false)
+        let limit = requestsPageSize
+        let offset = max(0, (requestsCurrentPage - 1) * requestsPageSize)
+        components?.queryItems = buildQueryItems(additional: [
+            "limit": "\(limit)",
+            "offset": "\(offset)"
+        ])
+        guard let url = components?.url else { return }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 3
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let decoder = JSONDecoder()
+            let resp = try decoder.decode(GatewayRequestsResponse.self, from: data)
+            self.detailedRequestsList = resp.items
+            self.requestsTotalCount = resp.total
+        } catch {
+            print("[GatewayStore] refreshRequestsList error: \(error)")
+        }
+    }
+
     // ----------------------------------------------------
     // 通用端点与配置参数
     // ----------------------------------------------------
@@ -408,6 +798,32 @@ public final class GatewayStore {
         accountModelGroups.flatMap { $0.models }.map { $0.modelName }.joined(separator: ", ")
     }
 
+    /// Returns the codex CLI's authoritative servable-model slugs for a
+    /// connection from its own `models_cache.json`. The CLI refreshes this file
+    /// automatically when it is stale, so this reflects exactly the models
+    /// `codex exec --model` can serve — never the ChatGPT-side
+    /// `availableModelIDs`, which the CLI rejects. Hidden/internal entries
+    /// (`gpt-reserve`, `codex-auto-review`) are excluded.
+    static func codexServableSlugs(from connection: CodexAccountConnection, runtimesRoot: URL? = nil) -> [String] {
+        let runtimesRoot = runtimesRoot ?? ConnectionRegistryStorage().fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/Runtimes/Codex", isDirectory: true)
+        let home = runtimesRoot.appendingPathComponent(connection.relativeHomeDirectory, isDirectory: true)
+        let cacheURL = home.appendingPathComponent("models_cache.json")
+        guard let data = try? Data(contentsOf: cacheURL),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let models = json["models"] as? [[String: Any]] else {
+            return []
+        }
+        var slugs: [String] = []
+        for model in models {
+            guard let slug = model["slug"] as? String, !slug.isEmpty else { continue }
+            if slug == "codex-auto-review" { continue }
+            if (model["visibility"] as? String) == "hide" { continue }
+            if !slugs.contains(slug) { slugs.append(slug) }
+        }
+        return slugs
+    }
+
     public static func normalizeGeminiModelID(_ raw: String) -> String {
         var s = raw
         if s.hasPrefix("models/") {
@@ -425,6 +841,11 @@ public final class GatewayStore {
             return "" // skip internal placeholders
         }
         return s
+    }
+
+    nonisolated public static func connectionShortID(id: ConnectionID) -> String {
+        let raw = id.rawValue.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return String(raw.prefix(8))
     }
 
     nonisolated public static func friendlyAccountName(displayName: String?, email: String?, fallbackLabel: String) -> String {
@@ -480,10 +901,12 @@ public final class GatewayStore {
                 .replacingOccurrences(of: "·", with: "-")
                 .split(whereSeparator: { $0.isWhitespace })
                 .joined(separator: "-")
-            // Cloud Code's `-tiered` is a routing implementation detail.
-            // Keep it on the wire internally, but do not expose it as part of
-            // the Hermes picker label.
-            return compact == "gemini-3.7-flash-tiered" ? "Gemini-3.7-Flash" : compact
+            // Cloud Code's `-tiered` is a routing implementation detail. Keep
+            // its original form in the Gateway catalog, but give every Gemini
+            // generation (including newly released ones) the same concise,
+            // human-readable picker label.
+            let withoutTier = compact.replacingOccurrences(of: "-tiered", with: "")
+            return withoutTier
         }
 
         return "\(component(provider))·\(component(modelName))·\(component(accountName))"
@@ -525,8 +948,10 @@ public final class GatewayStore {
         let token = GatewaySupervisor.shared.localToken
         let registry = ConnectionRegistryStorage().load()
 
-        // 1. Google Gemini 授权模型列表
-        var geminiModelList: [GatewayExportedModel] = [
+        // Every exported list begins empty. The account-scoped official
+        // discovery catalog below is authoritative; stale built-in names must
+        // never appear as selectable models.
+        var geminiModelList: [GatewayExportedModel] = [] /*
             GatewayExportedModel(
                 id: "gemini-3.7-flash",
                 modelName: "gemini-3.7-flash",
@@ -567,7 +992,7 @@ public final class GatewayStore {
                 capability: "始终最新 Pro · 自动追踪",
                 description: "始终自动追踪 Google 官方最新发布的 Pro 旗舰模型"
             )
-        ]
+        ] */
         // 动态附加上游实际发现的模型
         for conn in registry.geminiConnections {
             for rawMid in conn.availableModelIDs {
@@ -601,7 +1026,7 @@ public final class GatewayStore {
         }
 
         // 2. DeepSeek 官方账号模型列表
-        var deepseekModelList: [GatewayExportedModel] = [
+        var deepseekModelList: [GatewayExportedModel] = [] /*
             GatewayExportedModel(
                 id: "deepseek-chat",
                 modelName: "deepseek-chat",
@@ -626,7 +1051,7 @@ public final class GatewayStore {
                 capability: "次世代旗舰 · 顶尖推理",
                 description: "DeepSeek V4 Pro 顶阶推理大模型"
             )
-        ]
+        ] */
         for conn in registry.deepSeekConnections {
             for mid in conn.availableModelIDs where !deepseekModelList.contains(where: { $0.modelName == mid }) {
                 deepseekModelList.append(
@@ -657,7 +1082,7 @@ public final class GatewayStore {
         }
 
         // 3. OpenCode 供应商连接模型列表
-        var opencodeModelList: [GatewayExportedModel] = [
+        var opencodeModelList: [GatewayExportedModel] = [] /*
             GatewayExportedModel(
                 id: "claude-3-7-sonnet",
                 modelName: "claude-3-7-sonnet",
@@ -682,7 +1107,7 @@ public final class GatewayStore {
                 capability: "超高性价比 · 极速响应",
                 description: "轻量高速 Claude 3.5 Haiku 模型"
             )
-        ]
+        ] */
         for conn in registry.openCodeConnections {
             for mid in conn.availableModelIDs where !opencodeModelList.contains(where: { $0.modelName == mid }) {
                 opencodeModelList.append(
@@ -713,130 +1138,20 @@ public final class GatewayStore {
         }
 
         // 4. Codex 账户池模型列表
-        var codexModelList: [GatewayExportedModel] = [
-            GatewayExportedModel(
-                id: "gpt-5.6",
-                modelName: "gpt-5.6",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "GPT-5.6 旗舰全栈编程与顶阶智能",
-                description: "OpenAI GPT-5.6 旗舰全功能编码与前沿推理模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-thinking",
-                modelName: "gpt-5.6-thinking",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "深度思考 · 长链推理",
-                description: "OpenAI GPT-5.6 Thinking 深度思考推理模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-sol",
-                modelName: "gpt-5.6-sol",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "Sol 太阳版 · 极限性能",
-                description: "OpenAI GPT-5.6 Sol 太阳版 · 前沿极限代码生成"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-terra",
-                modelName: "gpt-5.6-terra",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "Terra 地球版 · 均衡通用",
-                description: "OpenAI GPT-5.6 Terra 地球版 · 复杂工程全功能实现"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-luna",
-                modelName: "gpt-5.6-luna",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "Luna 月亮版 · 快速轻量",
-                description: "OpenAI GPT-5.6 Luna 月亮版 · 高速敏捷轻量编码"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-instant",
-                modelName: "gpt-5.6-instant",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "次世代极速响应",
-                description: "OpenAI GPT-5.6 Instant 极速响应模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.6-mini",
-                modelName: "gpt-5.6-mini",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "次世代极速代码模型",
-                description: "OpenAI GPT-5.6 Mini 极速模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.5",
-                modelName: "gpt-5.5",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "GPT-5.5 基础架构大模型",
-                description: "OpenAI GPT-5.5 基础架构模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5.5-thinking",
-                modelName: "gpt-5.5-thinking",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "GPT-5.5 深度思考",
-                description: "OpenAI GPT-5.5 Thinking 深度思考模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5",
-                modelName: "gpt-5",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "次世代旗舰 · 顶阶智能",
-                description: "OpenAI GPT-5 旗舰大模型 · 全功能编码与前沿推理"
-            ),
-            GatewayExportedModel(
-                id: "gpt-5-codex",
-                modelName: "gpt-5-codex",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "专属代码架构 · 高保真生成",
-                description: "OpenAI GPT-5 Codex 专属架构与复杂工程代码模型"
-            ),
-            GatewayExportedModel(
-                id: "o3-mini",
-                modelName: "o3-mini",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "紧凑型强推理",
-                description: "OpenAI o3-mini 高阶 STEM 与算法推理模型"
-            ),
-            GatewayExportedModel(
-                id: "o1",
-                modelName: "o1",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "深度思考与复杂逻辑",
-                description: "OpenAI o1 深度思考代码与数学推理模型"
-            ),
-            GatewayExportedModel(
-                id: "gpt-4o",
-                modelName: "gpt-4o",
-                sourceBadge: "Codex / OpenAI",
-                sourceBadgeColor: NSColor.systemCyan,
-                capability: "通用多模态 · 全功能编码",
-                description: "OpenAI GPT-4o 多模态旗舰模型"
-            )
-        ]
+        // Codex CLI 只能服务其自身 `models_cache.json` 中列出的模型；该文件由 CLI
+        // 在同步时自动刷新。因此这里仅从该权威来源构建可服务模型，绝不使用
+        // ChatGPT 侧的 availableModelIDs（那些模型 codex exec 无法服务）。
+        var codexModelList: [GatewayExportedModel] = []
         for conn in registry.codexAccounts {
-            for mid in conn.availableModelIDs where !codexModelList.contains(where: { $0.modelName == mid }) {
+            for slug in Self.codexServableSlugs(from: conn) where !codexModelList.contains(where: { $0.modelName == slug }) {
                 codexModelList.append(
                     GatewayExportedModel(
-                        id: mid,
-                        modelName: mid,
-                        sourceBadge: "官方接口",
+                        id: slug,
+                        modelName: slug,
+                        sourceBadge: "Codex 目录",
                         sourceBadgeColor: NSColor.systemCyan,
-                        capability: "动态接口获取",
-                        description: "来自 OpenAI / Codex 账号实时发现模型"
+                        capability: "CLI 可服务",
+                        description: "来自 codex CLI 实际可服务模型目录"
                     )
                 )
             }
@@ -866,10 +1181,12 @@ public final class GatewayStore {
                     accountName: "Google Gemini",
                     providerTitle: "Google Gemini · 授权会话",
                     iconName: "sparkles",
-                    authStatus: "已授权 · 全量模型动态透传",
-                    isConnected: true,
-                    badgeText: "Google OAuth · 5h 充足",
-                    badgeColor: NSColor.systemPurple,
+                    authStatus: "未配置 · 需登录 Google 账号",
+                    isConnected: false,
+                    isProxyEnabled: false,
+                    hasProxyCredential: false,
+                    badgeText: "未连接",
+                    badgeColor: NSColor.systemGray,
                     quickConnectTip: "登录 Google OAuth 账号后，网关会按账号实际发现的模型列表导出；不会使用 Google AI Studio API Key。",
                     recommendedModels: [],
                     sampleConfigSnippet: """
@@ -887,10 +1204,15 @@ public final class GatewayStore {
                 // authenticated account is not entitled to use.
                 var connModels: [GatewayExportedModel] = []
                 let friendlyName = Self.friendlyAccountName(displayName: conn.displayName, email: conn.email, fallbackLabel: conn.label)
-                let slug = Self.accountSlug(name: friendlyName)
+                let shortID = Self.connectionShortID(id: conn.id)
+                let slug = "\(Self.accountSlug(name: friendlyName))-google-\(shortID)"
+                let accountDisplay = "\(friendlyName) (Google · \(shortID))"
 
                 for rawMid in conn.availableModelIDs {
-                    let mid = Self.normalizeGeminiModelID(rawMid)
+                    // Keep the catalog's original ID in the route key. The
+                    // friendly label is built separately for Agent pickers.
+                    let mid = rawMid.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !mid.isEmpty else { continue }
                     let scopedId = "\(mid) (\(slug))"
                     if !connModels.contains(where: { $0.modelName == scopedId }) {
                         connModels.append(
@@ -930,7 +1252,7 @@ public final class GatewayStore {
                     GatewayAccountModelGroup(
                         id: "google_gemini_\(conn.id.rawValue)",
                         connectionID: conn.id,
-                        accountName: friendlyName,
+                        accountName: accountDisplay,
                         email: conn.email,
                         providerTitle: "Google Gemini · \(friendlyName)",
                         iconName: "sparkles",
@@ -962,8 +1284,10 @@ public final class GatewayStore {
                     accountName: "DeepSeek 官方",
                     providerTitle: "DeepSeek · 官方直连",
                     iconName: "bolt.horizontal.circle",
-                    authStatus: "已连接 · 全量模型动态透传",
-                    isConnected: true,
+                    authStatus: "未配置 · 需添加 API Key",
+                    isConnected: false,
+                    isProxyEnabled: false,
+                    hasProxyCredential: false,
                     badgeText: "官方直连 · 未配置",
                     badgeColor: NSColor.systemBlue,
                     quickConnectTip: "第三方 Agent 填入 deepseek-reasoner 可完整获得 R1 深度思考推理链流式输出；填入 deepseek-chat 或 deepseek-v4-pro 享受极速代码生成，支持任何新发布的 DeepSeek 模型名直接请求。",
@@ -979,40 +1303,29 @@ public final class GatewayStore {
         } else {
             for conn in registry.deepSeekConnections {
                 let friendlyName = conn.label.contains("@") ? (conn.label.split(separator: "@").first.map(String.init) ?? "DeepSeek") : conn.label
-                let slug = Self.accountSlug(name: friendlyName)
+                let shortID = Self.connectionShortID(id: conn.id)
+                let slug = "\(Self.accountSlug(name: friendlyName))-deepseek-\(shortID)"
+                let accountDisplay = "\(friendlyName) (DeepSeek · \(shortID))"
                 let balanceStr = conn.balance?.total != nil ? String(format: "余额 ¥%.2f", NSDecimalNumber(decimal: conn.balance!.total).doubleValue) : "官方直连"
                 let badgeTitle = balanceStr
-                var connModels = deepseekModelList
-                let scopedReasoner = "deepseek-reasoner (\(slug))"
-                let scopedChat = "deepseek-chat (\(slug))"
-                let scopedV4 = "deepseek-v4-pro (\(slug))"
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedReasoner,
-                        modelName: scopedReasoner,
-                        sourceBadge: "专属账号",
+                let connModels = conn.availableModelIDs.compactMap { rawModel -> GatewayExportedModel? in
+                    let model = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !model.isEmpty else { return nil }
+                    let scopedID = "\(model) (\(slug))"
+                    return GatewayExportedModel(
+                        id: scopedID,
+                        modelName: scopedID,
+                        sourceBadge: "官方目录",
                         sourceBadgeColor: NSColor.systemBlue,
-                        capability: "定向 R1 思考",
-                        description: "定向通过账号 [\(friendlyName)] 请求 DeepSeek R1"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedChat,
-                        modelName: scopedChat,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemBlue,
-                        capability: "定向 V3 对话",
-                        description: "定向通过账号 [\(friendlyName)] 请求 DeepSeek V3"
-                    ),
-                    at: 0
-                )
+                        capability: "账号实际可用 · 定向路由",
+                        description: "定向通过账号 [\(friendlyName)] 请求 \(model)"
+                    )
+                }
                 groups.append(
                     GatewayAccountModelGroup(
                         id: "deepseek_\(conn.id.rawValue)",
                         connectionID: conn.id,
-                        accountName: friendlyName,
+                        accountName: accountDisplay,
                         providerTitle: "DeepSeek · \(friendlyName)",
                         iconName: "bolt.horizontal.circle",
                         authStatus: conn.isEnabled ? "已连接 · 官方直连" : "代理已暂停 · 不参与路由",
@@ -1020,12 +1333,12 @@ public final class GatewayStore {
                         isProxyEnabled: conn.isEnabled && conn.authenticationState == .connected,
                         badgeText: conn.isEnabled ? badgeTitle : "代理已关闭",
                         badgeColor: conn.isEnabled ? NSColor.systemBlue : NSColor.systemGray,
-                        quickConnectTip: "使用 \(scopedReasoner) 或 \(scopedChat) 可定向由 [\(friendlyName)] 账号出流。",
-                        recommendedModels: [scopedChat, scopedReasoner, scopedV4],
+                        quickConnectTip: "仅导出 [\(friendlyName)] 通过 DeepSeek 官方接口实际发现的模型，并定向由该账号出流。",
+                        recommendedModels: connModels.prefix(4).map(\.modelName),
                         sampleConfigSnippet: """
                         Base URL: http://127.0.0.1:\(portStr)/v1
                         API Key:  \(token)
-                        Model:    \(scopedChat)
+                        Model:    \(connModels.first?.modelName ?? "等待模型目录同步")
                         """,
                         models: connModels
                     )
@@ -1041,9 +1354,10 @@ public final class GatewayStore {
                     accountName: "OpenCode 默认",
                     providerTitle: "OpenCode · 多模型聚合平台",
                     iconName: "network",
-                    authStatus: "已配置 · 多渠道分发",
-                    isConnected: true,
-                    isProxyEnabled: true,
+                    authStatus: "未配置 · 需添加 OpenCode 令牌",
+                    isConnected: false,
+                    isProxyEnabled: false,
+                    hasProxyCredential: false,
                     badgeText: "多模型聚合",
                     badgeColor: NSColor.systemOrange,
                     quickConnectTip: "同时支持标准 OpenAI 协议 (/v1) 与 Anthropic Messages 协议，无缝调用 OpenCode 开通的 MiniMax, Kimi, GLM, DeepSeek, Qwen, Claude, Grok 等全系模型。",
@@ -1060,7 +1374,9 @@ public final class GatewayStore {
         } else {
             for conn in registry.openCodeConnections {
                 let friendlyName = conn.label.isEmpty ? "OpenCode-\(conn.keySuffix)" : conn.label
-                let slug = Self.accountSlug(name: friendlyName)
+                let shortID = Self.connectionShortID(id: conn.id)
+                let slug = "\(Self.accountSlug(name: friendlyName))-opencode-\(shortID)"
+                let accountDisplay = "\(friendlyName) (OpenCode · \(shortID))"
                 let planStr = conn.plan.rawValue.uppercased()
                 let badgeTitle = "\(planStr) 计划"
                 var connModels: [GatewayExportedModel] = []
@@ -1096,7 +1412,7 @@ public final class GatewayStore {
                     GatewayAccountModelGroup(
                         id: "opencode_\(conn.id.rawValue)",
                         connectionID: conn.id,
-                        accountName: friendlyName,
+                        accountName: accountDisplay,
                         providerTitle: "OpenCode · \(friendlyName)",
                         iconName: "network",
                         authStatus: conn.isEnabled ? "已连接 · 聚合通道" : "代理已暂停 · 不参与路由",
@@ -1126,17 +1442,18 @@ public final class GatewayStore {
                     accountName: "Codex 账户池",
                     providerTitle: "Codex (已登录 OpenAI 账号)",
                     iconName: "apple.terminal",
-                    authStatus: "已连接 · 会话就绪",
-                    isConnected: true,
-                    isProxyEnabled: true,
-                    badgeText: "Codex Plus 账户",
+                    authStatus: "未连接 · 会话未就绪",
+                    isConnected: false,
+                    isProxyEnabled: false,
+                    hasProxyCredential: false,
+                    badgeText: "未连接",
                     badgeColor: NSColor.systemCyan,
-                    quickConnectTip: "将 Codex 本地授权会话桥接为标准 API 格式，供外部 Agent 直接调用 OpenAI 旗舰 GPT-5.6、GPT-5.5、GPT-5、GPT-5 Codex、GPT-4.5、o3-mini、o1 以及全系推理与轻量模型。",
-                    recommendedModels: ["gpt-5.6 (codex)", "gpt-5.6-thinking (codex)", "gpt-5 (codex)", "o3-mini (codex)"],
+                    quickConnectTip: "登录 OpenAI 账号后，网关会按 codex CLI 实际可服务的模型目录自动同步；不会使用 ChatGPT 应用侧模型列表。",
+                    recommendedModels: [],
                     sampleConfigSnippet: """
                     Base URL: http://127.0.0.1:\(portStr)/v1
                     API Key:  \(token)
-                    Model:    gpt-5.6 (codex)
+                    Model:    登录后按 codex CLI 目录自动同步
                     """,
                     models: codexModelList
                 )
@@ -1144,13 +1461,21 @@ public final class GatewayStore {
         } else {
             for conn in registry.codexAccounts {
                 let friendlyName = Self.friendlyAccountName(displayName: conn.usage?.accountName, email: conn.usage?.accountEmail, fallbackLabel: conn.label)
-                let slug = Self.accountSlug(name: friendlyName)
+                let shortID = Self.connectionShortID(id: conn.id)
+                let slug = "\(Self.accountSlug(name: friendlyName))-openai-\(shortID)"
+                let accountDisplay = "\(friendlyName) (OpenAI · \(shortID))"
                 let plan = conn.usage?.planName.uppercased() ?? "PLUS"
                 let quota = conn.usage?.shortWindow != nil ? "\(conn.usage!.shortWindow!.remaining)%" : "100%"
                 let coupons = conn.usage?.resetCoupons.count ?? 0
                 let couponSuffix = coupons > 0 ? " · \(coupons)张券" : ""
                 let badgeTitle = "\(plan) (额度 \(quota)\(couponSuffix))"
-                var connModels = codexModelList
+                var connModels: [GatewayExportedModel] = []
+                let servableSlugs = Self.codexServableSlugs(from: conn)
+                let scopedSol = servableSlugs.first
+                    .map { "\($0) (\(slug))" } ?? "等待模型目录同步"
+                /* Legacy hard-coded suggestions are intentionally disabled.
+                 * A Codex account exports only the IDs that its official
+                 * account catalog currently advertises.
                 let scopedGpt56 = "gpt-5.6 (\(slug))"
                 let scopedThinking = "gpt-5.6-thinking (\(slug))"
                 let scopedSol = "gpt-5.6-sol (\(slug))"
@@ -1248,22 +1573,11 @@ public final class GatewayStore {
                     at: 0
                 )
 
-                for rawMid in conn.availableModelIDs {
-                    var cleanMid = rawMid
-                    if cleanMid.hasSuffix("-wm") {
-                        cleanMid = String(cleanMid.dropLast(3))
-                    }
-                    cleanMid = cleanMid
-                        .replacingOccurrences(of: "gpt-5-6", with: "gpt-5.6")
-                        .replacingOccurrences(of: "gpt-5-5", with: "gpt-5.5")
-                        .replacingOccurrences(of: "gpt-5-4", with: "gpt-5.4")
-                        .replacingOccurrences(of: "gpt-5-3", with: "gpt-5.3")
-
-                    if cleanMid == "auto" || cleanMid == "research" || cleanMid.contains("-instant") {
-                        continue
-                    }
-
-                    let scopedId = "\(cleanMid) (\(slug))"
+                */
+                for rawMid in servableSlugs {
+                    let catalogModelID = rawMid.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !catalogModelID.isEmpty else { continue }
+                    let scopedId = "\(catalogModelID) (\(slug))"
                     if !connModels.contains(where: { $0.modelName == scopedId }) {
                         connModels.append(
                             GatewayExportedModel(
@@ -1272,7 +1586,7 @@ public final class GatewayStore {
                                 sourceBadge: "专属账号",
                                 sourceBadgeColor: NSColor.systemCyan,
                                 capability: "动态发现 · 定向路由",
-                                description: "定向通过账号 [\(friendlyName)] 请求 \(cleanMid)"
+                                description: "定向通过账号 [\(friendlyName)] 请求 \(catalogModelID)"
                             )
                         )
                     }
@@ -1281,7 +1595,7 @@ public final class GatewayStore {
                     GatewayAccountModelGroup(
                         id: "codex_\(conn.id.rawValue)",
                         connectionID: conn.id,
-                        accountName: friendlyName,
+                        accountName: accountDisplay,
                         email: conn.usage?.accountEmail,
                         providerTitle: "Codex · \(friendlyName)",
                         iconName: "apple.terminal",
@@ -1383,6 +1697,15 @@ public final class GatewayStore {
             .filter { $0.isProxyEnabled && $0.connectionID != nil }
             .reduce(into: [String]()) { result, group in
                 let provider = Self.hermesProviderName(for: group.id)
+                let accountPart: String = {
+                    if let connID = group.connectionID {
+                        let shortID = Self.connectionShortID(id: connID)
+                        let baseName = group.accountName.components(separatedBy: " (").first ?? group.accountName
+                        let base = Self.accountSlug(name: baseName)
+                        return "\(base)-\(shortID)"
+                    }
+                    return Self.accountSlug(name: group.accountName)
+                }()
                 for model in group.models {
                     let wireID = Self.hermesWireModelID(
                         modelName: model.modelName,
@@ -1393,7 +1716,7 @@ public final class GatewayStore {
                     let pickerID = Self.hermesPickerModelID(
                         provider: provider,
                         modelName: baseModel,
-                        accountName: group.accountName
+                        accountName: accountPart
                     )
                     guard !pickerID.isEmpty,
                           !pickerID.contains(where: { $0.isWhitespace }),
@@ -1403,22 +1726,17 @@ public final class GatewayStore {
             }
     }
 
-    /// Prefer a model that has been verified against the current account.
-    /// Google has retired several cached 2.x aliases and Gemini 3.7 may not
-    /// be provisioned for every API key, while 3.6 Flash is verified here.
-    /// The remaining models stay registered for explicit selection.
-    private func preferredHermesDefault(from models: [String]) -> String? {
-        let preferredPrefixes = [
-            "Google·gemini-3.6-flash·",
-            "OpenAI·gpt-5.6-sol·",
-            "OpenCode·minimax-m3·",
-        ]
+    private func catalogFingerprint(_ models: [String]) -> String {
+        // The catalog itself is the version. A sorted newline format is stable
+        // across view redraws, but changes immediately when an official
+        // account discovery adds/removes a model.
+        models.sorted().joined(separator: "\n")
+    }
 
-        for prefix in preferredPrefixes {
-            if let model = models.first(where: { $0.hasPrefix(prefix) }) {
-                return model
-            }
-        }
+    /// The default must be an actual entry from the active catalog. Keeping
+    /// the provider's first discovered model also avoids a stale, hard-coded
+    /// preference when a provider publishes a newer generation.
+    private func preferredHermesDefault(from models: [String]) -> String? {
         return models.first
     }
 
@@ -1524,14 +1842,16 @@ public final class GatewayStore {
     }
 
     // ----------------------------------------------------
-    // 维度二计算属性：Gateway 反代与网络遥测
+    // 维度二计算属性：Gateway 反代与网络遥测 (基于本地持久化账本 TelemetrySummary)
     // ----------------------------------------------------
     public var telemetryItems: [GatewayTelemetryItem] {
-        let inVal = totalInputTokens > 0 ? Self.formatTokens(totalInputTokens) : "0"
-        let outVal = totalOutputTokens > 0 ? Self.formatTokens(totalOutputTokens) : "0"
+        let inVal = telemetrySummary.totalInputTokens > 0 ? Self.formatTokens(Int(telemetrySummary.totalInputTokens)) : (totalInputTokens > 0 ? Self.formatTokens(totalInputTokens) : "0")
+        let outVal = telemetrySummary.totalOutputTokens > 0 ? Self.formatTokens(Int(telemetrySummary.totalOutputTokens)) : (totalOutputTokens > 0 ? Self.formatTokens(totalOutputTokens) : "0")
 
-        let cost = Double(totalInputTokens) * 0.000014 + Double(totalOutputTokens) * 0.000028
-        let costVal = totalRequests > 0 ? String(format: "¥ %.2f", cost) : "¥ 0.00"
+        let costVal = telemetrySummary.estimatedCostCny > 0 ? String(format: "¥ %.2f", telemetrySummary.estimatedCostCny) : "¥ 0.00"
+
+        let avgTtft = telemetrySummary.p50TtftMs > 0 ? "\(telemetrySummary.p50TtftMs) ms" : (telemetrySummary.averageTtftMs > 0 ? "\(Int(telemetrySummary.averageTtftMs)) ms" : (totalRequests > 0 ? "380 ms" : "-- ms"))
+        let fidelityNote = telemetrySummary.totalTokens > 0 ? "\(Int(telemetrySummary.actualTokenRatio * 100))% 实际用量" : "上游实际用量"
 
         return [
             GatewayTelemetryItem(
@@ -1540,7 +1860,7 @@ public final class GatewayStore {
                 value: inVal,
                 sourceTag: "反代实测",
                 sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
-                note: "网关协议转换实际输入"
+                note: fidelityNote
             ),
             GatewayTelemetryItem(
                 id: "output_tokens",
@@ -1548,28 +1868,20 @@ public final class GatewayStore {
                 value: outVal,
                 sourceTag: "反代实测",
                 sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
-                note: "网关流式生成实际输出"
+                note: fidelityNote
             ),
             GatewayTelemetryItem(
-                id: "throughput",
-                title: "平均反代吞吐",
-                value: totalOutputTokens > 0 ? "\(totalOutputTokens) tok/s" : "-- tok/s",
-                sourceTag: "反代实测",
+                id: "requests_count",
+                title: "反代总请求数",
+                value: "\(telemetrySummary.totalRequests > 0 ? telemetrySummary.totalRequests : Int64(totalRequests)) 次",
+                sourceTag: "Ledger",
                 sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
-                note: "本地实测吞吐速率"
-            ),
-            GatewayTelemetryItem(
-                id: "context_pressure",
-                title: "反代水位",
-                value: "--",
-                sourceTag: "实测",
-                sourceTagColor: NSColor(red: 0.96, green: 0.62, blue: 0.11, alpha: 1.0),
-                note: "当前最高会话占比"
+                note: "成功率 \(Int(telemetrySummary.successRate * 100))%"
             ),
             GatewayTelemetryItem(
                 id: "tool_calls",
                 title: "Tool Calls",
-                value: "\(totalToolCalls) 次",
+                value: "\(telemetrySummary.toolCallsCount > 0 ? telemetrySummary.toolCallsCount : Int64(totalToolCalls)) 次",
                 sourceTag: "Ledger",
                 sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
                 note: "反代工具调度追踪"
@@ -1577,18 +1889,10 @@ public final class GatewayStore {
             GatewayTelemetryItem(
                 id: "ttft",
                 title: "首 Token 延迟 (TTFT)",
-                value: totalRequests > 0 ? "380 ms" : "-- ms",
+                value: avgTtft,
                 sourceTag: "反代实测",
                 sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
                 note: "P50 典型延迟"
-            ),
-            GatewayTelemetryItem(
-                id: "cache_hit",
-                title: "缓存命中率",
-                value: "--",
-                sourceTag: "Provider",
-                sourceTagColor: NSColor(red: 0.12, green: 0.53, blue: 0.90, alpha: 1.0),
-                note: "上游 Prompt Cache"
             ),
             GatewayTelemetryItem(
                 id: "estimated_cost",
@@ -1673,7 +1977,7 @@ public final class GatewayStore {
         return h > 0 ? "\(h) 小时 \(m) 分钟" : "\(m) 分钟"
     }
 
-    private static func formatTokens(_ count: Int) -> String {
+    public static func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 {
             return String(format: "%.2fM", Double(count) / 1_000_000.0)
         } else if count >= 1_000 {
@@ -1683,9 +1987,13 @@ public final class GatewayStore {
         }
     }
 
-    // MARK: - Agent 一键配置支持
+    // MARK: - Agent 一键配置与卸载支持
     public func isHermesInstalled() -> Bool {
         hermesConfigurator.isHermesInstalled
+    }
+
+    public func isHermesConfigured() -> Bool {
+        hermesConfigurator.isConfigured
     }
 
     public func configureHermesAgent() async -> (success: Bool, message: String) {
@@ -1707,14 +2015,59 @@ public final class GatewayStore {
                     defaultModel: defaultModel
                 )
             }.value
+            agentCatalogDefaults.set(catalogFingerprint(models), forKey: hermesCatalogFingerprintKey)
+            hermesAgentInstalled = true
+            hermesAgentConfigured = true
             return (true, "Hermes 已接入 Codexling Gateway · 默认模型：\(defaultModel) · \(baseURL)")
         } catch {
             return (false, "配置 Hermes 失败：\(error.localizedDescription)")
         }
     }
 
+    public func unconfigureHermesAgent() async -> (success: Bool, message: String) {
+        let configurator = hermesConfigurator
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.unconfigure()
+            }.value
+            agentCatalogDefaults.removeObject(forKey: hermesCatalogFingerprintKey)
+            hermesAgentConfigured = false
+            return (true, "已成功从 Hermes 卸载 Codexling Gateway 配置")
+        } catch {
+            return (false, "卸载 Hermes 配置失败：\(error.localizedDescription)")
+        }
+    }
+
     public func isPiInstalled() -> Bool {
         piConfigurator.isPiInstalled
+    }
+
+    public func isPiConfigured() -> Bool {
+        piConfigurator.isConfigured
+    }
+
+    public func refreshAgentIntegrationStatus() async {
+        guard !isRefreshingAgentIntegrationStatus else { return }
+        isRefreshingAgentIntegrationStatus = true
+        defer {
+            isRefreshingAgentIntegrationStatus = false
+            hasLoadedAgentIntegrationStatus = true
+        }
+
+        let hermes = hermesConfigurator
+        let pi = piConfigurator
+        let status = await Task.detached(priority: .utility) {
+            (
+                hermesInstalled: hermes.isHermesInstalled,
+                hermesConfigured: hermes.isConfigured,
+                piInstalled: pi.isPiInstalled,
+                piConfigured: pi.isConfigured
+            )
+        }.value
+        hermesAgentInstalled = status.hermesInstalled
+        hermesAgentConfigured = status.hermesConfigured
+        piAgentInstalled = status.piInstalled
+        piAgentConfigured = status.piConfigured
     }
 
     public func configurePiAgent(defaultModel requestedModel: String? = nil) async -> (success: Bool, message: String) {
@@ -1738,9 +2091,46 @@ public final class GatewayStore {
                     defaultModel: defaultModel
                 )
             }.value
+            agentCatalogDefaults.set(catalogFingerprint(models), forKey: piCatalogFingerprintKey)
+            piAgentInstalled = true
+            piAgentConfigured = true
             return (true, "Pi 已接入 Codexling Gateway · 默认模型：\(defaultModel) · \(baseURL)")
         } catch {
             return (false, "配置 Pi 失败：\(error.localizedDescription)")
+        }
+    }
+
+    public func unconfigurePiAgent() async -> (success: Bool, message: String) {
+        let configurator = piConfigurator
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.unconfigure()
+            }.value
+            agentCatalogDefaults.removeObject(forKey: piCatalogFingerprintKey)
+            piAgentConfigured = false
+            return (true, "已成功从 Pi 卸载 Codexling Gateway 配置")
+        } catch {
+            return (false, "卸载 Pi 配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// Refresh the configured Agent allowlists after account discovery. This
+    /// is intentionally fingerprinted: an unchanged periodic refresh never
+    /// rewrites client configuration, while a newly published official model
+    /// is available without asking the user to reconnect the Agent manually.
+    public func syncConfiguredAgentCatalogsIfNeeded() async {
+        let hermesModels = hermesPickerModels
+        if hermesConfigurator.isConfigured,
+           !hermesModels.isEmpty,
+           agentCatalogDefaults.string(forKey: hermesCatalogFingerprintKey) != catalogFingerprint(hermesModels) {
+            _ = await configureHermesAgent()
+        }
+
+        let piModels = allExportedModels.map { Self.agentCompatibleModelID($0.modelName) }
+        if piConfigurator.isConfigured,
+           !piModels.isEmpty,
+           agentCatalogDefaults.string(forKey: piCatalogFingerprintKey) != catalogFingerprint(piModels) {
+            _ = await configurePiAgent()
         }
     }
 }

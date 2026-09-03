@@ -109,6 +109,53 @@ struct PiGatewayConfigurator: Sendable {
 
     var isPiInstalled: Bool { runner.isAvailable }
 
+    var isConfigured: Bool {
+        guard runner.isAvailable else { return false }
+        let modelsURL = agentDirectory.appendingPathComponent("models.json")
+        guard FileManager.default.fileExists(atPath: modelsURL.path) else { return false }
+        guard let modelsRoot = try? loadJSONObject(at: modelsURL) else { return false }
+        let providers = modelsRoot["providers"] as? [String: Any]
+        return providers?["codexling"] != nil
+    }
+
+    func unconfigure() throws {
+        guard runner.isAvailable else {
+            throw PiGatewayConfigurationError.executableNotFound
+        }
+        let modelsURL = agentDirectory.appendingPathComponent("models.json")
+        let settingsURL = agentDirectory.appendingPathComponent("settings.json")
+        let originalModels = try? Data(contentsOf: modelsURL)
+        let originalSettings = try? Data(contentsOf: settingsURL)
+
+        do {
+            if FileManager.default.fileExists(atPath: modelsURL.path) {
+                var modelsRoot = try loadJSONObject(at: modelsURL)
+                if var providers = modelsRoot["providers"] as? [String: Any] {
+                    providers.removeValue(forKey: "codexling")
+                    if providers.isEmpty {
+                        modelsRoot.removeValue(forKey: "providers")
+                    } else {
+                        modelsRoot["providers"] = providers
+                    }
+                    try writeJSONObject(modelsRoot, to: modelsURL)
+                }
+            }
+
+            if FileManager.default.fileExists(atPath: settingsURL.path) {
+                var settings = try loadJSONObject(at: settingsURL)
+                if settings["defaultProvider"] as? String == "codexling" {
+                    settings.removeValue(forKey: "defaultProvider")
+                    settings.removeValue(forKey: "defaultModel")
+                    try writeJSONObject(settings, to: settingsURL)
+                }
+            }
+        } catch {
+            restore(originalModels, to: modelsURL)
+            restore(originalSettings, to: settingsURL)
+            throw error
+        }
+    }
+
     func configure(baseURL: String, apiKey: String, models: [String], defaultModel: String) throws {
         guard runner.isAvailable else {
             throw PiGatewayConfigurationError.executableNotFound
@@ -138,7 +185,18 @@ struct PiGatewayConfigurator: Sendable {
                 "api": "openai-completions",
                 "apiKey": apiKey,
                 "authHeader": true,
-                "models": uniqueModels.map { ["id": $0, "name": $0] },
+                "headers": [
+                    "User-Agent": "pi-coding-agent",
+                    "X-Agent-Name": "Pi",
+                ],
+                "models": uniqueModels.map { [
+                    "id": $0,
+                    "name": $0,
+                    "headers": [
+                        "User-Agent": "pi-coding-agent",
+                        "X-Agent-Name": "Pi",
+                    ],
+                ] },
             ] as [String: Any]
             modelsRoot["providers"] = providers
             try writeJSONObject(modelsRoot, to: modelsURL)

@@ -79,6 +79,17 @@ struct HermesCLICommandRunner: HermesCommandRunning {
 
 struct HermesGatewayConfigurator: Sendable {
     private static let providerID = "custom:codexling"
+    private static let providerKeys = [
+        "providers.codexling.name",
+        "providers.codexling.api",
+        "providers.codexling.api_key",
+        "providers.codexling.transport",
+        "providers.codexling.default_model",
+        "providers.codexling.discover_models",
+        "providers.codexling.models",
+        "providers.codexling.extra_headers.X-Codexling-Catalog-Version",
+        "providers.codexling.extra_headers.X-Agent-Name",
+    ]
 
     let runner: any HermesCommandRunning
     let configURL: URL
@@ -93,6 +104,54 @@ struct HermesGatewayConfigurator: Sendable {
     }
 
     var isHermesInstalled: Bool { runner.isAvailable }
+
+    var isConfigured: Bool {
+        guard runner.isAvailable else { return false }
+        // Do not scan the YAML for the word "codexling": hooks, historical
+        // sessions and backup entries may legitimately contain it after this
+        // provider has been removed.
+        if configValue(for: "providers.codexling.api") != nil {
+            return true
+        }
+        return configValue(for: "model.provider") == Self.providerID
+    }
+
+    func unconfigure() throws {
+        guard runner.isAvailable else {
+            throw HermesGatewayConfigurationError.executableNotFound
+        }
+        let originalConfig = try? Data(contentsOf: configURL)
+        do {
+            let currentProvider = configValue(for: "model.provider") ?? ""
+
+            // Hermes' `config unset providers.codexling` is not recursive:
+            // it reports success while nested values remain in config.yaml.
+            // Remove each Codexling-owned leaf explicitly, then ask Hermes to
+            // discard an empty parent when its CLI supports that operation.
+            for key in Self.providerKeys {
+                try unset(key)
+            }
+            try unset("providers.codexling")
+
+            if currentProvider == Self.providerID {
+                try unset("model.provider")
+                try unset("model.default")
+            }
+
+            for key in Self.providerKeys {
+                try verifyUnset(key)
+            }
+            if currentProvider == Self.providerID {
+                try verifyUnset("model.provider")
+                try verifyUnset("model.default")
+            }
+        } catch {
+            if let originalConfig {
+                try? originalConfig.write(to: configURL, options: .atomic)
+            }
+            throw error
+        }
+    }
 
     func configure(baseURL: String, apiKey: String, models: [String], defaultModel: String) throws {
         guard runner.isAvailable else {
@@ -125,6 +184,7 @@ struct HermesGatewayConfigurator: Sendable {
             try set("providers.codexling.discover_models", to: "false")
             try set("providers.codexling.models", to: modelsJSON)
             try set("providers.codexling.extra_headers.X-Codexling-Catalog-Version", to: "2")
+            try set("providers.codexling.extra_headers.X-Agent-Name", to: "Hermes")
             try set("model.provider", to: Self.providerID)
             try set("model.default", to: defaultModel)
             // These are legacy unnamed-custom-endpoint keys. Keeping them
@@ -139,6 +199,7 @@ struct HermesGatewayConfigurator: Sendable {
             try verify("providers.codexling.default_model", equals: defaultModel)
             try verify("providers.codexling.discover_models", equals: "false")
             try verify("providers.codexling.extra_headers.X-Codexling-Catalog-Version", equals: "2")
+            try verify("providers.codexling.extra_headers.X-Agent-Name", equals: "Hermes")
             try verify("model.provider", equals: Self.providerID)
             try verify("model.default", equals: defaultModel)
         } catch {
@@ -185,6 +246,24 @@ struct HermesGatewayConfigurator: Sendable {
                 actual: actual
             )
         }
+    }
+
+    private func configValue(for key: String) -> String? {
+        guard let result = try? runner.run(arguments: ["config", "get", key]),
+              result.terminationStatus == 0 else {
+            return nil
+        }
+        let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func verifyUnset(_ key: String) throws {
+        guard let value = configValue(for: key) else { return }
+        throw HermesGatewayConfigurationError.verificationFailed(
+            key: key,
+            expected: "<未设置>",
+            actual: value
+        )
     }
 
     private func commandError(for command: String, result: HermesCommandResult) -> HermesGatewayConfigurationError {

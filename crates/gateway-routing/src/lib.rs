@@ -82,41 +82,13 @@ mod tests {
     }
 
     #[test]
-    fn test_arbitrary_unregistered_model_dynamic_passthrough() {
+    fn test_arbitrary_unregistered_model_is_rejected() {
         let table = RouteTable::new();
-
-        // 1. Unregistered Gemini model (e.g. gemini-3.7-flash)
-        let gemini_target = table
-            .resolve(&ModelSelector::alias("gemini-3.7-flash"), None)
-            .unwrap();
-        assert_eq!(gemini_target.provider, "gemini");
-        assert_eq!(gemini_target.model, "gemini-3.7-flash");
-
-        // 2. Unregistered DeepSeek model (e.g. deepseek-v4-pro)
-        let ds_target = table
-            .resolve(&ModelSelector::alias("deepseek-v4-pro"), None)
-            .unwrap();
-        assert_eq!(ds_target.provider, "deepseek");
-        assert_eq!(ds_target.model, "deepseek-v4-pro");
-
-        // 3. Unregistered Claude model
-        let claude_target = table
-            .resolve(&ModelSelector::alias("claude-4-ultra"), None)
-            .unwrap();
-        assert_eq!(claude_target.provider, "anthropic");
-        assert_eq!(claude_target.model, "claude-4-ultra");
-
-        // 4. OpenAI / Codex GPT-5 model
-        let gpt5_target = table
-            .resolve(&ModelSelector::alias("gpt-5"), None)
-            .unwrap();
-        assert_eq!(gpt5_target.provider, "openai");
-        assert_eq!(gpt5_target.model, "gpt-5");
-
-        let gpt5_codex = table
-            .resolve(&ModelSelector::alias("gpt-5-codex"), None)
-            .unwrap();
-        assert_eq!(gpt5_codex.provider, "openai");
-        assert_eq!(gpt5_codex.model, "gpt-5-codex");
+        for model in ["gemini-3.8-flash", "deepseek-v4-pro", "claude-4-ultra", "gpt-5"] {
+            assert_eq!(
+                table.resolve(&ModelSelector::alias(model), None),
+                Err(RoutingError::AliasNotFound(model.into()))
+            );
+        }
     }
 }
