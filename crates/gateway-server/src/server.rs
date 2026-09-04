@@ -670,6 +670,43 @@ mod tests {
     }
 
     #[test]
+    fn gemini_usage_metadata_reads_cloud_code_envelope_and_plain_api_shape() {
+        // Cloud Code 包一层 response；usageMetadata 缺 thoughts 时按 0 处理。
+        let cloud_code = serde_json::json!({
+            "response": {
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 252265,
+                    "candidatesTokenCount": 686,
+                    "cachedContentTokenCount": 240000,
+                    "totalTokenCount": 252951
+                }
+            }
+        });
+        assert_eq!(
+            GatewayServer::gemini_usage_metadata(&cloud_code),
+            Some((252265, 686, Some(240000), 252951))
+        );
+
+        // 普通 Gemini API 平铺形态，thoughtsTokenCount 计入输出。
+        let plain = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 1200,
+                "candidatesTokenCount": 300,
+                "thoughtsTokenCount": 500,
+                "totalTokenCount": 2000
+            }
+        });
+        assert_eq!(
+            GatewayServer::gemini_usage_metadata(&plain),
+            Some((1200, 800, None, 2000))
+        );
+
+        // 无 usageMetadata 时返回 None，让调用方回退到估算并标注 estimated。
+        assert_eq!(GatewayServer::gemini_usage_metadata(&serde_json::json!({})), None);
+    }
+
+    #[test]
     fn cloud_code_tools_round_trip_to_openai_shape() {
         let request = serde_json::json!({
             "tools": [{"type":"function", "function": {
@@ -2119,8 +2156,25 @@ impl GatewayServer {
             .and_then(|value| value.as_str())
             .map(str::len)
             .unwrap_or(0);
+        // Prefer the real token usage reported by Gemini's usageMetadata.
+        // Only fall back to character-length estimates when the upstream
+        // envelope omits it, and label the fidelity accordingly so the UI
+        // never presents an estimate as measured data.
+        let (usage_input, usage_output, usage_cache_read, usage_total, usage_fidelity) =
+            match Self::gemini_usage_metadata(&body) {
+                Some((input, output, cache_read, total)) => {
+                    (Some(input), Some(output), cache_read, Some(total), "actual")
+                }
+                None => (
+                    Some((messages.len() * 10) as i64),
+                    Some(((answer_len / 4).max(1)) as i64),
+                    None,
+                    Some(((messages.len() * 10) + (answer_len / 4).max(1)) as i64),
+                    "estimated",
+                ),
+            };
         self.total_output_tokens
-            .fetch_add((answer_len / 4).max(1), Ordering::Relaxed);
+            .fetch_add(usage_output.unwrap_or(0).max(1) as usize, Ordering::Relaxed);
         let model = serde_json::to_string(requested_model).unwrap_or_else(|_| "\"google\"".into());
         let message_json = serde_json::to_string(&message)
             .unwrap_or_else(|_| "{\"role\":\"assistant\",\"content\":\"\"}".into());
@@ -2162,7 +2216,7 @@ impl GatewayServer {
                 target_model: upstream.target_model.clone(),
                 latency_ms,
                 ttft_ms: latency_ms,
-                tokens: (answer_len / 4).max(1),
+                tokens: usage_output.unwrap_or(0).max(1) as usize,
                 fidelity: "OAuth native".into(),
                 status: "200 OK".into(),
             });
@@ -2176,17 +2230,17 @@ impl GatewayServer {
             account: upstream._account_name.clone(),
             model_alias: requested_model.into(),
             target_model: upstream.target_model.clone(),
-            input_tokens: Some((messages.len() * 10) as i64),
-            output_tokens: Some(((answer_len / 4).max(1)) as i64),
-            cache_read_tokens: None,
+            input_tokens: usage_input,
+            output_tokens: usage_output,
+            cache_read_tokens: usage_cache_read,
             cache_write_tokens: None,
-            total_tokens: Some(((messages.len() * 10) + (answer_len / 4).max(1)) as i64),
+            total_tokens: usage_total,
             latency_ms: latency_ms as i64,
             ttft_ms: latency_ms as i64,
             status_code: 200,
             status: "success".into(),
             error_category: None,
-            fidelity: "actual".into(),
+            fidelity: usage_fidelity.into(),
             is_stream,
             tool_calls_count: if has_tools { 1 } else { 0 },
             estimated_cost: None,
@@ -2576,6 +2630,38 @@ impl GatewayServer {
         Some(message)
     }
 
+    /// Extract the real token usage from a Gemini `GenerateContentResponse`.
+    /// Cloud Code wraps the response in an outer `response` object; plain
+    /// Gemini API responses carry `usageMetadata` at the top level.
+    /// Returns (input, output, cache_read, total) where `input` is the raw
+    /// `promptTokenCount` (already includes cached tokens) and `output`
+    /// combines `candidatesTokenCount` with hidden `thoughtsTokenCount`.
+    fn gemini_usage_metadata(
+        body: &serde_json::Value,
+    ) -> Option<(i64, i64, Option<i64>, i64)> {
+        let usage = body
+            .pointer("/response/usageMetadata")
+            .or_else(|| body.pointer("/usageMetadata"))?;
+        let input = usage.get("promptTokenCount").and_then(|v| v.as_i64())?;
+        let candidates = usage
+            .get("candidatesTokenCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let thoughts = usage
+            .get("thoughtsTokenCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_read = usage
+            .get("cachedContentTokenCount")
+            .and_then(|v| v.as_i64())
+            .filter(|value| *value > 0);
+        let total = usage
+            .get("totalTokenCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(input + candidates + thoughts);
+        Some((input, candidates + thoughts, cache_read, total))
+    }
+
     /// Bridge a ChatGPT/Codex subscription through the local Codex client.
     /// This is deliberately a single-account process: `CODEX_HOME` is the
     /// account's private runtime directory and no API key or other account is
@@ -2727,7 +2813,10 @@ impl GatewayServer {
             status_code: 200,
             status: "success".into(),
             error_category: None,
-            fidelity: "actual".into(),
+            // The Codex CLI bridge does not report token usage, so these
+            // counts are rough character/message estimates and must not be
+            // presented as measured data.
+            fidelity: "estimated".into(),
             is_stream,
             tool_calls_count: 0,
             estimated_cost: None,
