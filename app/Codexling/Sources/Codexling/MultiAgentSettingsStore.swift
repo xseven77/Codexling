@@ -599,6 +599,67 @@ final class MultiAgentSettingsStore {
         }
     }
 
+    enum ConnectionSyncResult: Sendable {
+        case success(modelCount: Int, message: String)
+        case warning(message: String)
+        case failure(message: String)
+    }
+
+    /// Validates authorization and refreshes models/quota for an account.
+    /// Used when enabling proxy in Gateway to guarantee fresh routing catalog.
+    func syncConnectionModels(id: ConnectionID) async -> ConnectionSyncResult {
+        if let conn = geminiConnections.first(where: { $0.id == id }) {
+            let outcome = await refreshGeminiConnectionWithoutLock(conn, publishesMessage: false)
+            if let updated = geminiConnections.first(where: { $0.id == id }) {
+                if updated.authenticationState != .connected {
+                    let errMsg = outcome.failures.first ?? "Google OAuth 凭证已失效，请重新登录"
+                    return .failure(message: errMsg)
+                }
+                let count = updated.availableModelIDs.count
+                if count > 0 {
+                    return .success(modelCount: count, message: "已同步到 \(count) 款可用模型")
+                } else {
+                    return .warning(message: "OAuth 授权有效，但该 Google 账号未返回可用模型配额")
+                }
+            }
+            return .failure(message: "未找到对应 Google 账号")
+        }
+        if let conn = deepSeekConnections.first(where: { $0.id == id }) {
+            let outcome = await refreshDeepSeekConnectionWithoutLock(conn, publishesMessage: false)
+            if let updated = deepSeekConnections.first(where: { $0.id == id }) {
+                if !outcome.failures.isEmpty && updated.authenticationState != .connected {
+                    return .failure(message: outcome.failures.first ?? "DeepSeek 连接验证失败")
+                }
+                let count = updated.availableModelIDs.count
+                return .success(modelCount: count, message: "已同步到 \(count) 款可用模型")
+            }
+            return .failure(message: "未找到对应 DeepSeek 账号")
+        }
+        if let conn = openCodeConnections.first(where: { $0.id == id }) {
+            let outcome = await refreshOpenCodeConnectionWithoutLock(conn, publishesMessage: false)
+            if let updated = openCodeConnections.first(where: { $0.id == id }) {
+                if !outcome.failures.isEmpty && updated.authenticationState != .connected {
+                    return .failure(message: outcome.failures.first ?? "OpenCode 连接验证失败")
+                }
+                let count = updated.availableModelIDs.count
+                return .success(modelCount: count, message: "已同步到 \(count) 款可用模型")
+            }
+            return .failure(message: "未找到对应 OpenCode 账号")
+        }
+        if let conn = codexAccounts.first(where: { $0.id == id }) {
+            let outcome = await refreshCodexAccountWithoutLock(conn)
+            if let updated = codexAccounts.first(where: { $0.id == id }) {
+                if !outcome.failures.isEmpty && updated.authenticationState != .connected {
+                    return .failure(message: outcome.failures.first ?? "Codex 连接验证失败")
+                }
+                let count = max(1, updated.availableModelIDs.count)
+                return .success(modelCount: count, message: "Codex 会话已就绪")
+            }
+            return .failure(message: "未找到对应 Codex 账号")
+        }
+        return .failure(message: "未找到指定账号连接")
+    }
+
     func addDeepSeekConnection(label: String, apiKey: String) async -> Bool {
         guard !isMutatingConnections else { return false }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -291,6 +291,44 @@ public final class GatewayStore {
     private let hermesCatalogFingerprintKey = "Codexling.hermesCatalogFingerprint"
     private let piCatalogFingerprintKey = "Codexling.piCatalogFingerprint"
 
+    // ==========================================
+    // 维度三：网关设置 (Gateway Settings)
+    // ==========================================
+    public let settingsStorage: GatewaySettingsStorage
+    public var gatewaySettings: GatewaySettings {
+        didSet {
+            try? settingsStorage.save(gatewaySettings)
+        }
+    }
+
+    public var isModelConsolidationEnabled: Bool {
+        get { gatewaySettings.modelConsolidationEnabled }
+        set {
+            guard gatewaySettings.modelConsolidationEnabled != newValue else { return }
+            gatewaySettings.modelConsolidationEnabled = newValue
+            if newValue {
+                gatewaySettings.consolidatedProviders = ["openai", "google", "deepseek", "opencode"]
+            } else {
+                gatewaySettings.consolidatedProviders = []
+            }
+            Task { [weak self] in
+                await self?.syncConfiguredAgentCatalogsIfNeeded()
+            }
+        }
+    }
+
+    public func isProviderConsolidated(_ providerID: String) -> Bool {
+        gatewaySettings.isProviderConsolidated(providerID)
+    }
+
+    public func setProviderConsolidated(_ providerID: String, enabled: Bool) {
+        guard gatewaySettings.isProviderConsolidated(providerID) != enabled else { return }
+        gatewaySettings.setProviderConsolidated(providerID, enabled: enabled)
+        Task { [weak self] in
+            await self?.syncConfiguredAgentCatalogsIfNeeded()
+        }
+    }
+
     // Agent status is discovered off the main actor when the Agents page is
     // opened. Never invoke `hermes config get` from a SwiftUI body: it starts
     // a process synchronously and can block a single render several times.
@@ -504,7 +542,9 @@ public final class GatewayStore {
         proxyEnabledVersion &+= 1
     }
 
-    public init() {
+    public init(settingsStorage: GatewaySettingsStorage = GatewaySettingsStorage()) {
+        self.settingsStorage = settingsStorage
+        self.gatewaySettings = settingsStorage.load()
         self.hermesConfigurator = HermesGatewayConfigurator()
         self.piConfigurator = PiGatewayConfigurator()
         loadCustomModels()
@@ -514,12 +554,15 @@ public final class GatewayStore {
         activityStore: CodexActivityStore? = nil,
         companionStatsStore: CompanionStatsStore? = nil,
         hermesConfigurator: HermesGatewayConfigurator = HermesGatewayConfigurator(),
-        piConfigurator: PiGatewayConfigurator = PiGatewayConfigurator()
+        piConfigurator: PiGatewayConfigurator = PiGatewayConfigurator(),
+        settingsStorage: GatewaySettingsStorage = GatewaySettingsStorage()
     ) {
         self.activityStore = activityStore
         self.companionStatsStore = companionStatsStore
         self.hermesConfigurator = hermesConfigurator
         self.piConfigurator = piConfigurator
+        self.settingsStorage = settingsStorage
+        self.gatewaySettings = settingsStorage.load()
         loadCustomModels()
     }
 
@@ -970,6 +1013,24 @@ public final class GatewayStore {
         return "\(component(provider))·\(component(modelName))·\(component(accountName))"
     }
 
+    /// 2-segment Hermes picker ID format: `供应商 · 模型名` for consolidated quota-based routing.
+    nonisolated public static func hermesPickerModelID(
+        provider: String,
+        modelName: String
+    ) -> String {
+        func component(_ value: String) -> String {
+            let compact = value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "·", with: "-")
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: "-")
+            let withoutTier = compact.replacingOccurrences(of: "-tiered", with: "")
+            return withoutTier
+        }
+
+        return "\(component(provider))·\(component(modelName))"
+    }
+
     nonisolated private static func unscopedModelName(_ modelName: String) -> String {
         let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasSuffix(")"), let separator = trimmed.range(of: " (", options: .backwards) else {
@@ -1302,9 +1363,9 @@ public final class GatewayStore {
                 }
                 let isProxyAllowed = conn.authenticationState == .connected
                 let isProxyEnabled = conn.isEnabled && isProxyAllowed
-                let authDesc = isProxyEnabled ? "Google OAuth 已授权 · 代理已开启" : "OAuth 未就绪 · 不参与路由"
-                let badgeDesc = isProxyEnabled ? "OAuth 已授权" : "OAuth 未就绪"
-                let badgeClr = isProxyEnabled ? NSColor.systemPurple : NSColor.systemOrange
+                let authDesc = !isProxyAllowed ? "OAuth 未就绪 · 不参与路由" : (isProxyEnabled ? (connModels.isEmpty ? "Google OAuth 已授权 · 等待模型同步" : "Google OAuth 已授权 · 代理已开启") : "代理已关闭 · 不参与路由")
+                let badgeDesc = !isProxyAllowed ? "OAuth 未就绪" : (isProxyEnabled ? (connModels.isEmpty ? "等待模型同步" : "OAuth 已授权") : "代理已关闭")
+                let badgeClr = !isProxyAllowed ? NSColor.systemOrange : (isProxyEnabled ? (connModels.isEmpty ? NSColor.systemOrange : NSColor.systemPurple) : NSColor.systemGray)
 
                 groups.append(
                     GatewayAccountModelGroup(
@@ -1316,7 +1377,7 @@ public final class GatewayStore {
                         iconName: "sparkles",
                         authStatus: authDesc,
                         isConnected: true,
-                        isProxyEnabled: isProxyEnabled && !connModels.isEmpty,
+                        isProxyEnabled: isProxyEnabled,
                         hasProxyCredential: isProxyAllowed,
                         isProxyAllowed: isProxyAllowed,
                         badgeText: badgeDesc,
@@ -1473,10 +1534,10 @@ public final class GatewayStore {
                         accountName: accountDisplay,
                         providerTitle: "OpenCode · \(friendlyName)",
                         iconName: "network",
-                        authStatus: conn.isEnabled ? "已连接 · 聚合通道" : "代理已暂停 · 不参与路由",
+                        authStatus: conn.isEnabled ? (connModels.isEmpty ? "已连接 · 等待模型同步" : "已连接 · 聚合通道") : "代理已暂停 · 不参与路由",
                         isConnected: true,
-                        isProxyEnabled: conn.isEnabled && conn.authenticationState == .connected && !connModels.isEmpty,
-                        badgeText: conn.isEnabled ? badgeTitle : "代理已关闭",
+                        isProxyEnabled: conn.isEnabled && conn.authenticationState == .connected,
+                        badgeText: conn.isEnabled ? (connModels.isEmpty ? "等待模型同步" : badgeTitle) : "代理已关闭",
                         badgeColor: conn.isEnabled ? NSColor.systemOrange : NSColor.systemGray,
                         quickConnectTip: "同时支持标准 OpenAI 协议 (/v1) 与 Anthropic Messages 协议，调用 OpenCode [\(friendlyName)] 账号的 \(conn.availableModelCount ?? conn.availableModelIDs.count) 款可用模型。",
                         recommendedModels: recNames,
@@ -1752,15 +1813,104 @@ public final class GatewayStore {
         return sections
     }
 
+    public var consolidatedExportedModels: [GatewayExportedModel] {
+        var seen = Set<String>()
+        var result: [GatewayExportedModel] = []
+        let activeGroups = accountModelGroups.filter { $0.isProxyEnabled }
+
+        for group in activeGroups {
+            let provider = Self.hermesProviderName(for: group.id)
+            for model in group.models {
+                let baseModel = Self.unscopedModelName(model.modelName)
+                guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                let key = "\(provider):\(baseModel)"
+                if !seen.contains(key) {
+                    seen.insert(key)
+                    result.append(
+                        GatewayExportedModel(
+                            id: "\(provider.lowercased())/\(baseModel)",
+                            modelName: baseModel,
+                            sourceBadge: "\(provider) 聚合",
+                            sourceBadgeColor: model.sourceBadgeColor,
+                            capability: model.capability,
+                            description: "同供应商额度自动调度聚合模型",
+                            isCustom: model.isCustom
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
     public var allExportedModels: [GatewayExportedModel] {
-        accountModelGroups.filter { $0.isProxyEnabled }.flatMap { $0.models }
+        var result: [GatewayExportedModel] = []
+        let activeGroups = accountModelGroups.filter { $0.isProxyEnabled }
+        var seenConsolidated = Set<String>()
+
+        for group in activeGroups {
+            let provider = Self.hermesProviderName(for: group.id)
+            let pid: String = {
+                if group.id.hasPrefix("google") { return "google" }
+                if group.id.hasPrefix("deepseek") { return "deepseek" }
+                if group.id.hasPrefix("opencode") { return "opencode" }
+                return "openai"
+            }()
+
+            if isProviderConsolidated(pid) {
+                for model in group.models {
+                    let baseModel = Self.unscopedModelName(model.modelName)
+                    guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                    let key = "\(provider):\(baseModel)"
+                    if !seenConsolidated.contains(key) {
+                        seenConsolidated.insert(key)
+                        result.append(
+                            GatewayExportedModel(
+                                id: "\(provider.lowercased())/\(baseModel)",
+                                modelName: baseModel,
+                                sourceBadge: "\(provider) 聚合",
+                                sourceBadgeColor: model.sourceBadgeColor,
+                                capability: model.capability,
+                                description: "同供应商额度自动调度聚合模型",
+                                isCustom: model.isCustom
+                            )
+                        )
+                    }
+                }
+            } else {
+                result.append(contentsOf: group.models)
+            }
+        }
+        return result
     }
 
     private var hermesPickerModels: [String] {
-        accountModelGroups
-            .filter { $0.isProxyEnabled && $0.connectionID != nil }
-            .reduce(into: [String]()) { result, group in
-                let provider = Self.hermesProviderName(for: group.id)
+        let activeGroups = accountModelGroups.filter { $0.isProxyEnabled && $0.connectionID != nil }
+        var result: [String] = []
+
+        for group in activeGroups {
+            let provider = Self.hermesProviderName(for: group.id)
+            let pid: String = {
+                if group.id.hasPrefix("google") { return "google" }
+                if group.id.hasPrefix("deepseek") { return "deepseek" }
+                if group.id.hasPrefix("opencode") { return "opencode" }
+                return "openai"
+            }()
+
+            if isProviderConsolidated(pid) {
+                for model in group.models {
+                    let baseModel = Self.unscopedModelName(model.modelName)
+                    guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                    let pickerID = Self.hermesPickerModelID(
+                        provider: provider,
+                        modelName: baseModel
+                    )
+                    guard !pickerID.isEmpty,
+                          !pickerID.contains(where: { $0.isWhitespace }),
+                          !result.contains(pickerID) else { continue }
+                    result.append(pickerID)
+                }
+            } else {
                 let accountPart: String = {
                     if let connID = group.connectionID {
                         let shortID = Self.connectionShortID(id: connID)
@@ -1788,6 +1938,8 @@ public final class GatewayStore {
                     result.append(pickerID)
                 }
             }
+        }
+        return result
     }
 
     private func catalogFingerprint(_ models: [String]) -> String {
@@ -1995,11 +2147,11 @@ public final class GatewayStore {
             ),
             GatewayTelemetryItem(
                 id: "fallback_retries",
-                title: "跨账号 / 跨供应商回退",
-                value: "已禁用",
+                title: "同供应商额度调度与隔离",
+                value: isModelConsolidationEnabled ? "已开启调度" : "严格隔离",
                 sourceTag: "Gateway",
-                sourceTagColor: NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0),
-                note: "请求只会命中选定账号与供应商"
+                sourceTagColor: isModelConsolidationEnabled ? NSColor(red: 0.13, green: 0.77, blue: 0.42, alpha: 1.0) : NSColor.systemOrange,
+                note: isModelConsolidationEnabled ? "同供应商额度健康优先与 Pre-TTFT 故障熔断" : "请求只会命中选定账号与供应商，禁用跨账号回退"
             ),
         ]
     }

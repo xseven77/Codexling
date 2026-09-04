@@ -35,6 +35,12 @@ private enum GatewayHeaderMinYKey: PreferenceKey {
     }
 }
 
+private struct GatewayToast: Equatable {
+    let message: String
+    let systemImage: String
+    let isSuccess: Bool
+}
+
 public struct GatewayView: View {
     @State private var store = GatewayStore.shared
     @State private var supervisor = GatewaySupervisor.shared
@@ -53,6 +59,9 @@ public struct GatewayView: View {
     @State private var agentConfigSucceeded = true
     @State private var configuringAgent: GatewayAgentConnectTarget? = nil
     @State private var unconfiguringAgent: GatewayAgentConnectTarget? = nil
+    @State private var syncingConnectionIDs: Set<ConnectionID> = []
+    @State private var toast: GatewayToast? = nil
+    @State private var toastDismissGeneration: Int = 0
 
     /// Injected by GatewayWindowController; used to route proxy toggles through
     /// MultiAgentSettingsStore so in-memory account state stays consistent.
@@ -129,11 +138,47 @@ public struct GatewayView: View {
             }
         }
         .animation(.easeInOut(duration: 0.24), value: showsStickyTitle)
+        .overlay(alignment: .bottom) {
+            if let toast {
+                HStack(spacing: 8) {
+                    Image(systemName: toast.systemImage)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(toast.isSuccess ? Color.green : (toast.systemImage.contains("triangle") ? Color.orange : Color.red))
+                    Text(toast.message)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 38)
+                .background(Color.black.opacity(0.88), in: Capsule(style: .continuous))
+                .shadow(color: Color.black.opacity(0.20), radius: 10, x: 0, y: 4)
+                .padding(.bottom, 22)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityLabel(toast.message)
+                .allowsHitTesting(false)
+                .zIndex(1000)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: toast)
         .sheet(isPresented: Binding(
             get: { store.isColumnSettingsPresented },
             set: { store.isColumnSettingsPresented = $0 }
         )) {
             GatewayColumnSettingsSheet(store: store)
+        }
+    }
+
+    private func showToast(_ message: String, systemImage: String = "checkmark.circle.fill", isSuccess: Bool = true) {
+        toastDismissGeneration += 1
+        let generation = toastDismissGeneration
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+            toast = GatewayToast(message: message, systemImage: systemImage, isSuccess: isSuccess)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
+            guard generation == toastDismissGeneration else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                toast = nil
+            }
         }
     }
 
@@ -1034,6 +1079,48 @@ public struct GatewayView: View {
                 }
 
                 Spacer()
+
+                // 供应商独立模型聚合与额度调度开关
+                HStack(spacing: 8) {
+                    VStack(alignment: .trailing, spacing: 1.5) {
+                        HStack(spacing: 4) {
+                            Image(systemName: store.isProviderConsolidated(section.id) ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                                .font(.system(size: 10))
+                                .foregroundStyle(store.isProviderConsolidated(section.id) ? Color.purple : Color.codexMuted)
+                            Text("账号池聚合")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.codexInk)
+                        }
+                        Text(store.isProviderConsolidated(section.id) ? "额度健康调度 · 故障转移" : "逐账号独立隔离")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(store.isProviderConsolidated(section.id) ? Color.purple : Color.codexMuted)
+                    }
+
+                    Toggle("", isOn: Binding(
+                        get: { store.isProviderConsolidated(section.id) },
+                        set: { store.setProviderConsolidated(section.id, enabled: $0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    store.isProviderConsolidated(section.id)
+                        ? Color.purple.opacity(0.06)
+                        : Color.codexMist.opacity(0.4),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(
+                            store.isProviderConsolidated(section.id)
+                                ? Color.purple.opacity(0.25)
+                                : Color.codexLine.opacity(0.3),
+                            lineWidth: 0.8
+                        )
+                )
             }
 
             // Account Switcher Bar (Only shown when multiple accounts exist)
@@ -1126,32 +1213,61 @@ public struct GatewayView: View {
                     Spacer()
 
                     if let connID = activeGroup.connectionID {
+                        let isSyncing = syncingConnectionIDs.contains(connID)
                         let isEnabled = activeGroup.isProxyEnabled
                         let isAllowed = activeGroup.isProxyAllowed
-                        let circleColor = isEnabled ? Color.green : (isAllowed ? Color.codexMuted : Color.orange)
-                        let textColor = isEnabled ? Color.green : (isAllowed ? Color.codexMuted : Color.orange)
-                        let btnTitle = isEnabled ? "代理已开启" : (isAllowed ? "代理已关闭" : "OAuth 未就绪")
-                        let btnBg = isEnabled ? Color.green.opacity(0.12) : (isAllowed ? Color.codexMist : Color.orange.opacity(0.12))
+                        let circleColor = isSyncing ? Color.orange : (isEnabled ? Color.green : (isAllowed ? Color.codexMuted : Color.orange))
+                        let textColor = isSyncing ? Color.orange : (isEnabled ? Color.green : (isAllowed ? Color.codexMuted : Color.orange))
+                        let btnTitle = isSyncing ? (isEnabled ? "正在开启..." : "正在同步...") : (isEnabled ? "代理已开启" : (isAllowed ? "代理已关闭" : "OAuth 未就绪"))
+                        let btnBg = isSyncing ? Color.orange.opacity(0.12) : (isEnabled ? Color.green.opacity(0.12) : (isAllowed ? Color.codexMist : Color.orange.opacity(0.12)))
 
                         Button {
-                            guard isAllowed else { return }
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                if let ss = settingsStore {
-                                    // Use the state rendered in this view as the source of
-                                    // truth. A toggle can write the opposite value when the
-                                    // Gateway cache and settings-store cache were loaded at
-                                    // different times.
-                                    ss.setConnectionProxyEnabled(id: connID, enabled: !isEnabled)
-                                    store.toggleConnectionProxy(id: connID)
-                                } else {
-                                    store.toggleConnectionProxy(id: connID)
+                            guard isAllowed, !isSyncing else { return }
+                            let willEnable = !isEnabled
+                            if willEnable {
+                                syncingConnectionIDs.insert(connID)
+                                Task { @MainActor in
+                                    if let ss = settingsStore {
+                                        ss.setConnectionProxyEnabled(id: connID, enabled: true)
+                                        store.toggleConnectionProxy(id: connID)
+
+                                        let result = await ss.syncConnectionModels(id: connID)
+                                        store.toggleConnectionProxy(id: connID)
+                                        syncingConnectionIDs.remove(connID)
+
+                                        switch result {
+                                        case let .success(count, _):
+                                            showToast("已开启 [\(activeGroup.accountName)] 代理 · 同步到 \(count) 款可用模型", systemImage: "checkmark.circle.fill", isSuccess: true)
+                                        case let .warning(msg):
+                                            showToast("已开启代理 · \(msg)", systemImage: "exclamationmark.triangle.fill", isSuccess: true)
+                                        case let .failure(errMsg):
+                                            ss.setConnectionProxyEnabled(id: connID, enabled: false)
+                                            store.toggleConnectionProxy(id: connID)
+                                            showToast("开启代理失败：\(errMsg)", systemImage: "xmark.circle.fill", isSuccess: false)
+                                        }
+                                    } else {
+                                        store.toggleConnectionProxy(id: connID)
+                                        syncingConnectionIDs.remove(connID)
+                                        showToast("已开启网关代理", systemImage: "checkmark.circle.fill", isSuccess: true)
+                                    }
                                 }
+                            } else {
+                                if let ss = settingsStore {
+                                    ss.setConnectionProxyEnabled(id: connID, enabled: false)
+                                }
+                                store.toggleConnectionProxy(id: connID)
+                                showToast("已关闭 [\(activeGroup.accountName)] 网关代理", systemImage: "pause.circle.fill", isSuccess: true)
                             }
                         } label: {
                             HStack(spacing: 4.5) {
-                                Circle()
-                                    .fill(circleColor)
-                                    .frame(width: 5.5, height: 5.5)
+                                if isSyncing {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else {
+                                    Circle()
+                                        .fill(circleColor)
+                                        .frame(width: 5.5, height: 5.5)
+                                }
                                 Text(btnTitle)
                             }
                             .font(.system(size: 10.5, weight: .semibold))
@@ -1161,12 +1277,12 @@ public struct GatewayView: View {
                             .foregroundStyle(textColor)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(isEnabled ? Color.green.opacity(0.3) : (isAllowed ? Color.codexLine.opacity(0.4) : Color.orange.opacity(0.4)), lineWidth: 0.8)
+                                    .stroke(isSyncing ? Color.orange.opacity(0.4) : (isEnabled ? Color.green.opacity(0.3) : (isAllowed ? Color.codexLine.opacity(0.4) : Color.orange.opacity(0.4))), lineWidth: 0.8)
                             )
                         }
                         .buttonStyle(CodexPressableStyle(cornerRadius: 6))
-                        .help(!isAllowed ? "请重新登录 Google OAuth 账号后再开启代理" : (isEnabled ? "点击关闭该账号的网关代理" : "点击开启该账号的网关代理"))
-                        .disabled(!isAllowed)
+                        .help(!isAllowed ? "请重新登录 OAuth 账号后再开启代理" : (isSyncing ? "正在验证授权并同步可用模型..." : (isEnabled ? "点击关闭该账号的网关代理" : "点击开启该账号的网关代理并同步模型")))
+                        .disabled(!isAllowed || isSyncing)
                     }
 
                     // One-Click Copy Parameters Button (Codex Primary Black button)
@@ -1221,25 +1337,102 @@ public struct GatewayView: View {
                     }
                 }
 
-                // Paused Banner when proxy is disabled
-                if !activeGroup.isProxyEnabled {
+                // Syncing In-Progress Banner
+                if let connID = activeGroup.connectionID, syncingConnectionIDs.contains(connID) {
+                    HStack(spacing: 9) {
+                        ProgressView()
+                            .controlSize(.small)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("正在验证授权并同步可用模型目录...")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Color.codexInk)
+                            Text("正在向官方服务验证 OAuth 凭据并拉取可用模型配额，首次或重连通常需要 1~2 秒，完成后将自动刷新网关模型路由。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.purple.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.purple.opacity(0.25), lineWidth: 0.8)
+                    )
+                } else if !activeGroup.isProxyEnabled {
+                    // Paused Banner when proxy is disabled
                     HStack(spacing: 8) {
                         Image(systemName: activeGroup.isProxyAllowed ? "pause.circle.fill" : "exclamationmark.triangle.fill")
                             .font(.system(size: 13))
                             .foregroundStyle(Color.orange)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(activeGroup.isProxyAllowed ? "该账号已关闭网关代理" : "Google OAuth 未就绪")
+                            Text(activeGroup.isProxyAllowed ? "该账号已关闭网关代理" : "OAuth 未就绪")
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(Color.codexInk)
 
-                            Text(activeGroup.isProxyAllowed ? "该账号的所有模型已在网关模型列表 (/v1/models) 中隐藏，且不再参与网关路由分流。" : "请重新登录 Google 账号；Gateway 只使用 OAuth 凭证出流。")
+                            Text(activeGroup.isProxyAllowed ? "该账号的所有模型已在网关模型列表 (/v1/models) 中隐藏，且不再参与网关路由分流。" : "请重新登录账号；Gateway 只使用有效凭据出流。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.orange.opacity(0.25), lineWidth: 0.8)
+                    )
+                } else if activeGroup.models.isEmpty, let connID = activeGroup.connectionID {
+                    // Enabled but 0 models banner with one-click re-sync
+                    HStack(spacing: 9) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.orange)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("代理已开启 · 暂未发现可用模型")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Color.codexInk)
+
+                            Text("官方授权已连接，但尚未拉取到可用的模型列表。点击右侧按钮可重新同步，或在下方手动添加自定义透传模型。")
                                 .font(.system(size: 10))
                                 .foregroundStyle(Color.codexMuted)
                         }
 
                         Spacer()
 
+                        Button {
+                            syncingConnectionIDs.insert(connID)
+                            Task { @MainActor in
+                                if let ss = settingsStore {
+                                    let result = await ss.syncConnectionModels(id: connID)
+                                    store.toggleConnectionProxy(id: connID)
+                                    syncingConnectionIDs.remove(connID)
+                                    switch result {
+                                    case let .success(count, _):
+                                        showToast("已成功同步 \(count) 款可用模型", systemImage: "checkmark.circle.fill", isSuccess: true)
+                                    case let .warning(msg):
+                                        showToast(msg, systemImage: "exclamationmark.triangle.fill", isSuccess: true)
+                                    case let .failure(errMsg):
+                                        showToast("同步失败：\(errMsg)", systemImage: "xmark.circle.fill", isSuccess: false)
+                                    }
+                                } else {
+                                    syncingConnectionIDs.remove(connID)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                Text("立即同步模型")
+                            }
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .padding(.horizontal, 9)
+                            .frame(height: 25)
+                            .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .foregroundStyle(Color.orange)
+                        }
+                        .buttonStyle(CodexPressableStyle(cornerRadius: 5))
                     }
                     .padding(10)
                     .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

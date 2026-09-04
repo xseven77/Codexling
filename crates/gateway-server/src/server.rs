@@ -30,6 +30,44 @@ struct CodexCatalogEntry {
 }
 static CODEX_CATALOG_CACHE: OnceLock<Mutex<HashMap<String, CodexCatalogEntry>>> = OnceLock::new();
 
+#[derive(Default)]
+pub struct AccountDynamicState {
+    pub cooldown_map: HashMap<String, Instant>,
+    pub last_served_map: HashMap<String, Instant>,
+}
+
+impl AccountDynamicState {
+    pub fn global() -> &'static Mutex<AccountDynamicState> {
+        static STATE: OnceLock<Mutex<AccountDynamicState>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(AccountDynamicState::default()))
+    }
+
+    pub fn is_cooling_down(&self, id: &str) -> bool {
+        if let Some(&expires) = self.cooldown_map.get(id) {
+            Instant::now() < expires
+        } else {
+            false
+        }
+    }
+
+    pub fn mark_cooldown(&mut self, id: &str, duration: Duration) {
+        self.cooldown_map.insert(id.to_string(), Instant::now() + duration);
+    }
+
+    pub fn record_served(&mut self, id: &str) {
+        self.last_served_map.insert(id.to_string(), Instant::now());
+    }
+
+    pub fn last_served(&self, id: &str) -> Option<Instant> {
+        self.last_served_map.get(id).copied()
+    }
+
+    pub fn cooling_down_count(&self) -> usize {
+        let now = Instant::now();
+        self.cooldown_map.values().filter(|&&exp| exp > now).count()
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayRequestRecord {
@@ -47,9 +85,90 @@ pub struct GatewayRequestRecord {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySettings {
+    #[serde(rename = "$schemaVersion", default = "default_gateway_settings_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub model_consolidation_enabled: bool,
+    #[serde(default)]
+    pub consolidated_providers: Vec<String>,
+    #[serde(default = "default_gateway_settings_allow_failover")]
+    pub allow_failover: bool,
+    #[serde(default = "default_gateway_settings_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "default_gateway_settings_max_failover_retries")]
+    pub max_failover_retries: usize,
+}
+
+fn default_gateway_settings_schema_version() -> u32 {
+    1
+}
+fn default_gateway_settings_allow_failover() -> bool {
+    true
+}
+fn default_gateway_settings_cooldown_seconds() -> u64 {
+    300
+}
+fn default_gateway_settings_max_failover_retries() -> usize {
+    2
+}
+
+impl Default for GatewaySettings {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            model_consolidation_enabled: false,
+            consolidated_providers: Vec::new(),
+            allow_failover: true,
+            cooldown_seconds: 300,
+            max_failover_retries: 2,
+        }
+    }
+}
+
+impl GatewaySettings {
+    pub fn is_provider_consolidated(&self, provider: &str) -> bool {
+        let p = provider.trim().to_ascii_lowercase();
+        if self.consolidated_providers.iter().any(|item| item.trim().eq_ignore_ascii_case(&p)) {
+            return true;
+        }
+        if (p == "openai" || p == "codex")
+            && self.consolidated_providers.iter().any(|item| {
+                let s = item.trim().to_ascii_lowercase();
+                s == "openai" || s == "codex"
+            })
+        {
+            return true;
+        }
+        if (p == "google" || p == "gemini")
+            && self.consolidated_providers.iter().any(|item| {
+                let s = item.trim().to_ascii_lowercase();
+                s == "google" || s == "gemini"
+            })
+        {
+            return true;
+        }
+        // Fallback for backwards compatibility
+        if self.consolidated_providers.is_empty() && self.model_consolidation_enabled {
+            return true;
+        }
+        false
+    }
+
+    pub fn load_for_home(home: &str) -> Self {
+        let path = format!("{home}/Library/Application Support/Codexling/gateway-settings.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<GatewaySettings>(&content).ok())
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GatewayServer;
+    use super::{AccountDynamicState, GatewayServer, UpstreamEndpoint};
     use gateway_ir::ModelSelector;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -66,6 +185,260 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn gateway_settings_loads_default_and_from_disk() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(&support).unwrap();
+
+        // 1. Default when file doesn't exist
+        let default_settings = super::GatewaySettings::load_for_home(home.to_str().unwrap());
+        assert_eq!(default_settings.schema_version, 1);
+        assert!(!default_settings.model_consolidation_enabled);
+        assert!(default_settings.allow_failover);
+        assert_eq!(default_settings.cooldown_seconds, 300);
+        assert_eq!(default_settings.max_failover_retries, 2);
+
+        // 2. Custom settings when file exists
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{
+                "$schemaVersion": 1,
+                "modelConsolidationEnabled": true,
+                "allowFailover": false,
+                "cooldownSeconds": 600,
+                "maxFailoverRetries": 4
+            }"#,
+        )
+        .unwrap();
+        let loaded = super::GatewaySettings::load_for_home(home.to_str().unwrap());
+        assert!(loaded.model_consolidation_enabled);
+        assert!(!loaded.allow_failover);
+        assert_eq!(loaded.cooldown_seconds, 600);
+        assert_eq!(loaded.max_failover_retries, 4);
+    }
+
+    #[test]
+    fn quota_scoring_algorithms() {
+        // 1. OpenAI / Codex scoring
+        let codex_short = serde_json::json!({
+            "usage": {
+                "shortWindow": {
+                    "remaining": 40,
+                    "total": 50
+                }
+            }
+        });
+        assert_eq!(GatewayServer::score_codex_account(&codex_short), 80);
+
+        let codex_exhausted = serde_json::json!({
+            "usage": {
+                "shortWindow": {
+                    "remaining": 0,
+                    "total": 100
+                }
+            }
+        });
+        assert_eq!(GatewayServer::score_codex_account(&codex_exhausted), 0);
+
+        let codex_no_usage = serde_json::json!({});
+        assert_eq!(GatewayServer::score_codex_account(&codex_no_usage), 100);
+
+        // 2. Google Gemini scoring
+        let gemini_normal = serde_json::json!({
+            "geminiFiveHourRemaining": 0.85,
+            "geminiWeeklyRemaining": 0.90
+        });
+        assert_eq!(GatewayServer::score_gemini_account(&gemini_normal), 85);
+
+        let gemini_cooldown = serde_json::json!({
+            "geminiFiveHourRemaining": 0.85,
+            "geminiWeeklyRemaining": 0.90,
+            "cooldownResetsAt": "2099-01-01T00:00:00Z"
+        });
+        assert_eq!(GatewayServer::score_gemini_account(&gemini_cooldown), 0);
+
+        // 3. DeepSeek scoring
+        assert_eq!(
+            GatewayServer::score_deepseek_account(&serde_json::json!({"balance": {"total": 0.0}})),
+            0
+        );
+        assert_eq!(
+            GatewayServer::score_deepseek_account(&serde_json::json!({"balance": {"total": 5.0}})),
+            30
+        );
+        assert_eq!(
+            GatewayServer::score_deepseek_account(&serde_json::json!({"balance": {"total": 25.0}})),
+            70
+        );
+        assert_eq!(
+            GatewayServer::score_deepseek_account(&serde_json::json!({"balance": {"total": 100.0}})),
+            100
+        );
+
+        // 4. OpenCode scoring
+        assert_eq!(
+            GatewayServer::score_opencode_account(
+                &serde_json::json!({"isEnabled": true, "authenticationState": "connected"})
+            ),
+            100
+        );
+        assert_eq!(
+            GatewayServer::score_opencode_account(
+                &serde_json::json!({"isEnabled": false, "authenticationState": "connected"})
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn model_consolidation_payload_exports_deduplicated_models_when_enabled() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(&support).unwrap();
+
+        let codex_home_1 = support.join("Runtimes/Codex/acc-1");
+        fs::create_dir_all(&codex_home_1).unwrap();
+        fs::write(codex_home_1.join("oauth_token.json"), "{}").unwrap();
+        fs::write(
+            codex_home_1.join("models_cache.json"),
+            r#"{"models": [{"slug":"gpt-5.6-sol","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        let codex_home_2 = support.join("Runtimes/Codex/acc-2");
+        fs::create_dir_all(&codex_home_2).unwrap();
+        fs::write(codex_home_2.join("oauth_token.json"), "{}").unwrap();
+        fs::write(
+            codex_home_2.join("models_cache.json"),
+            r#"{"models": [{"slug":"gpt-5.6-sol","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [
+                    {
+                        "id": {"rawValue": "11111111-1111-1111-1111-111111111111"},
+                        "label": "Low Quota User",
+                        "relativeHomeDirectory": "acc-1",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "usage": {"shortWindow": {"remaining": 20, "total": 100}}
+                    },
+                    {
+                        "id": {"rawValue": "22222222-2222-2222-2222-222222222222"},
+                        "label": "High Quota User",
+                        "relativeHomeDirectory": "acc-2",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "usage": {"shortWindow": {"remaining": 85, "total": 100}}
+                    }
+                ],
+                "geminiConnections": [],
+                "deepSeekConnections": [],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+
+        // 1. Without consolidation: 2 separate scoped model IDs
+        let payload_disabled = GatewayServer::get_dynamic_models_payload_for_home(home.to_str().unwrap());
+        let models_disabled = payload_disabled["data"].as_array().unwrap();
+        assert_eq!(models_disabled.len(), 2);
+        assert!(models_disabled[0]["id"].as_str().unwrap().contains('@'));
+        assert!(models_disabled[1]["id"].as_str().unwrap().contains('@'));
+
+        // 2. With consolidation: 1 consolidated model ID "openai/gpt-5.6-sol"
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{"modelConsolidationEnabled": true}"#,
+        )
+        .unwrap();
+        let payload_enabled = GatewayServer::get_dynamic_models_payload_for_home(home.to_str().unwrap());
+        let models_enabled = payload_enabled["data"].as_array().unwrap();
+        assert_eq!(models_enabled.len(), 1);
+        let consolidated = &models_enabled[0];
+        assert_eq!(consolidated["id"], "openai/gpt-5.6-sol");
+        assert_eq!(consolidated["quota_remaining"], "最高额度 85%");
+        assert!(consolidated["account"].as_str().unwrap().contains("2"));
+    }
+
+    #[test]
+    fn routes_highest_quota_account_when_consolidation_enabled() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(&support).unwrap();
+
+        let codex_home_1 = support.join("Runtimes/Codex/acc-low");
+        fs::create_dir_all(&codex_home_1).unwrap();
+        fs::write(codex_home_1.join("oauth_token.json"), "{}").unwrap();
+        fs::write(
+            codex_home_1.join("models_cache.json"),
+            r#"{"models": [{"slug":"gpt-5.6-sol","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        let codex_home_2 = support.join("Runtimes/Codex/acc-high");
+        fs::create_dir_all(&codex_home_2).unwrap();
+        fs::write(codex_home_2.join("oauth_token.json"), "{}").unwrap();
+        fs::write(
+            codex_home_2.join("models_cache.json"),
+            r#"{"models": [{"slug":"gpt-5.6-sol","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [
+                    {
+                        "id": {"rawValue": "11111111-1111-1111-1111-111111111111"},
+                        "label": "Low Quota User",
+                        "relativeHomeDirectory": "acc-low",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "usage": {"shortWindow": {"remaining": 20, "total": 100}}
+                    },
+                    {
+                        "id": {"rawValue": "22222222-2222-2222-2222-222222222222"},
+                        "label": "High Quota User",
+                        "relativeHomeDirectory": "acc-high",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "usage": {"shortWindow": {"remaining": 85, "total": 100}}
+                    }
+                ],
+                "geminiConnections": [],
+                "deepSeekConnections": [],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{"modelConsolidationEnabled": true}"#,
+        )
+        .unwrap();
+
+        // 1. Bare / consolidated request: selects higher-quota account 2 (acc-high)
+        let ep = GatewayServer::resolve_upstream_endpoint_for_home(home.to_str().unwrap(), "openai/gpt-5.6-sol")
+            .unwrap();
+        assert!(ep.codex_home.unwrap().contains("acc-high"));
+        assert!(ep._account_name.contains("High Quota User"));
+
+        // 2. Explicit account target: strictly routes to requested account 1 (acc-low)
+        let ep_explicit = GatewayServer::resolve_upstream_endpoint_for_home(
+            home.to_str().unwrap(),
+            "openai/gpt-5.6-sol@low-quota-user-openai-11111111",
+        )
+        .unwrap();
+        assert!(ep_explicit.codex_home.unwrap().contains("acc-low"));
+        assert!(ep_explicit._account_name.contains("Low Quota User"));
     }
 
     #[test]
@@ -446,6 +819,190 @@ mod tests {
             Err(e) => e,
         };
         assert!(err2.contains("不支持模型 [gpt-5-5]"), "got: {err2}");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn test_dynamic_cooldown_and_lru_rotation() {
+        let dynamic_state = AccountDynamicState::global();
+        {
+            let mut state = dynamic_state.lock().unwrap();
+            state.mark_cooldown("cooling-acc", std::time::Duration::from_secs(60));
+            assert!(state.is_cooling_down("cooling-acc"));
+            assert!(!state.is_cooling_down("healthy-acc"));
+            assert_eq!(state.cooling_down_count(), 1);
+        }
+
+        let mut candidates = vec![
+            (
+                100,
+                "cooling-acc".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token1".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "cooling-acc".into(),
+                    codex_home: None,
+                    connection_id: "cooling-acc".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                80,
+                "healthy-acc".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token2".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "healthy-acc".into(),
+                    codex_home: None,
+                    connection_id: "healthy-acc".into(),
+                    quota_score: 80,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+
+        // healthy-acc must be picked even with lower score because cooling-acc is cooling down
+        let picked = GatewayServer::sort_and_pick_candidate(&mut candidates).unwrap();
+        assert_eq!(picked.connection_id, "healthy-acc");
+
+        // Test LRU rotation with equal scores
+        let mut candidates_lru = vec![
+            (
+                100,
+                "acc-a".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token-a".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "acc-a".into(),
+                    codex_home: None,
+                    connection_id: "acc-a".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                100,
+                "acc-b".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token-b".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "acc-b".into(),
+                    codex_home: None,
+                    connection_id: "acc-b".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+
+        // acc-a has never been served, acc-b has never been served -> deterministic tie-break selects acc-a
+        let picked1 = GatewayServer::sort_and_pick_candidate(&mut candidates_lru).unwrap();
+        assert_eq!(picked1.connection_id, "acc-a");
+
+        // Re-run candidates: now acc-a was served, acc-b was not served yet -> acc-b must be picked (LRU)
+        let mut candidates_lru2 = vec![
+            (
+                100,
+                "acc-a".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token-a".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "acc-a".into(),
+                    codex_home: None,
+                    connection_id: "acc-a".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                100,
+                "acc-b".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer token-b".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "test-model".into(),
+                    provider_name: "OpenAI / Codex".into(),
+                    _account_name: "acc-b".into(),
+                    codex_home: None,
+                    connection_id: "acc-b".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+        let picked2 = GatewayServer::sort_and_pick_candidate(&mut candidates_lru2).unwrap();
+        assert_eq!(picked2.connection_id, "acc-b");
+    }
+
+    #[test]
+    fn test_hermes_two_segment_picker_routing() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(support.join("deepseek_credentials")).unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [],
+                "geminiConnections": [],
+                "deepSeekConnections": [{
+                    "id": {"rawValue": "ds-conn-1"},
+                    "label": "primary-ds",
+                    "credentialHandle": "ds-cred",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["deepseek-chat", "deepseek-reasoner"]
+                }],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("deepseek_credentials/ds-cred.key"),
+            "ds-key-123\n",
+        )
+        .unwrap();
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{"modelConsolidationEnabled":true,"allowFailover":true}"#,
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // 2-segment picker alias: `DeepSeek·deepseek-chat`
+        let ep = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "DeepSeek·deepseek-chat",
+        )
+        .unwrap();
+        assert_eq!(ep.provider_name, "DeepSeek 官方");
+        assert_eq!(ep.target_model, "deepseek-chat");
+        assert_eq!(ep.routing_mode, "consolidated");
+        assert_eq!(ep.connection_id, "ds-conn-1");
 
         fs::remove_dir_all(home).unwrap();
     }
@@ -853,6 +1410,9 @@ pub struct UpstreamEndpoint {
     /// ChatGPT/Codex subscriptions use the local Codex runtime rather than the
     /// public OpenAI API-key endpoint. `None` means a normal HTTP upstream.
     pub codex_home: Option<String>,
+    pub connection_id: String,
+    pub quota_score: i64,
+    pub routing_mode: String,
 }
 
 pub struct GatewayServer {
@@ -1050,6 +1610,12 @@ impl GatewayServer {
                         .lock()
                         .map(|q| q.iter().cloned().collect())
                         .unwrap_or_default();
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+                    let settings = GatewaySettings::load_for_home(&home);
+                    let cooling_count = AccountDynamicState::global()
+                        .lock()
+                        .map(|s| s.cooling_down_count())
+                        .unwrap_or(0);
                     let payload = serde_json::json!({
                         "running": true,
                         "bind": "127.0.0.1",
@@ -1059,7 +1625,10 @@ impl GatewayServer {
                         "total_output_tokens": out_tok,
                         "total_tool_calls": tools,
                         "recent_requests": reqs,
-                        "providers": ["google", "deepseek", "anthropic", "openai"]
+                        "providers": ["google", "deepseek", "anthropic", "openai"],
+                        "model_consolidation_enabled": settings.model_consolidation_enabled,
+                        "consolidated_providers": settings.consolidated_providers,
+                        "cooling_down_accounts_count": cooling_count,
                     });
                     Self::response("200 OK", "application/json", &payload.to_string())
                 }
@@ -1553,257 +2122,395 @@ impl GatewayServer {
             format!("{:02}:{:02}:{:02}", h, m, s)
         };
 
-        let upstream = match Self::resolve_upstream_endpoint(requested_model) {
-            Ok(u) => u,
-            Err(err_msg) => {
-                // Strict isolation: Return error immediately, NEVER fallback to another paid provider!
-                let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
-                stream.write_all(hdr.as_bytes())?;
-                let sse_err = format!(
-                    "data: {{\"id\":\"resp_err\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[提示] {}\"}},\"finish_reason\":null}}]}}\n\n",
-                    now_unix, requested_model, err_msg
-                );
-                stream.write_all(sse_err.as_bytes())?;
-                let finish = format!(
-                    "data: {{\"id\":\"resp_finish\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
-                    now_unix, requested_model
-                );
-                stream.write_all(finish.as_bytes())?;
-                stream.flush()?;
-                return Ok(true);
-            }
-        };
-
         let raw_messages = raw_req
             .get("messages")
             .and_then(|m| m.as_array())
             .cloned()
             .unwrap_or_default();
         let clean_messages = Self::sanitize_messages_sequence(raw_messages);
-
-        if let Some(codex_home) = upstream.codex_home.as_deref() {
-            return self.proxy_codex_subscription(
-                &agent,
-                requested_model,
-                &upstream.target_model,
-                &upstream._account_name,
-                codex_home,
-                &clean_messages,
-                is_stream,
-                now_unix,
-                &time_str,
-                start_time,
-                stream,
-            );
-        }
-
         let input_tokens = (body.len() / 4).max(1);
         self.total_input_tokens
             .fetch_add(input_tokens, Ordering::Relaxed);
 
-        if upstream.provider_name == "Google Gemini" {
-            return self.proxy_gemini_oauth(
-                &agent,
-                requested_model,
-                &upstream,
-                &raw_req,
-                &clean_messages,
-                is_stream,
-                now_unix,
-                &time_str,
-                start_time,
-                stream,
-            );
-        }
-
-        let mut payload = serde_json::json!({
-            "model": upstream.target_model,
-            "messages": clean_messages,
-            "stream": is_stream,
-        });
-
-        if let Some(t) = raw_req.get("temperature") {
-            payload["temperature"] = t.clone();
-        }
-        if let Some(p) = raw_req.get("top_p") {
-            payload["top_p"] = p.clone();
-        }
-        if let Some(max) = raw_req
-            .get("max_tokens")
-            .or_else(|| raw_req.get("max_completion_tokens"))
-        {
-            payload["max_tokens"] = max.clone();
-        }
-        if let Some(tools) = raw_req.get("tools") {
-            payload["tools"] = tools.clone();
-        }
-        if let Some(tc) = raw_req.get("tool_choice") {
-            payload["tool_choice"] = tc.clone();
-        }
-
-        let payload_str = payload.to_string();
-
-        let mut cmd = std::process::Command::new("curl");
-        cmd.arg("-s")
-            .arg("-N")
-            .arg("-X")
-            .arg("POST")
-            .arg(&upstream.url)
-            .arg("-H")
-            .arg(format!("Authorization: {}", upstream.auth_header))
-            .arg("-H")
-            .arg("Content-Type: application/json")
-            .arg("-d")
-            .arg(&payload_str)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        for (name, value) in &upstream.extra_headers {
-            cmd.arg("-H").arg(format!("{name}: {value}"));
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let resp = Self::response(
-                    "502 Bad Gateway",
-                    "application/json",
-                    &format!(
-                        r#"{{"error":{{"message":"Failed to spawn upstream process: {}","type":"upstream_error"}}}}"#,
-                        e
-                    ),
-                );
-                stream.write_all(&resp)?;
-                stream.flush()?;
-                return Ok(true);
-            }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        let settings = GatewaySettings::load_for_home(&home);
+        let max_retries = if settings.allow_failover {
+            settings.max_failover_retries
+        } else {
+            0
         };
+        let mut exclusions = Vec::new();
+        let mut retry_count = 0;
 
-        let stdout = match child.stdout.take() {
-            Some(s) => s,
-            None => {
-                let resp = Self::response(
-                    "502 Bad Gateway",
-                    "application/json",
-                    r#"{"error":{"message":"Failed to capture upstream process stdout","type":"upstream_error"}}"#,
-                );
-                stream.write_all(&resp)?;
-                stream.flush()?;
-                return Ok(true);
-            }
-        };
+        let upstream = loop {
+            match Self::resolve_upstream_endpoint_with_exclusions(requested_model, &exclusions) {
+                Ok(u) => {
+                    let is_consolidated = u.routing_mode == "consolidated";
+                    if let Some(codex_home) = u.codex_home.clone() {
+                        return self.proxy_codex_subscription(
+                            &agent,
+                            requested_model,
+                            &u,
+                            &codex_home,
+                            &clean_messages,
+                            is_stream,
+                            now_unix,
+                            &time_str,
+                            start_time,
+                            stream,
+                        );
+                    }
 
-        use std::io::BufRead;
-        let mut reader = std::io::BufReader::new(stdout);
-        let mut header_sent = false;
-        let mut emitted_done = false;
-        let mut emitted_any_data = false;
-        let mut output_chars = 0;
-        let mut ttft_ms = 0;
+                    if u.provider_name == "Google Gemini" {
+                        return self.proxy_gemini_oauth(
+                            &agent,
+                            requested_model,
+                            &u,
+                            &raw_req,
+                            &clean_messages,
+                            is_stream,
+                            now_unix,
+                            &time_str,
+                            start_time,
+                            stream,
+                        );
+                    }
 
-        let mut line_buf = String::new();
-        while let Ok(n) = reader.read_line(&mut line_buf) {
-            if n == 0 {
-                break;
-            }
-            let trimmed = line_buf.trim();
+                    let mut payload = serde_json::json!({
+                        "model": u.target_model,
+                        "messages": clean_messages,
+                        "stream": is_stream,
+                    });
 
-            if !header_sent {
-                header_sent = true;
-                ttft_ms = start_time.elapsed().as_millis() as u64;
-                if is_stream {
+                    if let Some(t) = raw_req.get("temperature") {
+                        payload["temperature"] = t.clone();
+                    }
+                    if let Some(p) = raw_req.get("top_p") {
+                        payload["top_p"] = p.clone();
+                    }
+                    if let Some(max) = raw_req
+                        .get("max_tokens")
+                        .or_else(|| raw_req.get("max_completion_tokens"))
+                    {
+                        payload["max_tokens"] = max.clone();
+                    }
+                    if let Some(tools) = raw_req.get("tools") {
+                        payload["tools"] = tools.clone();
+                    }
+                    if let Some(tc) = raw_req.get("tool_choice") {
+                        payload["tool_choice"] = tc.clone();
+                    }
+
+                    let payload_str = payload.to_string();
+
+                    let mut cmd = std::process::Command::new("curl");
+                    cmd.arg("-s")
+                        .arg("-N")
+                        .arg("-X")
+                        .arg("POST")
+                        .arg(&u.url)
+                        .arg("-H")
+                        .arg(format!("Authorization: {}", u.auth_header))
+                        .arg("-H")
+                        .arg("Content-Type: application/json")
+                        .arg("-d")
+                        .arg(&payload_str)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null());
+                    for (name, value) in &u.extra_headers {
+                        cmd.arg("-H").arg(format!("{name}: {value}"));
+                    }
+
+                    let mut child = match cmd.spawn() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            if is_consolidated && retry_count < max_retries {
+                                if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                    state.mark_cooldown(
+                                        &u.connection_id,
+                                        std::time::Duration::from_secs(settings.cooldown_seconds),
+                                    );
+                                }
+                                exclusions.push(u.connection_id.clone());
+                                retry_count += 1;
+                                continue;
+                            }
+                            let resp = Self::response(
+                                "502 Bad Gateway",
+                                "application/json",
+                                &format!(
+                                    r#"{{"error":{{"message":"Failed to spawn upstream process: {}","type":"upstream_error"}}}}"#,
+                                    e
+                                ),
+                            );
+                            stream.write_all(&resp)?;
+                            stream.flush()?;
+                            return Ok(true);
+                        }
+                    };
+
+                    let stdout = match child.stdout.take() {
+                        Some(s) => s,
+                        None => {
+                            if is_consolidated && retry_count < max_retries {
+                                if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                    state.mark_cooldown(
+                                        &u.connection_id,
+                                        std::time::Duration::from_secs(settings.cooldown_seconds),
+                                    );
+                                }
+                                exclusions.push(u.connection_id.clone());
+                                retry_count += 1;
+                                continue;
+                            }
+                            let resp = Self::response(
+                                "502 Bad Gateway",
+                                "application/json",
+                                r#"{"error":{"message":"Failed to capture upstream process stdout","type":"upstream_error"}}"#,
+                            );
+                            stream.write_all(&resp)?;
+                            stream.flush()?;
+                            return Ok(true);
+                        }
+                    };
+
+                    use std::io::BufRead;
+                    let mut reader = std::io::BufReader::new(stdout);
+                    let mut first_line = String::new();
+                    match reader.read_line(&mut first_line) {
+                        Ok(0) => {
+                            let _ = child.wait();
+                            if is_consolidated && retry_count < max_retries {
+                                if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                    state.mark_cooldown(
+                                        &u.connection_id,
+                                        std::time::Duration::from_secs(settings.cooldown_seconds),
+                                    );
+                                }
+                                exclusions.push(u.connection_id.clone());
+                                retry_count += 1;
+                                continue;
+                            }
+                        }
+                        Ok(_) => {
+                            let trimmed = first_line.trim();
+                            let is_err = (trimmed.starts_with('{') || trimmed.starts_with('['))
+                                && (trimmed.contains("\"error\"") || trimmed.contains("\"message\""));
+                            if is_err && is_consolidated && retry_count < max_retries {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                    state.mark_cooldown(
+                                        &u.connection_id,
+                                        std::time::Duration::from_secs(settings.cooldown_seconds),
+                                    );
+                                }
+                                exclusions.push(u.connection_id.clone());
+                                retry_count += 1;
+                                continue;
+                            }
+                        }
+                        Err(_) => {
+                            let _ = child.wait();
+                            if is_consolidated && retry_count < max_retries {
+                                if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                    state.mark_cooldown(
+                                        &u.connection_id,
+                                        std::time::Duration::from_secs(settings.cooldown_seconds),
+                                    );
+                                }
+                                exclusions.push(u.connection_id.clone());
+                                retry_count += 1;
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Pre-TTFT passed: downstream headers will now be sent with this upstream endpoint
+                    let header_sent = true;
+                    let ttft_ms = start_time.elapsed().as_millis() as u64;
+                    if is_stream {
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n",
+                            u.connection_id, u.quota_score, u.routing_mode
+                        );
+                        stream.write_all(hdr.as_bytes())?;
+                    } else {
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n",
+                            u.connection_id, u.quota_score, u.routing_mode
+                        );
+                        stream.write_all(hdr.as_bytes())?;
+                    }
+
+                    let mut emitted_done = false;
+                    let mut emitted_any_data = false;
+                    let mut output_chars = 0;
+
+                    if !first_line.is_empty() {
+                        let trimmed = first_line.trim();
+                        if is_stream {
+                            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                                && trimmed.contains("\"error\"")
+                            {
+                                let err_msg_opt =
+                                    if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                        let err_obj = if let Some(arr) = err_json.as_array() {
+                                            arr.first().and_then(|item| item.get("error"))
+                                        } else {
+                                            err_json.get("error")
+                                        };
+                                        err_obj
+                                            .and_then(|e| e.get("message"))
+                                            .and_then(|m| m.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    };
+
+                                let msg = err_msg_opt.unwrap_or_else(|| "上游模型响应异常".to_string());
+                                let sse_err = format!(
+                                    "data: {{\"id\":\"resp_err\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[提示] {}\"}},\"finish_reason\":null}}]}}\n\n",
+                                    now_unix, requested_model, msg
+                                );
+                                stream.write_all(sse_err.as_bytes())?;
+                                let sse_stop = format!(
+                                    "data: {{\"id\":\"resp_stop\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                                    now_unix, requested_model
+                                );
+                                stream.write_all(sse_stop.as_bytes())?;
+                                stream.flush()?;
+                                emitted_any_data = true;
+                                emitted_done = true;
+                            } else {
+                                if trimmed.starts_with("data:") {
+                                    emitted_any_data = true;
+                                    output_chars += trimmed.len();
+                                }
+                                if trimmed.contains("[DONE]") {
+                                    emitted_done = true;
+                                }
+                                stream.write_all(first_line.as_bytes())?;
+                                stream.flush()?;
+                            }
+                        } else {
+                            stream.write_all(first_line.as_bytes())?;
+                            stream.flush()?;
+                        }
+                    }
+
+                    if !emitted_done {
+                        let mut line_buf = String::new();
+                        while let Ok(n) = reader.read_line(&mut line_buf) {
+                            if n == 0 {
+                                break;
+                            }
+                            let trimmed = line_buf.trim();
+                            if is_stream {
+                                if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                                    && trimmed.contains("\"error\"")
+                                {
+                                    let err_msg_opt = if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                        let err_obj = if let Some(arr) = err_json.as_array() {
+                                            arr.first().and_then(|item| item.get("error"))
+                                        } else {
+                                            err_json.get("error")
+                                        };
+                                        err_obj
+                                            .and_then(|e| e.get("message"))
+                                            .and_then(|m| m.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    };
+
+                                    let msg = err_msg_opt.unwrap_or_else(|| "上游模型响应异常".to_string());
+                                    let sse_err = format!(
+                                        "data: {{\"id\":\"resp_err\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[提示] {}\"}},\"finish_reason\":null}}]}}\n\n",
+                                        now_unix, requested_model, msg
+                                    );
+                                    stream.write_all(sse_err.as_bytes())?;
+                                    let sse_stop = format!(
+                                        "data: {{\"id\":\"resp_stop\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                                        now_unix, requested_model
+                                    );
+                                    stream.write_all(sse_stop.as_bytes())?;
+                                    stream.flush()?;
+                                    emitted_any_data = true;
+                                    emitted_done = true;
+                                    line_buf.clear();
+                                    break;
+                                }
+
+                                if trimmed.starts_with("data:") {
+                                    emitted_any_data = true;
+                                    output_chars += trimmed.len();
+                                }
+                                if trimmed.contains("[DONE]") {
+                                    emitted_done = true;
+                                }
+                            }
+
+                            stream.write_all(line_buf.as_bytes())?;
+                            stream.flush()?;
+                            line_buf.clear();
+                        }
+                    }
+
+                    let _ = child.wait();
+
+                    let latency_ms = start_time.elapsed().as_millis() as u64;
+                    let output_tokens = (output_chars / 4).max(12);
+                    self.total_output_tokens
+                        .fetch_add(output_tokens, Ordering::Relaxed);
+
+                    if is_stream {
+                        if !header_sent || !emitted_any_data {
+                            if !header_sent {
+                                let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
+                                stream.write_all(hdr.as_bytes())?;
+                            }
+                            let error = format!(
+                                "data: {{\"id\":\"resp_upstream_error\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[网关错误] 选定账号的上游未返回有效响应；请求未回退或降级。\"}},\"finish_reason\":null}}]}}\n\n",
+                                now_unix, requested_model
+                            );
+                            stream.write_all(error.as_bytes())?;
+                            stream.flush()?;
+                        }
+
+                        if !emitted_done {
+                            let finish_event = format!(
+                                "data: {{\"id\":\"resp_finish\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                                now_unix, requested_model
+                            );
+                            stream.write_all(finish_event.as_bytes())?;
+                            stream.flush()?;
+                        }
+                    }
+
+                    break (u, latency_ms, ttft_ms, output_tokens);
+                }
+                Err(err_msg) => {
+                    // Strict isolation: Return error immediately, NEVER fallback to another paid provider!
                     let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
                     stream.write_all(hdr.as_bytes())?;
-                } else {
-                    let hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
-                    stream.write_all(hdr.as_bytes())?;
-                }
-            }
-
-            if is_stream {
-                // Check if upstream returned a raw JSON error (either {...} or [{...}]) instead of SSE data
-                if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                    && trimmed.contains("\"error\"")
-                {
-                    let err_msg_opt =
-                        if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                            let err_obj = if let Some(arr) = err_json.as_array() {
-                                arr.first().and_then(|item| item.get("error"))
-                            } else {
-                                err_json.get("error")
-                            };
-                            err_obj
-                                .and_then(|e| e.get("message"))
-                                .and_then(|m| m.as_str())
-                                .map(|s| s.to_string())
-                        } else {
-                            None
-                        };
-
-                    let msg = err_msg_opt.unwrap_or_else(|| "上游 Google 模型响应异常".to_string());
                     let sse_err = format!(
-                        "data: {{\"id\":\"resp_err\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[Google 提示] {}\"}},\"finish_reason\":null}}]}}\n\n",
-                        now_unix, requested_model, msg
+                        "data: {{\"id\":\"resp_err\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[提示] {}\"}},\"finish_reason\":null}}]}}\n\n",
+                        now_unix, requested_model, err_msg
                     );
                     stream.write_all(sse_err.as_bytes())?;
-                    let sse_stop = format!(
-                        "data: {{\"id\":\"resp_stop\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                    let finish = format!(
+                        "data: {{\"id\":\"resp_finish\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
                         now_unix, requested_model
                     );
-                    stream.write_all(sse_stop.as_bytes())?;
+                    stream.write_all(finish.as_bytes())?;
                     stream.flush()?;
-                    emitted_any_data = true;
-                    emitted_done = true;
-                    line_buf.clear();
-                    break;
-                }
-
-                if trimmed.starts_with("data:") {
-                    emitted_any_data = true;
-                    output_chars += trimmed.len();
-                }
-                if trimmed.contains("[DONE]") {
-                    emitted_done = true;
+                    return Ok(true);
                 }
             }
+        };
 
-            stream.write_all(line_buf.as_bytes())?;
-            stream.flush()?;
-            line_buf.clear();
-        }
-
-        let _ = child.wait();
-
-        let latency_ms = start_time.elapsed().as_millis() as u64;
-        let output_tokens = (output_chars / 4).max(12);
-        self.total_output_tokens
-            .fetch_add(output_tokens, Ordering::Relaxed);
-
-        if is_stream {
-            // Never fabricate a successful assistant answer when the selected
-            // provider produced no bytes. This used to conceal upstream auth,
-            // quota, and unsupported-model errors and looked like a fallback.
-            if !header_sent || !emitted_any_data {
-                if !header_sent {
-                    let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
-                    stream.write_all(hdr.as_bytes())?;
-                }
-                let error = format!(
-                    "data: {{\"id\":\"resp_upstream_error\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"[网关错误] 选定账号的上游未返回有效响应；请求未回退或降级。\"}},\"finish_reason\":null}}]}}\n\n",
-                    now_unix, requested_model
-                );
-                stream.write_all(error.as_bytes())?;
-                stream.flush()?;
-            }
-
-            if !emitted_done {
-                let finish_event = format!(
-                    "data: {{\"id\":\"resp_finish\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
-                    now_unix, requested_model
-                );
-                stream.write_all(finish_event.as_bytes())?;
-                stream.flush()?;
-            }
-        }
+        let (upstream, latency_ms, ttft_ms, output_tokens) = upstream;
 
         // Save request record to recent_requests deque
         let record = GatewayRequestRecord {
@@ -2184,7 +2891,9 @@ impl GatewayServer {
             if let Some(tool_calls) = tool_calls {
                 let tool_calls_json =
                     serde_json::to_string(&tool_calls).unwrap_or_else(|_| "[]".into());
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"tool_calls\":{tool_calls_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n")
+                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"tool_calls\":{tool_calls_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
+                )
             } else {
                 let answer_json = serde_json::to_string(
                     message
@@ -2193,7 +2902,9 @@ impl GatewayServer {
                         .unwrap_or(""),
                 )
                 .unwrap_or_else(|_| "\"\"".into());
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n")
+                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
+                )
             }
         } else {
             let finish_reason = if tool_calls.is_some() {
@@ -2201,7 +2912,9 @@ impl GatewayServer {
             } else {
                 "stop"
             };
-            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{{\"id\":\"gemini_oauth\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{message_json},\"finish_reason\":\"{finish_reason}\"}}]}}")
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{{\"id\":\"gemini_oauth\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{message_json},\"finish_reason\":\"{finish_reason}\"}}]}}",
+                upstream.connection_id, upstream.quota_score, upstream.routing_mode
+            )
         };
         stream.write_all(response.as_bytes())?;
         stream.flush()?;
@@ -2670,8 +3383,7 @@ impl GatewayServer {
         &self,
         agent: &str,
         requested_model: &str,
-        target_model: &str,
-        account_name: &str,
+        upstream: &UpstreamEndpoint,
         codex_home: &str,
         messages: &[serde_json::Value],
         is_stream: bool,
@@ -2680,6 +3392,8 @@ impl GatewayServer {
         start_time: std::time::Instant,
         stream: &mut TcpStream,
     ) -> std::io::Result<bool> {
+        let target_model = &upstream.target_model;
+        let account_name = &upstream._account_name;
         if let Err(message) = Self::prepare_codex_auth(codex_home) {
             return Self::write_gateway_error(
                 stream,
@@ -2767,12 +3481,14 @@ impl GatewayServer {
             serde_json::to_string(&answer).unwrap_or_else(|_| "\"Codex 输出无法编码\"".into());
         let response = if is_stream {
             format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
+                upstream.connection_id, upstream.quota_score, upstream.routing_mode,
                 model = serde_json::to_string(requested_model).unwrap(), answer = escaped_answer,
             )
         } else {
             format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{{\"id\":\"resp_codex\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":\"stop\"}}]}}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{{\"id\":\"resp_codex\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":\"stop\"}}]}}",
+                upstream.connection_id, upstream.quota_score, upstream.routing_mode,
                 model = serde_json::to_string(requested_model).unwrap(), answer = escaped_answer,
             )
         };
@@ -2901,22 +3617,71 @@ impl GatewayServer {
         Ok(true)
     }
 
-    fn resolve_upstream_endpoint(model: &str) -> Result<UpstreamEndpoint, String> {
+    #[allow(dead_code)]
+    pub(crate) fn resolve_upstream_endpoint(model: &str) -> Result<UpstreamEndpoint, String> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
         Self::resolve_upstream_endpoint_for_home(&home, model)
     }
 
-    fn resolve_upstream_endpoint_for_home(home: &str, model: &str) -> Result<UpstreamEndpoint, String> {
+    fn resolve_upstream_endpoint_with_exclusions(
+        model: &str,
+        exclusions: &[String],
+    ) -> Result<UpstreamEndpoint, String> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        Self::resolve_upstream_endpoint_for_home_with_exclusions(&home, model, exclusions)
+    }
+
+    pub(crate) fn resolve_upstream_endpoint_for_home(home: &str, model: &str) -> Result<UpstreamEndpoint, String> {
+        Self::resolve_upstream_endpoint_for_home_with_exclusions(home, model, &[])
+    }
+
+    fn sort_and_pick_candidate(candidates: &mut Vec<(i64, String, UpstreamEndpoint)>) -> Option<UpstreamEndpoint> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let dynamic_state = AccountDynamicState::global();
+        let state_guard = dynamic_state.lock().ok();
+
+        candidates.sort_by(|a, b| {
+            let a_cooling = state_guard.as_ref().map_or(false, |s| s.is_cooling_down(&a.1));
+            let b_cooling = state_guard.as_ref().map_or(false, |s| s.is_cooling_down(&b.1));
+            a_cooling
+                .cmp(&b_cooling)
+                .then_with(|| b.0.cmp(&a.0))
+                .then_with(|| {
+                    let a_last = state_guard.as_ref().and_then(|s| s.last_served(&a.1));
+                    let b_last = state_guard.as_ref().and_then(|s| s.last_served(&b.1));
+                    a_last.cmp(&b_last)
+                })
+                .then_with(|| a.1.cmp(&b.1))
+        });
+
+        drop(state_guard);
+
+        let picked = candidates.remove(0).2;
+        if let Ok(mut s) = AccountDynamicState::global().lock() {
+            s.record_served(&picked.connection_id);
+        }
+        Some(picked)
+    }
+
+    fn resolve_upstream_endpoint_for_home_with_exclusions(
+        home: &str,
+        model: &str,
+        exclusions: &[String],
+    ) -> Result<UpstreamEndpoint, String> {
         let app_support = format!("{home}/Library/Application Support/Codexling");
+        let settings = GatewaySettings::load_for_home(home);
         let mut lower = model.to_lowercase();
 
         let mut explicit_provider = None;
 
         // Hermes custom providers only accept model IDs in their configured
         // allowlist, and render that ID directly in the picker. Codexling
-        // therefore publishes aliases shaped as:
-        // `供应商·模型名·账号名` (without whitespace). Convert the human-readable
-        // alias back to the existing `model@account` routing syntax here.
+        // publishes aliases shaped as:
+        // - `供应商·模型名·账号名` (3 segments, explicit account routing)
+        // - `供应商·模型名` (2 segments, consolidated quota pool routing)
+        // Convert the human-readable alias back to the routing syntax here.
         let picker_parts: Vec<&str> = lower.split('·').map(str::trim).collect();
         if picker_parts.len() == 3 && picker_parts.iter().all(|part| !part.is_empty()) {
             let provider_label = picker_parts[0];
@@ -2932,6 +3697,21 @@ impl GatewayServer {
             } else if provider_label.starts_with("opencode") {
                 explicit_provider = Some("opencode");
                 lower = format!("{}@{}", picker_parts[1], picker_parts[2]);
+            }
+        } else if picker_parts.len() == 2 && picker_parts.iter().all(|part| !part.is_empty()) {
+            let provider_label = picker_parts[0];
+            if provider_label.starts_with("openai") || provider_label.starts_with("codex") {
+                explicit_provider = Some("openai");
+                lower = picker_parts[1].to_string();
+            } else if provider_label.starts_with("google") || provider_label.starts_with("gemini") {
+                explicit_provider = Some("google");
+                lower = picker_parts[1].to_string();
+            } else if provider_label.starts_with("deepseek") {
+                explicit_provider = Some("deepseek");
+                lower = picker_parts[1].to_string();
+            } else if provider_label.starts_with("opencode") {
+                explicit_provider = Some("opencode");
+                lower = picker_parts[1].to_string();
             }
         }
 
@@ -3226,6 +4006,7 @@ impl GatewayServer {
                     if let Some(accounts) =
                         registry.get("geminiConnections").and_then(|a| a.as_array())
                     {
+                        let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for acc in accounts {
                             if !acc
                                 .get("isEnabled")
@@ -3273,7 +4054,13 @@ impl GatewayServer {
                                         })
                                     }
                                 }
-                                None => true,
+                                None => {
+                                    if exclusions.contains(&id) {
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                }
                             };
 
                             if matched {
@@ -3297,29 +4084,50 @@ impl GatewayServer {
                                                 || candidate.strip_suffix("-tiered").map(|alias| alias.eq_ignore_ascii_case(base_model)).unwrap_or(false)
                                                 || normalized(candidate) == requested
                                         }))
-                                        .map(str::to_owned)
-                                        .ok_or_else(|| format!("Google OAuth 账号不提供模型 [{base_model}]，未执行回退。"))?;
-                                        return Ok(UpstreamEndpoint {
-                                        url: "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent".into(),
-                                        auth_header: format!("Bearer {access_token}"),
-                                        // The Cloud Code envelope carries this project directly.
-                                        // x-goog-user-project would instead require Service Usage
-                                        // IAM on Google's companion project.
-                                        extra_headers: Vec::new(),
-                                        project: acc
-                                            .get("projectId")
-                                            .and_then(|project| project.as_str())
-                                            .filter(|project| !project.trim().is_empty())
-                                            .map(str::to_owned),
-                                        target_model,
-                                        provider_name: "Google Gemini".into(),
-                                        _account_name: account_display,
-                                        codex_home: None,
-                                    });
+                                        .map(str::to_owned);
+
+                                        if let Some(target_model) = target_model {
+                                            let score = Self::score_gemini_account(acc);
+                                            let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("google");
+                                            let routing_mode = if is_consolidated {
+                                                "consolidated".to_string()
+                                            } else {
+                                                "direct".to_string()
+                                            };
+                                            let endpoint = UpstreamEndpoint {
+                                                url: "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent".into(),
+                                                auth_header: format!("Bearer {access_token}"),
+                                                extra_headers: Vec::new(),
+                                                project: acc
+                                                    .get("projectId")
+                                                    .and_then(|project| project.as_str())
+                                                    .filter(|project| !project.trim().is_empty())
+                                                    .map(str::to_owned),
+                                                target_model,
+                                                provider_name: "Google Gemini".into(),
+                                                _account_name: account_display,
+                                                codex_home: None,
+                                                connection_id: id.clone(),
+                                                quota_score: score,
+                                                routing_mode,
+                                            };
+                                            if !is_consolidated {
+                                                if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                    s.record_served(&endpoint.connection_id);
+                                                }
+                                                return Ok(endpoint);
+                                            } else {
+                                                candidates.push((score, id, endpoint));
+                                            }
+                                        }
                                     }
                                     Err(error) => oauth_failures.push(error),
                                 }
                             }
+                        }
+
+                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                            return Ok(picked);
                         }
                     }
                 }
@@ -3341,6 +4149,7 @@ impl GatewayServer {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry.get("codexAccounts").and_then(|a| a.as_array())
                     {
+                        let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
                                 .get("isEnabled")
@@ -3388,7 +4197,13 @@ impl GatewayServer {
                                         })
                                     }
                                 }
-                                None => true,
+                                None => {
+                                    if exclusions.contains(&id) {
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                }
                             };
                             if !matched {
                                 continue;
@@ -3409,7 +4224,14 @@ impl GatewayServer {
                                 else {
                                     continue;
                                 };
-                                return Ok(UpstreamEndpoint {
+                                let score = Self::score_codex_account(account);
+                                let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("openai");
+                                let routing_mode = if is_consolidated {
+                                    "consolidated".to_string()
+                                } else {
+                                    "direct".to_string()
+                                };
+                                let endpoint = UpstreamEndpoint {
                                     url: String::new(),
                                     auth_header: String::new(),
                                     extra_headers: vec![],
@@ -3418,8 +4240,23 @@ impl GatewayServer {
                                     provider_name: "OpenAI / Codex".into(),
                                     _account_name: account_display,
                                     codex_home: Some(codex_home),
-                                });
+                                    connection_id: id.clone(),
+                                    quota_score: score,
+                                    routing_mode,
+                                };
+                                if !is_consolidated {
+                                    if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                        s.record_served(&endpoint.connection_id);
+                                    }
+                                    return Ok(endpoint);
+                                } else {
+                                    candidates.push((score, id, endpoint));
+                                }
                             }
+                        }
+
+                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                            return Ok(picked);
                         }
                     }
                 }
@@ -3441,14 +4278,16 @@ impl GatewayServer {
         // 3. DeepSeek 官方直连 (严格隔离，仅选 DeepSeek 时调用)
         if is_deepseek {
             let conn_path = format!("{app_support}/connections-v1.json");
-            let mut selected_connection: Option<(String, String, String)> = None;
+            let key_dir = format!("{app_support}/deepseek_credentials");
             let mut matched_account = false;
+            let mut found_account_for_filter = false;
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry
                         .get("deepSeekConnections")
                         .and_then(|a| a.as_array())
                     {
+                        let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
                                 .get("isEnabled")
@@ -3481,7 +4320,13 @@ impl GatewayServer {
                                         })
                                     }
                                 }
-                                None => true,
+                                None => {
+                                    if exclusions.contains(&id) {
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                }
                             };
                             if matched {
                                 matched_account = true;
@@ -3489,75 +4334,94 @@ impl GatewayServer {
                                     account.get("credentialHandle").and_then(|v| v.as_str()),
                                     Self::connection_model_id(account, base_model),
                                 ) {
-                                    selected_connection =
-                                        Some((handle.to_string(), target_model, account_display));
-                                    break;
+                                    found_account_for_filter = true;
+                                    // Find key for handle
+                                    let mut found_key = None;
+                                    if let Ok(entries) = std::fs::read_dir(&key_dir) {
+                                        for entry in entries.flatten() {
+                                            let file_name = entry.file_name();
+                                            let name = file_name.to_string_lossy();
+                                            if name == format!("{handle}.key") || name == format!("{handle}.json") {
+                                                if let Ok(c) = std::fs::read_to_string(entry.path()) {
+                                                    let k = c.trim().to_string();
+                                                    if !k.is_empty() {
+                                                        found_key = Some(k);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(key) = found_key {
+                                        let score = Self::score_deepseek_account(account);
+                                        let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("deepseek");
+                                        let routing_mode = if is_consolidated {
+                                            "consolidated".to_string()
+                                        } else {
+                                            "direct".to_string()
+                                        };
+                                        let endpoint = UpstreamEndpoint {
+                                            url: "https://api.deepseek.com/chat/completions".into(),
+                                            auth_header: format!("Bearer {key}"),
+                                            extra_headers: vec![],
+                                            project: None,
+                                            target_model,
+                                            provider_name: "DeepSeek 官方".into(),
+                                            _account_name: account_display,
+                                            codex_home: None,
+                                            connection_id: id.clone(),
+                                            quota_score: score,
+                                            routing_mode,
+                                        };
+                                        if !is_consolidated {
+                                            if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                s.record_served(&endpoint.connection_id);
+                                            }
+                                            return Ok(endpoint);
+                                        } else {
+                                            candidates.push((score, id, endpoint));
+                                        }
+                                    }
                                 }
                             }
+                        }
+
+                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                            return Ok(picked);
                         }
                     }
                 }
             }
-            if account_filter.is_some() && selected_connection.is_none() {
-                let detail = if matched_account {
+            if account_filter.is_some() {
+                let detail = if found_account_for_filter {
+                    "DeepSeek API Key 未配置，已阻止降级以保护余额。".to_string()
+                } else if matched_account {
                     format!("DeepSeek 账号 [{}] 不提供模型 [{}]；已阻止回退。", account_filter.unwrap(), base_model)
                 } else {
                     format!("DeepSeek 账号 [{}] 未启用或认证未就绪；已阻止回退。", account_filter.unwrap())
                 };
                 return Err(detail);
             }
-            if account_filter.is_none() && selected_connection.is_none() {
-                return Err(format!(
-                    "DeepSeek 当前没有已启用账号提供模型 [{}]；已阻止回退。",
-                    base_model
-                ));
-            }
-            let key_dir = format!("{app_support}/deepseek_credentials");
-            if let Ok(entries) = std::fs::read_dir(&key_dir) {
-                for entry in entries.flatten() {
-                    if let Some((handle, _, _)) = selected_connection.as_ref() {
-                        let file_name = entry.file_name();
-                        let name = file_name.to_string_lossy();
-                        if name != format!("{handle}.key") && name != format!("{handle}.json") {
-                            continue;
-                        }
-                    }
-                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        let key = content.trim().to_string();
-                        if !key.is_empty() {
-                            let (target_model, account_name) = selected_connection
-                                .as_ref()
-                                .map(|(_, model, acc_name)| (model.clone(), acc_name.clone()))
-                                .expect("selected connection is checked above");
-                            return Ok(UpstreamEndpoint {
-                                url: "https://api.deepseek.com/chat/completions".into(),
-                                auth_header: format!("Bearer {key}"),
-                                extra_headers: vec![],
-                                project: None,
-                                target_model,
-                                provider_name: "DeepSeek 官方".into(),
-                                _account_name: account_name,
-                                codex_home: None,
-                            });
-                        }
-                    }
-                }
-            }
-            return Err("DeepSeek API Key 未配置，已阻止降级以保护余额。".into());
+            return Err(format!(
+                "DeepSeek 当前没有已启用或可用账号提供模型 [{}]；已阻止回退。",
+                base_model
+            ));
         }
 
         // 4. OpenCode 聚合平台 (严格隔离)
         if is_opencode {
             let conn_path = format!("{app_support}/connections-v1.json");
-            let mut selected_connection: Option<(String, String, String)> = None;
+            let key_dir = format!("{app_support}/opencode_credentials");
             let mut matched_account = false;
-            let mut selected_plan = "go".to_string();
+            let mut found_account_for_filter = false;
             if let Ok(content) = std::fs::read_to_string(&conn_path) {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry
                         .get("openCodeConnections")
                         .and_then(|a| a.as_array())
                     {
+                        let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
                                 .get("isEnabled")
@@ -3590,7 +4454,13 @@ impl GatewayServer {
                                         })
                                     }
                                 }
-                                None => true,
+                                None => {
+                                    if exclusions.contains(&id) {
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                }
                             };
                             if matched {
                                 matched_account = true;
@@ -3598,69 +4468,89 @@ impl GatewayServer {
                                     account.get("credentialHandle").and_then(|v| v.as_str()),
                                     Self::connection_model_id(account, base_model),
                                 ) {
-                                    if let Some(plan) = account.get("plan").and_then(|p| p.as_str()) {
-                                        selected_plan = plan.to_string();
+                                    found_account_for_filter = true;
+                                    let plan = account
+                                        .get("plan")
+                                        .and_then(|p| p.as_str())
+                                        .unwrap_or("go")
+                                        .to_string();
+
+                                    let mut found_key = None;
+                                    if let Ok(entries) = std::fs::read_dir(&key_dir) {
+                                        for entry in entries.flatten() {
+                                            let file_name = entry.file_name();
+                                            let name = file_name.to_string_lossy();
+                                            if name == format!("{handle}.key") || name == format!("{handle}.json") {
+                                                if let Ok(c) = std::fs::read_to_string(entry.path()) {
+                                                    let k = c.trim().to_string();
+                                                    if !k.is_empty() {
+                                                        found_key = Some(k);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                    selected_connection =
-                                        Some((handle.to_string(), target_model, account_display));
-                                    break;
+
+                                    if let Some(key) = found_key {
+                                        let url = if plan.eq_ignore_ascii_case("zen") {
+                                            "https://opencode.ai/zen/v1/chat/completions".into()
+                                        } else {
+                                            "https://opencode.ai/zen/go/v1/chat/completions".into()
+                                        };
+                                        let score = Self::score_opencode_account(account);
+                                        let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("opencode");
+                                        let routing_mode = if is_consolidated {
+                                            "consolidated".to_string()
+                                        } else {
+                                            "direct".to_string()
+                                        };
+                                        let endpoint = UpstreamEndpoint {
+                                            url,
+                                            auth_header: format!("Bearer {key}"),
+                                            extra_headers: vec![],
+                                            project: None,
+                                            target_model,
+                                            provider_name: "OpenCode 聚合平台".into(),
+                                            _account_name: account_display,
+                                            codex_home: None,
+                                            connection_id: id.clone(),
+                                            quota_score: score,
+                                            routing_mode,
+                                        };
+                                        if !is_consolidated {
+                                            if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                s.record_served(&endpoint.connection_id);
+                                            }
+                                            return Ok(endpoint);
+                                        } else {
+                                            candidates.push((score, id, endpoint));
+                                        }
+                                    }
                                 }
                             }
+                        }
+
+                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                            return Ok(picked);
                         }
                     }
                 }
             }
-            if account_filter.is_some() && selected_connection.is_none() {
-                let detail = if matched_account {
+            if account_filter.is_some() {
+                let detail = if found_account_for_filter {
+                    "OpenCode API Key 未配置。".to_string()
+                } else if matched_account {
                     format!("OpenCode 账号 [{}] 不提供模型 [{}]；已阻止回退。", account_filter.unwrap(), base_model)
                 } else {
                     format!("OpenCode 账号 [{}] 未启用或认证未就绪；已阻止回退。", account_filter.unwrap())
                 };
                 return Err(detail);
             }
-            if account_filter.is_none() && selected_connection.is_none() {
-                return Err(format!(
-                    "OpenCode 当前没有已启用账号提供模型 [{}]；已阻止回退。",
-                    base_model
-                ));
-            }
-            let key_dir = format!("{app_support}/opencode_credentials");
-            if let Ok(entries) = std::fs::read_dir(&key_dir) {
-                for entry in entries.flatten() {
-                    if let Some((handle, _, _)) = selected_connection.as_ref() {
-                        let file_name = entry.file_name();
-                        let name = file_name.to_string_lossy();
-                        if name != format!("{handle}.key") && name != format!("{handle}.json") {
-                            continue;
-                        }
-                    }
-                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        let key = content.trim().to_string();
-                        if !key.is_empty() {
-                            let (target_model, account_name) = selected_connection
-                                .as_ref()
-                                .map(|(_, model, acc_name)| (model.clone(), acc_name.clone()))
-                                .expect("selected connection is checked above");
-                            let url = if selected_plan.eq_ignore_ascii_case("zen") {
-                                "https://opencode.ai/zen/v1/chat/completions".into()
-                            } else {
-                                "https://opencode.ai/zen/go/v1/chat/completions".into()
-                            };
-                            return Ok(UpstreamEndpoint {
-                                url,
-                                auth_header: format!("Bearer {key}"),
-                                extra_headers: vec![],
-                                project: None,
-                                target_model,
-                                provider_name: "OpenCode 聚合平台".into(),
-                                _account_name: account_name,
-                                codex_home: None,
-                            });
-                        }
-                    }
-                }
-            }
-            return Err("OpenCode API Key 未配置。".into());
+            return Err(format!(
+                "OpenCode 当前没有已启用或可用账号提供模型 [{}]；已阻止回退。",
+                base_model
+            ));
         }
 
         Err(format!(
@@ -4315,193 +5205,428 @@ impl GatewayServer {
         Self::get_dynamic_models_payload_for_home(&home)
     }
 
+    pub(crate) fn score_codex_account(acc: &serde_json::Value) -> i64 {
+        let usage = match acc.get("usage") {
+            Some(u) => u,
+            None => return 100,
+        };
+        if let Some(sw) = usage.get("shortWindow") {
+            let remaining = sw.get("remaining").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let total = sw.get("total").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            if remaining <= 0.0 {
+                return 0;
+            }
+            if total > 0.0 {
+                return ((remaining / total) * 100.0).round().clamp(0.0, 100.0) as i64;
+            }
+            return remaining.round().clamp(0.0, 100.0) as i64;
+        }
+        if let Some(pw) = usage.get("primary") {
+            let remaining = pw.get("remaining").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let total = pw.get("total").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            if remaining <= 0.0 {
+                return 0;
+            }
+            if total > 0.0 {
+                return ((remaining / total) * 100.0).round().clamp(0.0, 100.0) as i64;
+            }
+            return remaining.round().clamp(0.0, 100.0) as i64;
+        }
+        if let Some(sec) = usage.get("secondary") {
+            let remaining = sec.get("remaining").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let total = sec.get("total").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            if remaining <= 0.0 {
+                return 0;
+            }
+            if total > 0.0 {
+                return ((remaining / total) * 100.0).round().clamp(0.0, 100.0) as i64;
+            }
+            return remaining.round().clamp(0.0, 100.0) as i64;
+        }
+        100
+    }
+
+    pub(crate) fn score_gemini_account(acc: &serde_json::Value) -> i64 {
+        if let Some(cooldown_str) = acc.get("cooldownResetsAt").and_then(|c| c.as_str()) {
+            if let Some(cooldown_sec) = Self::parse_rfc3339_utc(cooldown_str) {
+                let now_sec = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if cooldown_sec > now_sec {
+                    return 0;
+                }
+            }
+        }
+        let five_hour = acc
+            .get("geminiFiveHourRemaining")
+            .and_then(|f| f.as_f64())
+            .unwrap_or(1.0);
+        let weekly = acc
+            .get("geminiWeeklyRemaining")
+            .and_then(|w| w.as_f64())
+            .unwrap_or(1.0);
+        let remaining = five_hour.min(weekly);
+        (remaining * 100.0).round().clamp(0.0, 100.0) as i64
+    }
+
+    pub(crate) fn score_deepseek_account(acc: &serde_json::Value) -> i64 {
+        let balance = acc
+            .get("balance")
+            .and_then(|b| b.get("total"))
+            .and_then(|t| t.as_f64())
+            .unwrap_or(0.0);
+        if balance <= 0.0 {
+            0
+        } else if balance <= 10.0 {
+            30
+        } else if balance <= 50.0 {
+            70
+        } else {
+            100
+        }
+    }
+
+    pub(crate) fn score_opencode_account(acc: &serde_json::Value) -> i64 {
+        let is_enabled = acc
+            .get("isEnabled")
+            .and_then(|e| e.as_bool())
+            .unwrap_or(true);
+        let is_connected = acc
+            .get("authenticationState")
+            .and_then(|s| s.as_str())
+            == Some("connected");
+        if is_enabled && is_connected {
+            100
+        } else {
+            0
+        }
+    }
+
+
+
     fn get_dynamic_models_payload_for_home(home: &str) -> serde_json::Value {
+        let settings = GatewaySettings::load_for_home(home);
         let mut models: Vec<serde_json::Value> = Vec::new();
         let conn_path = format!("{home}/Library/Application Support/Codexling/connections-v1.json");
         if let Ok(content) = std::fs::read_to_string(&conn_path) {
             if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                 // 1. Group 1: OpenAI / Codex Accounts
                 if let Some(accounts) = registry.get("codexAccounts").and_then(|a| a.as_array()) {
-                    for acc in accounts {
-                        if !acc
-                            .get("isEnabled")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(true)
-                            || acc.get("authenticationState").and_then(|s| s.as_str())
-                                != Some("connected")
-                        {
-                            continue;
+                    if settings.is_provider_consolidated("openai") {
+                        struct ConsolidatedOpenAI {
+                            account_count: usize,
+                            max_score: i64,
                         }
-                        let label = acc.get("label").and_then(|l| l.as_str()).unwrap_or("codex");
-                        let account_name = acc
-                            .get("usage")
-                            .and_then(|u| u.get("accountName"))
-                            .and_then(|n| n.as_str());
-                        let email = acc
-                            .get("usage")
-                            .and_then(|u| u.get("accountEmail"))
-                            .and_then(|e| e.as_str());
-                        let plan_raw = acc
-                            .get("usage")
-                            .and_then(|u| u.get("planName"))
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("Plus");
-                        let plan = if plan_raw.eq_ignore_ascii_case("plus") {
-                            "Plus"
-                        } else if plan_raw.eq_ignore_ascii_case("free") {
-                            "Free"
-                        } else {
-                            plan_raw
-                        };
-                        let remaining = acc
-                            .get("usage")
-                            .and_then(|u| u.get("shortWindow"))
-                            .and_then(|w| w.get("remaining"))
-                            .and_then(|r| r.as_i64())
-                            .unwrap_or(100);
-                        let coupons = acc
-                            .get("usage")
-                            .and_then(|u| u.get("resetCoupons"))
-                            .and_then(|c| c.as_array())
-                            .map(|a| a.len())
-                            .unwrap_or(0);
-                        let quota_desc = if coupons > 0 {
-                            format!("额度: {}% (含{}张重置券)", remaining, coupons)
-                        } else {
-                            format!("额度: {}%", remaining)
-                        };
+                        let mut openai_models: Vec<(String, ConsolidatedOpenAI)> = Vec::new();
 
-                        let (slug_base, friendly_name) =
-                            Self::friendly_account_slug(account_name, email, label);
-                        let short_id = Self::connection_short_id(acc);
-                        let slug = format!("{slug_base}-openai-{short_id}");
-                        let account_display = format!("{friendly_name} (OpenAI · {short_id})");
-
-                        // The codex CLI serves `--model` only from its own
-                        // `models_cache.json`. The ChatGPT account catalog
-                        // (`availableModelIDs`, from `backend-api/models`) lists
-                        // models the CLI rejects (e.g. `gpt-5-6-t-mini`), so it
-                        // is NOT the source of exported models here. Only the
-                        // CLI-servable slugs are advertised, and their raw slug
-                        // is kept in the scoped route key.
-                        let relative_home = acc
-                            .get("relativeHomeDirectory")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let codex_home = if relative_home.contains('/') || relative_home.contains("..") {
-                            String::new()
-                        } else {
-                            format!(
-                                "{home}/Library/Application Support/Codexling/Runtimes/Codex/{relative_home}"
-                            )
-                        };
-                        for entry in Self::codex_catalog(&codex_home) {
-                            let Some(raw_mid) = entry.get("slug").and_then(|s| s.as_str()) else {
-                                continue;
-                            };
-                            if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) {
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
                                 continue;
                             }
-                            let sid = Self::scoped_model_id("openai", raw_mid, &slug);
-                            if !models.iter().any(|existing| existing["id"] == sid) {
-                                models.push(serde_json::json!({
-                                    "id": sid,
-                                    "name": format!("OpenAI · {raw_mid} ({account_display})"),
-                                    "display_name": format!("OpenAI · {raw_mid} ({account_display})"),
-                                    "object": "model",
-                                    "created": 1700000000,
-                                    "provider": "OpenAI / Codex",
-                                    "owned_by": "openai",
-                                    "account": account_display,
-                                    "permission_tier": plan,
-                                    "quota_remaining": quota_desc,
-                                    "description": format!("OpenAI {} [{}]", raw_mid, account_display)
-                                }));
+                            let relative_home = acc
+                                .get("relativeHomeDirectory")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let codex_home = if relative_home.contains('/') || relative_home.contains("..") {
+                                String::new()
+                            } else {
+                                format!(
+                                    "{home}/Library/Application Support/Codexling/Runtimes/Codex/{relative_home}"
+                                )
+                            };
+                            if !std::path::Path::new(&codex_home).join("oauth_token.json").is_file() {
+                                continue;
+                            }
+                            let score = Self::score_codex_account(acc);
+                            for entry in Self::codex_catalog(&codex_home) {
+                                let Some(raw_mid) = entry.get("slug").and_then(|s| s.as_str()) else {
+                                    continue;
+                                };
+                                if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) {
+                                    continue;
+                                }
+                                if let Some((_, info)) = openai_models.iter_mut().find(|(m, _)| m == raw_mid) {
+                                    info.account_count += 1;
+                                    info.max_score = info.max_score.max(score);
+                                } else {
+                                    openai_models.push((
+                                        raw_mid.to_string(),
+                                        ConsolidatedOpenAI {
+                                            account_count: 1,
+                                            max_score: score,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+
+                        for (raw_mid, info) in openai_models {
+                            models.push(serde_json::json!({
+                                "id": format!("openai/{raw_mid}"),
+                                "name": format!("OpenAI · {raw_mid} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "display_name": format!("OpenAI · {raw_mid} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "object": "model",
+                                "created": 1700000000,
+                                "provider": "OpenAI / Codex",
+                                "owned_by": "openai",
+                                "account": format!("整合 {} 个账号", info.account_count),
+                                "permission_tier": "高可用整合",
+                                "quota_remaining": format!("最高额度 {}%", info.max_score),
+                                "description": format!("OpenAI {} [整合 {} 个账号]", raw_mid, info.account_count)
+                            }));
+                        }
+                    } else {
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            let label = acc.get("label").and_then(|l| l.as_str()).unwrap_or("codex");
+                            let account_name = acc
+                                .get("usage")
+                                .and_then(|u| u.get("accountName"))
+                                .and_then(|n| n.as_str());
+                            let email = acc
+                                .get("usage")
+                                .and_then(|u| u.get("accountEmail"))
+                                .and_then(|e| e.as_str());
+                            let plan_raw = acc
+                                .get("usage")
+                                .and_then(|u| u.get("planName"))
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("Plus");
+                            let plan = if plan_raw.eq_ignore_ascii_case("plus") {
+                                "Plus"
+                            } else if plan_raw.eq_ignore_ascii_case("free") {
+                                "Free"
+                            } else {
+                                plan_raw
+                            };
+                            let remaining = acc
+                                .get("usage")
+                                .and_then(|u| u.get("shortWindow"))
+                                .and_then(|w| w.get("remaining"))
+                                .and_then(|r| r.as_i64())
+                                .unwrap_or(100);
+                            let coupons = acc
+                                .get("usage")
+                                .and_then(|u| u.get("resetCoupons"))
+                                .and_then(|c| c.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0);
+                            let quota_desc = if coupons > 0 {
+                                format!("额度: {}% (含{}张重置券)", remaining, coupons)
+                            } else {
+                                format!("额度: {}%", remaining)
+                            };
+
+                            let (slug_base, friendly_name) =
+                                Self::friendly_account_slug(account_name, email, label);
+                            let short_id = Self::connection_short_id(acc);
+                            let slug = format!("{slug_base}-openai-{short_id}");
+                            let account_display = format!("{friendly_name} (OpenAI · {short_id})");
+
+                            let relative_home = acc
+                                .get("relativeHomeDirectory")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let codex_home = if relative_home.contains('/') || relative_home.contains("..") {
+                                String::new()
+                            } else {
+                                format!(
+                                    "{home}/Library/Application Support/Codexling/Runtimes/Codex/{relative_home}"
+                                )
+                            };
+                            for entry in Self::codex_catalog(&codex_home) {
+                                let Some(raw_mid) = entry.get("slug").and_then(|s| s.as_str()) else {
+                                    continue;
+                                };
+                                if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) {
+                                    continue;
+                                }
+                                let sid = Self::scoped_model_id("openai", raw_mid, &slug);
+                                if !models.iter().any(|existing| existing["id"] == sid) {
+                                    models.push(serde_json::json!({
+                                        "id": sid,
+                                        "name": format!("OpenAI · {raw_mid} ({account_display})"),
+                                        "display_name": format!("OpenAI · {raw_mid} ({account_display})"),
+                                        "object": "model",
+                                        "created": 1700000000,
+                                        "provider": "OpenAI / Codex",
+                                        "owned_by": "openai",
+                                        "account": account_display,
+                                        "permission_tier": plan,
+                                        "quota_remaining": quota_desc,
+                                        "description": format!("OpenAI {} [{}]", raw_mid, account_display)
+                                    }));
+                                }
                             }
                         }
                     }
                 }
 
                 // 2. Group 2: Google Gemini Accounts (OAuth token + proxy enabled)
-                if let Some(accounts) = registry.get("geminiConnections").and_then(|a| a.as_array())
-                {
-                    for acc in accounts {
-                        let is_enabled = acc
-                            .get("isEnabled")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(true);
-                        let handle = acc
-                            .get("credentialHandle")
-                            .and_then(|h| h.as_str())
-                            .unwrap_or("");
-                        let has_oauth_token = Self::has_gemini_oauth_token_for_home(&home, handle);
-
-                        if !is_enabled
-                            || !has_oauth_token
-                            || acc.get("authenticationState").and_then(|s| s.as_str())
-                                != Some("connected")
-                        {
-                            continue;
+                if let Some(accounts) = registry.get("geminiConnections").and_then(|a| a.as_array()) {
+                    if settings.is_provider_consolidated("google") {
+                        struct ConsolidatedGemini {
+                            account_count: usize,
+                            max_score: i64,
                         }
-                        let label = acc
-                            .get("label")
-                            .and_then(|l| l.as_str())
-                            .unwrap_or("gemini");
-                        let display_name = acc.get("displayName").and_then(|d| d.as_str());
-                        let email = acc.get("email").and_then(|e| e.as_str());
-                        let tier = acc
-                            .get("tier")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("Google OAuth");
-                        let five_hour = acc
-                            .get("geminiFiveHourRemaining")
-                            .and_then(|f| f.as_f64())
-                            .unwrap_or(1.0);
-                        let weekly = acc
-                            .get("geminiWeeklyRemaining")
-                            .and_then(|w| w.as_f64())
-                            .unwrap_or(1.0);
-                        let quota_desc =
-                            if (five_hour - 1.0).abs() < 0.001 && (weekly - 1.0).abs() < 0.001 {
-                                "5h 配额充足".to_string()
-                            } else {
-                                format!("5h: {:.0}%, 周: {:.0}%", five_hour * 100.0, weekly * 100.0)
-                            };
+                        let mut gemini_models: Vec<(String, ConsolidatedGemini)> = Vec::new();
 
-                        let (slug_base, friendly_name) =
-                            Self::friendly_account_slug(display_name, email, label);
-                        let short_id = Self::connection_short_id(acc);
-                        let slug = format!("{slug_base}-google-{short_id}");
-                        let account_display = format!("{friendly_name} (Google · {short_id})");
+                        for acc in accounts {
+                            let is_enabled = acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true);
+                            let handle = acc
+                                .get("credentialHandle")
+                                .and_then(|h| h.as_str())
+                                .unwrap_or("");
+                            let has_oauth_token = Self::has_gemini_oauth_token_for_home(home, handle);
 
-                        let model_ids = acc
-                            .get("availableModelIDs")
-                            .and_then(|models| models.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        for raw_mid in model_ids {
-                            let Some(mid) = raw_mid.as_str() else {
-                                continue;
-                            };
-                            if mid.trim().is_empty() || mid.chars().any(char::is_whitespace) {
+                            if !is_enabled
+                                || !has_oauth_token
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
                                 continue;
                             }
-                            let sid = Self::scoped_model_id("google", mid, &slug);
-                            let display_model = Self::google_model_display_name(mid);
-                            if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
-                                models.push(serde_json::json!({
-                                    "id": sid,
-                                    "name": format!("Google · {display_model} ({account_display})"),
-                                    "display_name": format!("Google · {display_model} ({account_display})"),
-                                    "object": "model",
-                                    "created": 1700000000,
-                                    "provider": "Google Gemini",
-                                    "owned_by": "google",
-                                    "account": account_display,
-                                    "permission_tier": tier,
-                                    "quota_remaining": quota_desc,
-                                    "description": format!("Google {} [{}]", mid, account_display)
-                                }));
+                            let score = Self::score_gemini_account(acc);
+                            let model_ids = acc
+                                .get("availableModelIDs")
+                                .and_then(|m| m.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            for raw_mid in model_ids {
+                                let Some(mid) = raw_mid.as_str() else {
+                                    continue;
+                                };
+                                if mid.trim().is_empty() || mid.chars().any(char::is_whitespace) {
+                                    continue;
+                                }
+                                if let Some((_, info)) = gemini_models.iter_mut().find(|(m, _)| m == mid) {
+                                    info.account_count += 1;
+                                    info.max_score = info.max_score.max(score);
+                                } else {
+                                    gemini_models.push((
+                                        mid.to_string(),
+                                        ConsolidatedGemini {
+                                            account_count: 1,
+                                            max_score: score,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+
+                        for (mid, info) in gemini_models {
+                            let display_model = Self::google_model_display_name(&mid);
+                            models.push(serde_json::json!({
+                                "id": format!("google/{mid}"),
+                                "name": format!("Google · {display_model} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "display_name": format!("Google · {display_model} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "object": "model",
+                                "created": 1700000000,
+                                "provider": "Google Gemini",
+                                "owned_by": "google",
+                                "account": format!("整合 {} 个账号", info.account_count),
+                                "permission_tier": "高可用整合",
+                                "quota_remaining": format!("最高额度 {}%", info.max_score),
+                                "description": format!("Google {} [整合 {} 个账号]", mid, info.account_count)
+                            }));
+                        }
+                    } else {
+                        for acc in accounts {
+                            let is_enabled = acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true);
+                            let handle = acc
+                                .get("credentialHandle")
+                                .and_then(|h| h.as_str())
+                                .unwrap_or("");
+                            let has_oauth_token = Self::has_gemini_oauth_token_for_home(home, handle);
+
+                            if !is_enabled
+                                || !has_oauth_token
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            let label = acc
+                                .get("label")
+                                .and_then(|l| l.as_str())
+                                .unwrap_or("gemini");
+                            let display_name = acc.get("displayName").and_then(|d| d.as_str());
+                            let email = acc.get("email").and_then(|e| e.as_str());
+                            let tier = acc
+                                .get("tier")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("Google OAuth");
+                            let five_hour = acc
+                                .get("geminiFiveHourRemaining")
+                                .and_then(|f| f.as_f64())
+                                .unwrap_or(1.0);
+                            let weekly = acc
+                                .get("geminiWeeklyRemaining")
+                                .and_then(|w| w.as_f64())
+                                .unwrap_or(1.0);
+                            let quota_desc =
+                                if (five_hour - 1.0).abs() < 0.001 && (weekly - 1.0).abs() < 0.001 {
+                                    "5h 配额充足".to_string()
+                                } else {
+                                    format!("5h: {:.0}%, 周: {:.0}%", five_hour * 100.0, weekly * 100.0)
+                                };
+
+                            let (slug_base, friendly_name) =
+                                Self::friendly_account_slug(display_name, email, label);
+                            let short_id = Self::connection_short_id(acc);
+                            let slug = format!("{slug_base}-google-{short_id}");
+                            let account_display = format!("{friendly_name} (Google · {short_id})");
+
+                            let model_ids = acc
+                                .get("availableModelIDs")
+                                .and_then(|models| models.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            for raw_mid in model_ids {
+                                let Some(mid) = raw_mid.as_str() else {
+                                    continue;
+                                };
+                                if mid.trim().is_empty() || mid.chars().any(char::is_whitespace) {
+                                    continue;
+                                }
+                                let sid = Self::scoped_model_id("google", mid, &slug);
+                                let display_model = Self::google_model_display_name(mid);
+                                if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
+                                    models.push(serde_json::json!({
+                                        "id": sid,
+                                        "name": format!("Google · {display_model} ({account_display})"),
+                                        "display_name": format!("Google · {display_model} ({account_display})"),
+                                        "object": "model",
+                                        "created": 1700000000,
+                                        "provider": "Google Gemini",
+                                        "owned_by": "google",
+                                        "account": account_display,
+                                        "permission_tier": tier,
+                                        "quota_remaining": quota_desc,
+                                        "description": format!("Google {} [{}]", mid, account_display)
+                                    }));
+                                }
                             }
                         }
                     }
@@ -4512,49 +5637,105 @@ impl GatewayServer {
                     .get("deepSeekConnections")
                     .and_then(|a| a.as_array())
                 {
-                    for acc in accounts {
-                        if !acc
-                            .get("isEnabled")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(true)
-                            || acc.get("authenticationState").and_then(|s| s.as_str())
-                                != Some("connected")
-                        {
-                            continue;
+                    if settings.is_provider_consolidated("deepseek") {
+                        struct ConsolidatedDeepSeek {
+                            account_count: usize,
+                            max_score: i64,
                         }
-                        let label = acc
-                            .get("label")
-                            .and_then(|l| l.as_str())
-                            .unwrap_or("deepseek");
-                        let balance_val = acc
-                            .get("balance")
-                            .and_then(|b| b.get("total"))
-                            .and_then(|t| t.as_f64())
-                            .unwrap_or(0.0);
-                        let balance_desc = format!("¥{:.2}", balance_val);
-                        let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
-                        let short_id = Self::connection_short_id(acc);
-                        let slug = format!("{slug_base}-deepseek-{short_id}");
-                        let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
+                        let mut deepseek_models: Vec<(String, ConsolidatedDeepSeek)> = Vec::new();
 
-                        if let Some(mids) = acc.get("availableModelIDs").and_then(|m| m.as_array()) {
-                            for raw_mid in mids.iter().filter_map(|model| model.as_str()) {
-                                if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) { continue; }
-                                let sid = Self::scoped_model_id("deepseek", raw_mid, &slug);
-                                if !models.iter().any(|model: &serde_json::Value| model["id"] == sid) {
-                                    models.push(serde_json::json!({
-                                        "id": sid,
-                                        "name": format!("DeepSeek · {raw_mid} ({account_display})"),
-                                        "display_name": format!("DeepSeek · {raw_mid} ({account_display})"),
-                                        "object": "model",
-                                        "created": 1700000000,
-                                        "provider": "DeepSeek 官方",
-                                        "owned_by": "deepseek",
-                                        "account": account_display,
-                                        "permission_tier": "官方直连",
-                                        "quota_remaining": balance_desc,
-                                        "description": format!("DeepSeek {} [{}]", raw_mid, account_display)
-                                    }));
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            let score = Self::score_deepseek_account(acc);
+                            if let Some(mids) = acc.get("availableModelIDs").and_then(|m| m.as_array()) {
+                                for raw_mid in mids.iter().filter_map(|model| model.as_str()) {
+                                    if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) {
+                                        continue;
+                                    }
+                                    if let Some((_, info)) = deepseek_models.iter_mut().find(|(m, _)| m == raw_mid) {
+                                        info.account_count += 1;
+                                        info.max_score = info.max_score.max(score);
+                                    } else {
+                                        deepseek_models.push((
+                                            raw_mid.to_string(),
+                                            ConsolidatedDeepSeek {
+                                                account_count: 1,
+                                                max_score: score,
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        for (raw_mid, info) in deepseek_models {
+                            models.push(serde_json::json!({
+                                "id": format!("deepseek/{raw_mid}"),
+                                "name": format!("DeepSeek · {raw_mid} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "display_name": format!("DeepSeek · {raw_mid} (整合 {} 账号 · 最高额度 {}%)", info.account_count, info.max_score),
+                                "object": "model",
+                                "created": 1700000000,
+                                "provider": "DeepSeek 官方",
+                                "owned_by": "deepseek",
+                                "account": format!("整合 {} 个账号", info.account_count),
+                                "permission_tier": "官方直连整合",
+                                "quota_remaining": format!("最高额度 {}%", info.max_score),
+                                "description": format!("DeepSeek {} [整合 {} 个账号]", raw_mid, info.account_count)
+                            }));
+                        }
+                    } else {
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            let label = acc
+                                .get("label")
+                                .and_then(|l| l.as_str())
+                                .unwrap_or("deepseek");
+                            let balance_val = acc
+                                .get("balance")
+                                .and_then(|b| b.get("total"))
+                                .and_then(|t| t.as_f64())
+                                .unwrap_or(0.0);
+                            let balance_desc = format!("¥{:.2}", balance_val);
+                            let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
+                            let short_id = Self::connection_short_id(acc);
+                            let slug = format!("{slug_base}-deepseek-{short_id}");
+                            let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
+
+                            if let Some(mids) = acc.get("availableModelIDs").and_then(|m| m.as_array()) {
+                                for raw_mid in mids.iter().filter_map(|model| model.as_str()) {
+                                    if raw_mid.trim().is_empty() || raw_mid.chars().any(char::is_whitespace) { continue; }
+                                    let sid = Self::scoped_model_id("deepseek", raw_mid, &slug);
+                                    if !models.iter().any(|model: &serde_json::Value| model["id"] == sid) {
+                                        models.push(serde_json::json!({
+                                            "id": sid,
+                                            "name": format!("DeepSeek · {raw_mid} ({account_display})"),
+                                            "display_name": format!("DeepSeek · {raw_mid} ({account_display})"),
+                                            "object": "model",
+                                            "created": 1700000000,
+                                            "provider": "DeepSeek 官方",
+                                            "owned_by": "deepseek",
+                                            "account": account_display,
+                                            "permission_tier": "官方直连",
+                                            "quota_remaining": balance_desc,
+                                            "description": format!("DeepSeek {} [{}]", raw_mid, account_display)
+                                        }));
+                                    }
                                 }
                             }
                         }
@@ -4566,55 +5747,109 @@ impl GatewayServer {
                     .get("openCodeConnections")
                     .and_then(|a| a.as_array())
                 {
-                    for acc in accounts {
-                        if !acc
-                            .get("isEnabled")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(true)
-                            || acc.get("authenticationState").and_then(|s| s.as_str())
-                                != Some("connected")
-                        {
-                            continue;
+                    if settings.is_provider_consolidated("opencode") {
+                        struct ConsolidatedOpenCode {
+                            account_count: usize,
                         }
-                        let label = acc
-                            .get("label")
-                            .and_then(|l| l.as_str())
-                            .unwrap_or("opencode");
-                        let plan = acc
-                            .get("plan")
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("go")
-                            .to_uppercase();
-                        let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
-                        let short_id = Self::connection_short_id(acc);
-                        let slug = format!("{slug_base}-opencode-{short_id}");
-                        let account_display = format!("{friendly_name} (OpenCode · {short_id})");
+                        let mut opencode_models: Vec<(String, ConsolidatedOpenCode)> = Vec::new();
 
-                        if let Some(avail_models) =
-                            acc.get("availableModelIDs").and_then(|m| m.as_array())
-                        {
-                            let count = avail_models.len();
-                            let quota_desc = format!("可用 ({} 款模型)", count);
-                            for raw_m in avail_models {
-                                if let Some(mid) = raw_m.as_str() {
-                                    if mid.chars().any(char::is_whitespace) {
-                                        continue;
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            if let Some(avail_models) = acc.get("availableModelIDs").and_then(|m| m.as_array()) {
+                                for raw_m in avail_models {
+                                    if let Some(mid) = raw_m.as_str() {
+                                        if mid.chars().any(char::is_whitespace) {
+                                            continue;
+                                        }
+                                        if let Some((_, info)) = opencode_models.iter_mut().find(|(m, _)| m == mid) {
+                                            info.account_count += 1;
+                                        } else {
+                                            opencode_models.push((
+                                                mid.to_string(),
+                                                ConsolidatedOpenCode {
+                                                    account_count: 1,
+                                                },
+                                            ));
+                                        }
                                     }
-                                    let sid = Self::scoped_model_id("opencode", mid, &slug);
-                                    if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
-                                        models.push(serde_json::json!({
-                                            "id": sid,
-                                            "name": format!("OpenCode · {mid} ({account_display})"),
-                                            "display_name": format!("OpenCode · {mid} ({account_display})"),
-                                            "object": "model",
-                                            "created": 1700000000,
-                                            "provider": "OpenCode 聚合平台",
-                                            "owned_by": "opencode",
-                                            "account": account_display,
-                                            "permission_tier": format!("OpenCode {plan}"),
-                                            "quota_remaining": quota_desc,
-                                            "description": format!("OpenCode {} [{}]", mid, account_display)
-                                        }));
+                                }
+                            }
+                        }
+
+                        for (mid, info) in opencode_models {
+                            models.push(serde_json::json!({
+                                "id": format!("opencode/{mid}"),
+                                "name": format!("OpenCode · {mid} (整合 {} 账号)", info.account_count),
+                                "display_name": format!("OpenCode · {mid} (整合 {} 账号)", info.account_count),
+                                "object": "model",
+                                "created": 1700000000,
+                                "provider": "OpenCode 聚合平台",
+                                "owned_by": "opencode",
+                                "account": format!("整合 {} 个账号", info.account_count),
+                                "permission_tier": "聚合平台整合",
+                                "quota_remaining": "配额正常",
+                                "description": format!("OpenCode {} [整合 {} 个账号]", mid, info.account_count)
+                            }));
+                        }
+                    } else {
+                        for acc in accounts {
+                            if !acc
+                                .get("isEnabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true)
+                                || acc.get("authenticationState").and_then(|s| s.as_str())
+                                    != Some("connected")
+                            {
+                                continue;
+                            }
+                            let label = acc
+                                .get("label")
+                                .and_then(|l| l.as_str())
+                                .unwrap_or("opencode");
+                            let plan = acc
+                                .get("plan")
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("go")
+                                .to_uppercase();
+                            let (slug_base, friendly_name) = Self::friendly_account_slug(None, None, label);
+                            let short_id = Self::connection_short_id(acc);
+                            let slug = format!("{slug_base}-opencode-{short_id}");
+                            let account_display = format!("{friendly_name} (OpenCode · {short_id})");
+
+                            if let Some(avail_models) =
+                                acc.get("availableModelIDs").and_then(|m| m.as_array())
+                            {
+                                let count = avail_models.len();
+                                let quota_desc = format!("可用 ({} 款模型)", count);
+                                for raw_m in avail_models {
+                                    if let Some(mid) = raw_m.as_str() {
+                                        if mid.chars().any(char::is_whitespace) {
+                                            continue;
+                                        }
+                                        let sid = Self::scoped_model_id("opencode", mid, &slug);
+                                        if !models.iter().any(|m: &serde_json::Value| m["id"] == sid) {
+                                            models.push(serde_json::json!({
+                                                "id": sid,
+                                                "name": format!("OpenCode · {mid} ({account_display})"),
+                                                "display_name": format!("OpenCode · {mid} ({account_display})"),
+                                                "object": "model",
+                                                "created": 1700000000,
+                                                "provider": "OpenCode 聚合平台",
+                                                "owned_by": "opencode",
+                                                "account": account_display,
+                                                "permission_tier": format!("OpenCode {plan}"),
+                                                "quota_remaining": quota_desc,
+                                                "description": format!("OpenCode {} [{}]", mid, account_display)
+                                            }));
+                                        }
                                     }
                                 }
                             }

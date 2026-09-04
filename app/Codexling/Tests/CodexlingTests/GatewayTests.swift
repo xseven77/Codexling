@@ -373,6 +373,171 @@ final class GatewayTests: XCTestCase {
         let afterDelete = broker.retrieveSecret(for: testAccount)
         XCTAssertNil(afterDelete)
     }
+
+    func testGatewaySettingsStorageDefaultAndRoundtrip() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+
+        // Initial load when file does not exist should yield default settings
+        let defaultSettings = storage.load()
+        XCTAssertEqual(defaultSettings.schemaVersion, 1)
+        XCTAssertFalse(defaultSettings.modelConsolidationEnabled)
+        XCTAssertTrue(defaultSettings.allowFailover)
+        XCTAssertEqual(defaultSettings.cooldownSeconds, 300)
+        XCTAssertEqual(defaultSettings.maxFailoverRetries, 2)
+
+        // Save customized settings
+        let custom = GatewaySettings(
+            modelConsolidationEnabled: true,
+            allowFailover: false,
+            cooldownSeconds: 600,
+            maxFailoverRetries: 3
+        )
+        try storage.save(custom)
+
+        // Verify file permissions 0600
+        let attrs = try FileManager.default.attributesOfItem(atPath: settingsURL.path)
+        let perms = attrs[.posixPermissions] as? NSNumber
+        XCTAssertEqual(perms?.intValue, 0o600)
+
+        // Readback check
+        let loaded = storage.load()
+        XCTAssertEqual(loaded, custom)
+    }
+
+    func testGatewayStoreModelConsolidationTogglePersists() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-store-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        XCTAssertFalse(store.isModelConsolidationEnabled)
+        store.isModelConsolidationEnabled = true
+        XCTAssertTrue(store.isModelConsolidationEnabled)
+
+        // Verify storage on disk was updated
+        let reloaded = storage.load()
+        XCTAssertTrue(reloaded.modelConsolidationEnabled)
+    }
+
+    func testHermesTwoSegmentPickerModelID() {
+        // Test 2-segment picker formatting for consolidated pool routing
+        let pickerID1 = GatewayStore.hermesPickerModelID(
+            provider: "Google Gemini",
+            modelName: "gemini-3.7-flash"
+        )
+        XCTAssertEqual(pickerID1, "Google-Gemini·gemini-3.7-flash")
+
+        let pickerID2 = GatewayStore.hermesPickerModelID(
+            provider: "OpenAI",
+            modelName: "gpt-5.6-sol"
+        )
+        XCTAssertEqual(pickerID2, "OpenAI·gpt-5.6-sol")
+
+        let pickerID3 = GatewayStore.hermesPickerModelID(
+            provider: "Google",
+            modelName: "gemini-2.5-pro-tiered"
+        )
+        // Ensure `-tiered` implementation suffix is removed
+        XCTAssertEqual(pickerID3, "Google·gemini-2.5-pro")
+    }
+
+    func testConsolidatedExportedModelsSwitching() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-store-consolidation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        // When consolidation is disabled, allExportedModels reflects account-scoped models
+        XCTAssertFalse(store.isModelConsolidationEnabled)
+        let unconsolidatedCount = store.allExportedModels.count
+
+        // Enable consolidation
+        store.isModelConsolidationEnabled = true
+        XCTAssertTrue(store.isModelConsolidationEnabled)
+
+        // All exported models should now be deduplicated by (provider, baseModel)
+        let consolidated = store.allExportedModels
+        XCTAssertEqual(consolidated, store.consolidatedExportedModels)
+
+        // Ensure no scoped account suffixes "(...)" exist in consolidated model names
+        for model in consolidated {
+            XCTAssertFalse(model.modelName.contains(" ("), "Consolidated model should not contain account scope: \(model.modelName)")
+            XCTAssertTrue(model.sourceBadge.contains("聚合"))
+        }
+
+        // Toggle back
+        store.isModelConsolidationEnabled = false
+        XCTAssertEqual(store.allExportedModels.count, unconsolidatedCount)
+    }
+
+    func testPerProviderConsolidationSwitchingAndPersistence() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-store-per-provider-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        var store = GatewayStore(settingsStorage: storage)
+
+        // Initially no providers are consolidated
+        XCTAssertFalse(store.isProviderConsolidated("openai"))
+        XCTAssertFalse(store.isProviderConsolidated("google"))
+        XCTAssertFalse(store.isProviderConsolidated("deepseek"))
+        XCTAssertFalse(store.isProviderConsolidated("opencode"))
+
+        // Enable only OpenAI consolidation
+        store.setProviderConsolidated("openai", enabled: true)
+        XCTAssertTrue(store.isProviderConsolidated("openai"))
+        XCTAssertTrue(store.isProviderConsolidated("codex"))
+        XCTAssertFalse(store.isProviderConsolidated("google"))
+        XCTAssertFalse(store.isProviderConsolidated("deepseek"))
+        XCTAssertFalse(store.isProviderConsolidated("opencode"))
+        XCTAssertTrue(store.isModelConsolidationEnabled)
+
+        // Reload from disk into a fresh store to verify persistence
+        let storeReloaded = GatewayStore(settingsStorage: storage)
+        XCTAssertTrue(storeReloaded.isProviderConsolidated("openai"))
+        XCTAssertFalse(storeReloaded.isProviderConsolidated("google"))
+
+        // Enable Google as well
+        store.setProviderConsolidated("google", enabled: true)
+        XCTAssertTrue(store.isProviderConsolidated("google"))
+        XCTAssertTrue(store.isProviderConsolidated("gemini"))
+
+        // Disable OpenAI
+        store.setProviderConsolidated("openai", enabled: false)
+        XCTAssertFalse(store.isProviderConsolidated("openai"))
+        XCTAssertTrue(store.isProviderConsolidated("google"))
+
+        // Disable Google
+        store.setProviderConsolidated("google", enabled: false)
+        XCTAssertFalse(store.isProviderConsolidated("google"))
+        XCTAssertFalse(store.isModelConsolidationEnabled)
+    }
+
+    func testGeminiProxyEnabledDoesNotDependOnEmptyModels() {
+        let store = GatewayStore()
+        let googleGroups = store.accountModelGroups.filter { $0.id.hasPrefix("google_gemini_") }
+        for group in googleGroups {
+            XCTAssertTrue(group.isProxyAllowed)
+            XCTAssertEqual(group.isProxyEnabled, true)
+        }
+    }
 }
 
 private final class TestHermesCommandRunner: HermesCommandRunning, @unchecked Sendable {
