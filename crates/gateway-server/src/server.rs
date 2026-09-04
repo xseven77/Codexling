@@ -2437,8 +2437,9 @@ impl GatewayServer {
             .arg("User-Agent: antigravity")
             .arg("-H")
             .arg(r#"Client-Metadata: {"ideType":"ANTIGRAVITY"}"#)
-            .arg("-d")
-            .arg(payload.to_string())
+            .arg("--data-binary")
+            .arg("@-")
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         if bypass_proxy {
@@ -2447,9 +2448,16 @@ impl GatewayServer {
         for (name, value) in &upstream.extra_headers {
             command.arg("-H").arg(format!("{name}: {value}"));
         }
-        command
-            .output()
-            .map_err(|error| format!("无法启动 Gemini OAuth 请求：{error}"))
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("无法启动 Gemini OAuth 请求：{error}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(payload.to_string().as_bytes());
+        }
+        child
+            .wait_with_output()
+            .map_err(|error| format!("等待 Gemini OAuth 响应失败：{error}"))
     }
 
     fn curl_failure_message(output: &std::process::Output) -> String {

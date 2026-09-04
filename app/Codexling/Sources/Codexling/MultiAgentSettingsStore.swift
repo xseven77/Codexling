@@ -285,7 +285,18 @@ final class MultiAgentSettingsStore {
         let supervisor = codexAppServerSupervisor
 
         guard connection.isEnabled else {
-            return CodexAccountRefreshResult(id: connection.id, state: .needsLogin, usage: nil)
+            // Proxy is disabled → the account is not routing, but that is not a
+            // login problem. Returning `.needsLogin` here would overwrite the
+            // account's real authentication state on the next periodic refresh,
+            // and re-enabling the proxy would then stay stuck ("connected" no
+            // longer holds). Preserve the current state so a disabled account
+            // keeps its true login status.
+            return CodexAccountRefreshResult(
+                id: connection.id,
+                state: connection.authenticationState,
+                usage: connection.usage,
+                availableModels: connection.availableModelIDs
+            )
         }
         let tokenStore: CodexOAuthTokenStore
         do {
@@ -423,6 +434,7 @@ final class MultiAgentSettingsStore {
                 fallback: fallback
             )
             connection.authenticationState = .connected
+            connection.isEnabled = true
             connection.usage = snapshot
             connection.availableModelIDs = models
             codexAccounts.append(connection)
@@ -437,6 +449,7 @@ final class MultiAgentSettingsStore {
                tokenStore.hasStoredToken() {
                 var connection = pendingConnection
                 connection.authenticationState = .connected
+                connection.isEnabled = true
                 connection.usage = nil
                 codexAccounts.append(connection)
                 try? saveRegistry()
@@ -481,6 +494,7 @@ final class MultiAgentSettingsStore {
                 fallback: connection.label
             )
             codexAccounts[index].authenticationState = .connected
+            codexAccounts[index].isEnabled = true
             codexAccounts[index].usage = snapshot
             codexAccounts[index].availableModelIDs = models
             try saveRegistry()

@@ -798,22 +798,80 @@ public final class GatewayStore {
         accountModelGroups.flatMap { $0.models }.map { $0.modelName }.joined(separator: ", ")
     }
 
-    /// Returns the codex CLI's authoritative servable-model slugs for a
-    /// connection from its own `models_cache.json`. The CLI refreshes this file
-    /// automatically when it is stale, so this reflects exactly the models
-    /// `codex exec --model` can serve — never the ChatGPT-side
-    /// `availableModelIDs`, which the CLI rejects. Hidden/internal entries
-    /// (`gpt-reserve`, `codex-auto-review`) are excluded.
+    /// Normalizes raw model IDs from ChatGPT / OpenAI API by stripping the `-wm` watermark suffix.
+    public static func normalizeCodexModelID(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasSuffix("-wm") {
+            s = String(s.dropLast(3))
+        }
+        return s
+    }
+
+    /// Sorts codex model slugs so flagship models (5.6 Sol / Terra / Luna / 5.6 / 5.5) appear first.
+    /// Handles both the dash-form (`gpt-5-6-sol`, from `availableModelIDs`) and
+    /// dot-form (`gpt-5.6-sol`, from the codex CLI catalog) by normalizing the
+    /// version separator before scoring.
+    public static func sortCodexModelSlugs(_ slugs: [String]) -> [String] {
+        let canonical = { (s: String) -> String in
+            // gpt-5-6-sol -> gpt-5.6-sol so the score below matches once.
+            s.replacingOccurrences(of: "gpt-5-", with: "gpt-5.")
+        }
+        return slugs.sorted { a, b in
+            let score = { (s: String) -> Int in
+                let c = canonical(s)
+                if c == "gpt-5.6-sol" || c.contains("5.6-sol") { return 100 }
+                if c == "gpt-5.6-terra" || c.contains("5.6-terra") { return 90 }
+                if c == "gpt-5.6-luna" || c.contains("5.6-luna") { return 80 }
+                if c == "gpt-5.6" { return 70 }
+                if c.contains("5.6-thinking") || c.contains("thinking") { return 65 }
+                if c == "gpt-5.5" { return 60 }
+                if c.contains("5.6") { return 50 }
+                if c.contains("5.5") { return 40 }
+                if c.contains("5.4") { return 30 }
+                if c.contains("5.3") { return 20 }
+                if c.contains("5.2") { return 10 }
+                return 0
+            }
+            let scoreA = score(a)
+            let scoreB = score(b)
+            if scoreA != scoreB { return scoreA > scoreB }
+            return a < b
+        }
+    }
+
+    /// Sources servable slugs for a Codex account.
+    /// Uses authoritative OpenAI account discovery (`availableModelIDs`) from the OpenAI/ChatGPT API,
+    /// exactly matching how Google Gemini, OpenCode, and DeepSeek operate.
+    /// Falls back to on-disk models_cache.json only if availableModelIDs is empty.
     static func codexServableSlugs(from connection: CodexAccountConnection, runtimesRoot: URL? = nil) -> [String] {
+        if !connection.availableModelIDs.isEmpty {
+            var slugs: [String] = []
+            for raw in connection.availableModelIDs {
+                let norm = normalizeCodexModelID(raw)
+                if !norm.isEmpty && norm != "research" && !slugs.contains(norm) {
+                    slugs.append(norm)
+                }
+            }
+            if !slugs.isEmpty {
+                return sortCodexModelSlugs(slugs)
+            }
+        }
         let runtimesRoot = runtimesRoot ?? ConnectionRegistryStorage().fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Codexling/Runtimes/Codex", isDirectory: true)
         let home = runtimesRoot.appendingPathComponent(connection.relativeHomeDirectory, isDirectory: true)
         let cacheURL = home.appendingPathComponent("models_cache.json")
-        guard let data = try? Data(contentsOf: cacheURL),
-              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let models = json["models"] as? [[String: Any]] else {
-            return []
+        if let data = try? Data(contentsOf: cacheURL),
+           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let models = json["models"] as? [[String: Any]] {
+            let slugs = parseCodexModelSlugs(models: models)
+            if !slugs.isEmpty { return sortCodexModelSlugs(slugs) }
         }
+        return []
+    }
+
+    /// Filters a codex model catalog down to the user-selectable (visible)
+    /// slugs, dropping hidden/internal entries.
+    private static func parseCodexModelSlugs(models: [[String: Any]]) -> [String] {
         var slugs: [String] = []
         for model in models {
             guard let slug = model["slug"] as? String, !slug.isEmpty else { continue }
@@ -1471,7 +1529,10 @@ public final class GatewayStore {
                 let badgeTitle = "\(plan) (额度 \(quota)\(couponSuffix))"
                 var connModels: [GatewayExportedModel] = []
                 let servableSlugs = Self.codexServableSlugs(from: conn)
-                let scopedSol = servableSlugs.first
+                let defaultModel = servableSlugs.first(where: { $0.contains("5.6-sol") || $0.contains("sol") })
+                    ?? servableSlugs.first(where: { $0.contains("5.6") })
+                    ?? servableSlugs.first
+                let scopedSol = defaultModel
                     .map { "\($0) (\(slug))" } ?? "等待模型目录同步"
                 /* Legacy hard-coded suggestions are intentionally disabled.
                  * A Codex account exports only the IDs that its official
@@ -1591,6 +1652,8 @@ public final class GatewayStore {
                         )
                     }
                 }
+                let isProxyAllowed = conn.authenticationState == .connected
+                let isProxyEnabled = conn.isEnabled && isProxyAllowed
                 groups.append(
                     GatewayAccountModelGroup(
                         id: "codex_\(conn.id.rawValue)",
@@ -1599,11 +1662,12 @@ public final class GatewayStore {
                         email: conn.usage?.accountEmail,
                         providerTitle: "Codex · \(friendlyName)",
                         iconName: "apple.terminal",
-                        authStatus: conn.isEnabled ? "已连接 · 会话就绪" : "代理已暂停 · 不参与路由",
-                        isConnected: true,
-                        isProxyEnabled: conn.isEnabled && conn.authenticationState == .connected && !connModels.isEmpty,
-                        badgeText: conn.isEnabled ? badgeTitle : "代理已关闭",
-                        badgeColor: conn.isEnabled ? NSColor.systemCyan : NSColor.systemGray,
+                        authStatus: !isProxyAllowed ? "登录已失效 · 需重新登录" : (conn.isEnabled ? "已连接 · 会话就绪" : "代理已暂停 · 不参与路由"),
+                        isConnected: isProxyAllowed,
+                        isProxyEnabled: isProxyEnabled,
+                        isProxyAllowed: isProxyAllowed,
+                        badgeText: !isProxyAllowed ? "未登录" : (conn.isEnabled ? badgeTitle : "代理已关闭"),
+                        badgeColor: !isProxyAllowed ? NSColor.systemOrange : (conn.isEnabled ? NSColor.systemCyan : NSColor.systemGray),
                         quickConnectTip: "在第三方 Agent 中指定 \(scopedSol) 可精确定向路由至该账号出流。",
                         recommendedModels: [scopedSol],
                         sampleConfigSnippet: """

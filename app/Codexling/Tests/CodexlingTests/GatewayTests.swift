@@ -52,7 +52,9 @@ final class GatewayTests: XCTestCase {
         ]}
         """.data(using: .utf8)!.write(to: home.appendingPathComponent("models_cache.json"))
 
-        // availableModelIDs is the ChatGPT-side catalog, which codex exec rejects.
+        // availableModelIDs (the OpenAI/ChatGPT API catalog) is now the source
+        // of truth, exactly matching how Gemini/OpenCode/DeepSeek operate — the
+        // requirement is to run on the OpenAI API, not a local codex CLI.
         let connection = CodexAccountConnection(
             id: ConnectionID(rawValue: UUID()),
             label: "Seven X",
@@ -60,14 +62,36 @@ final class GatewayTests: XCTestCase {
             authenticationState: .connected,
             isEnabled: true,
             usage: nil,
-            availableModelIDs: ["gpt-5-6-t-mini"],
+            availableModelIDs: [
+                "gpt-5.6-sol-wm",
+                "gpt-5.6-terra-wm",
+                "gpt-5.5-wm",
+                "gpt-5-6",
+                "research",
+            ],
             createdAt: Date()
         )
         let slugs = GatewayStore.codexServableSlugs(from: connection, runtimesRoot: runtimesRoot)
-        XCTAssertEqual(slugs, ["gpt-5.6-sol", "gpt-brand-new"])
-        XCTAssertFalse(slugs.contains("gpt-reserve"))
-        XCTAssertFalse(slugs.contains("codex-auto-review"))
-        XCTAssertFalse(slugs.contains("gpt-5-6-t-mini"), "ChatGPT catalog models must never be exported")
+        // -wm watermark suffix is stripped, `research` is dropped, flagship order is applied.
+        XCTAssertEqual(slugs, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5-6", "gpt-5.5"])
+        XCTAssertFalse(slugs.contains("research"), "research is an internal entry")
+
+        // When availableModelIDs is empty, fall back to the CLI cache and still
+        // exclude hidden/internal entries.
+        let cacheConnection = CodexAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Cache Only",
+            relativeHomeDirectory: relative,
+            authenticationState: .connected,
+            isEnabled: true,
+            usage: nil,
+            availableModelIDs: [],
+            createdAt: Date()
+        )
+        let cacheSlugs = GatewayStore.codexServableSlugs(from: cacheConnection, runtimesRoot: runtimesRoot)
+        XCTAssertEqual(cacheSlugs, ["gpt-5.6-sol", "gpt-brand-new"])
+        XCTAssertFalse(cacheSlugs.contains("gpt-reserve"))
+        XCTAssertFalse(cacheSlugs.contains("codex-auto-review"))
     }
 
     func testHermesGatewayConfigurationUsesOfficialCustomProviderContractAndVerifiesWrites() throws {

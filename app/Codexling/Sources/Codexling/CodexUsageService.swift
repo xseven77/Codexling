@@ -41,7 +41,12 @@ actor CodexUsageService {
     private let subscriptionsURL = URL(string: "https://chatgpt.com/backend-api/subscriptions")!
     private let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     private let redirectURI = "http://localhost:1455/auth/callback"
-    private let scopes = ["openid", "email", "profile", "offline_access"]
+    // Request the platform Responses-API scope alongside the identity scopes so
+    // the access token can call the OpenAI API directly (like Gemini's token
+    // does for the Gemini API). Without `api.responses.write` the token is
+    // chatgpt.com-scoped only, which forces the gateway to shell out to the
+    // local `codex` CLI to exchange the session for an API-capable token.
+    private let scopes = ["openid", "email", "profile", "offline_access", "api.responses.write"]
     private let tokenStore: CodexOAuthTokenStore
     private var activeOAuthCallbackServer: OAuthCallbackServer?
     private var oauthCancellationRequested = false
