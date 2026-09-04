@@ -7,10 +7,10 @@ final class AgentHookManagerTests: XCTestCase {
         let manager = AgentHookManager(homeDirectory: FileManager.default.temporaryDirectory)
         let statuses = manager.integrationStatuses()
 
-        XCTAssertEqual(statuses.map(\.name), ["Codex", "Deepseek Harness", "Hermes", "Antigravity"])
+        XCTAssertEqual(statuses.map(\.name), ["Codex", "Deepseek Harness", "Hermes", "Antigravity", "Pi"])
         XCTAssertEqual(
             statuses.map(\.detail),
-            ["App Server · 本地活动", "Session JSONL · 会话读取", "Gateway JSON-RPC · 会话读取", "Transcript JSONL · 本地活动"]
+            ["App Server · 本地活动", "Session JSONL · 会话读取", "Gateway JSON-RPC · 会话读取", "Transcript JSONL · 本地活动", "Session JSONL · 会话读取"]
         )
     }
 
@@ -232,7 +232,7 @@ final class AgentHookManagerTests: XCTestCase {
     }
 
     func testAgentInstallGuideCatalogProvidesCompleteGuidesForAllAgents() {
-        let agentIDs: [AgentID] = [.codex, .deepseekHarness, .hermes, .antigravity]
+        let agentIDs: [AgentID] = [.codex, .deepseekHarness, .hermes, .antigravity, .pi]
         for id in agentIDs {
             let guide = AgentInstallGuideCatalog.guide(for: id)
             XCTAssertFalse(guide.name.isEmpty, "Name should not be empty for \(id)")

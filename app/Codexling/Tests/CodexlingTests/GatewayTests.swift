@@ -281,7 +281,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(store.openAIBaseURL, "http://127.0.0.1:58349/v1")
         XCTAssertEqual(store.anthropicBaseURL, "http://127.0.0.1:58349")
         XCTAssertFalse(store.localToken.isEmpty)
-        XCTAssertEqual(store.agentRows.count, 4)
+        XCTAssertEqual(store.agentRows.count, 5)
         XCTAssertTrue(store.requestsList.isEmpty)
 
         // Test Codex group has GPT-5 models
@@ -325,13 +325,24 @@ final class GatewayTests: XCTestCase {
         statsStore.tick(now: now.addingTimeInterval(120))
         statsStore.setActivityState(.idle, agentID: nil, now: now.addingTimeInterval(120))
 
+        statsStore.setActivityState(.executing, agentID: "hermes", now: now.addingTimeInterval(120))
+        statsStore.tick(now: now.addingTimeInterval(180))
+        statsStore.tick(now: now.addingTimeInterval(240))
+        statsStore.setActivityState(.idle, agentID: nil, now: now.addingTimeInterval(240))
+
         let store = GatewayStore(companionStatsStore: statsStore)
         let rows = store.agentRows
         let codexRow = rows.first { $0.id == "codex" }
         let agRow = rows.first { $0.id == "antigravity" }
+        let hermesRow = rows.first { $0.id == "hermes" }
+        let dshRow = rows.first { $0.id == "dsh" }
+        let piRow = rows.first { $0.id == "pi" }
 
         XCTAssertEqual(codexRow?.durationText, "0 分钟")
         XCTAssertEqual(agRow?.durationText, "2 分钟")
+        XCTAssertEqual(hermesRow?.durationText, "2 分钟")
+        XCTAssertEqual(dshRow?.durationText, "0 分钟")
+        XCTAssertEqual(piRow?.durationText, "0 分钟")
     }
 
     func testGatewayWindowControllerProperties() {

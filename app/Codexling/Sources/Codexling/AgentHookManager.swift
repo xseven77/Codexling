@@ -189,6 +189,39 @@ enum AgentInstallGuideCatalog {
                 documentationURLString: "https://antigravity.google.com"
             )
 
+        case .pi:
+            return AgentInstallGuide(
+                agentID: .pi,
+                name: "Pi",
+                tagline: "极简、快速且可扩展的开源 AI Coding Agent",
+                summary: "Pi（@earendil-works/pi-coding-agent）是专为终端打造的高效开源编程智能体，内置 read、bash、edit、write 等工具。Codexling 实时解析本地 Session 日志，无侵入同步任务与活动状态。",
+                integrationMechanism: "通过读取 ~/.pi/agent/sessions 下的会话 JSONL 实现无缝状态同步。",
+                methods: [
+                    AgentInstallMethod(
+                        title: "npm 全局安装 (推荐)",
+                        kind: .command,
+                        command: "npm install -g @earendil-works/pi-coding-agent",
+                        urlString: nil,
+                        note: "安装后将在终端提供 pi 命令行工具。"
+                    ),
+                    AgentInstallMethod(
+                        title: "pnpm 全局安装",
+                        kind: .command,
+                        command: "pnpm add -g @earendil-works/pi-coding-agent",
+                        urlString: nil,
+                        note: "使用 pnpm 包管理器全局安装。"
+                    ),
+                    AgentInstallMethod(
+                        title: "bun 全局安装",
+                        kind: .command,
+                        command: "bun add -g @earendil-works/pi-coding-agent",
+                        urlString: nil,
+                        note: "使用 bun 包管理器快速全局安装。"
+                    )
+                ],
+                documentationURLString: "https://github.com/earendil-works/pi"
+            )
+
         default:
             return AgentInstallGuide(
                 agentID: agentID,
@@ -210,6 +243,7 @@ enum AgentInstallGuideCatalog {
 /// - Deepseek Harness：读取 ~/.dsh/sessions 下的 session JSONL
 /// - Hermes：Gateway JSON-RPC（session.list / session.active_list 等）
 /// - Antigravity：读取 ~/.gemini/antigravity 下的 transcript JSONL
+/// - Pi：读取 ~/.pi/agent/sessions 下的 session JSONL
 struct AgentHookManager {
     let fileManager: FileManager
     let homeDirectory: URL
@@ -253,6 +287,8 @@ struct AgentHookManager {
             return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".hermes").path)
         case .antigravity:
             return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".gemini/antigravity").path)
+        case .pi:
+            return fileManager.fileExists(atPath: homeDirectory.appendingPathComponent(".pi").path)
         default:
             return false
         }
@@ -337,6 +373,7 @@ struct AgentHookManager {
         case .hermes: executable = "hermes"
         case .deepseekHarness: executable = "dsh"
         case .antigravity: executable = "agy"
+        case .pi: executable = "pi"
         default: return nil
         }
 
@@ -387,8 +424,8 @@ struct AgentHookManager {
                 "/Applications/Antigravity.app",
                 homeDirectory.appendingPathComponent("Applications/Antigravity.app").path,
             ]
-        case .deepseekHarness:
-            // Deepseek Harness 是 npx/npm 分发的 CLI，无独立 macOS .app。
+        case .deepseekHarness, .pi:
+            // Deepseek Harness 与 Pi 是 npm/npx 等分发的 CLI 工具，无独立 macOS .app。
             paths = []
         default:
             paths = []
@@ -402,6 +439,7 @@ struct AgentHookManager {
         case .hermes: "Gateway JSON-RPC · 会话读取"
         case .deepseekHarness: "Session JSONL · 会话读取"
         case .antigravity: "Transcript JSONL · 本地活动"
+        case .pi: "Session JSONL · 会话读取"
         default: ""
         }
     }

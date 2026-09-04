@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if task.id.hasPrefix("antigravity:") { return "antigravity" }
                     if task.id.hasPrefix("dsh:") { return "dsh" }
                     if task.id.hasPrefix("hermes:") { return "hermes" }
+                    if task.id.hasPrefix("pi:") { return "pi" }
                     return "codex"
                 }
                 return nil

@@ -10,6 +10,7 @@ final class MultiAgentModelsTests: XCTestCase {
                 .init(agentID: .deepseekHarness, surface: .deepseekHarnessCLI),
                 .init(agentID: .hermes, surface: .hermesCLI),
                 .init(agentID: .antigravity, surface: .antigravityDesktop),
+                .init(agentID: .pi, surface: .piCLI),
             ]
         )
     }
@@ -24,11 +25,15 @@ final class MultiAgentModelsTests: XCTestCase {
         let hermes = try XCTUnwrap(
             BuiltInAgentCatalog.prioritized.first(where: { $0.id == .hermes })
         )
+        let pi = try XCTUnwrap(
+            BuiltInAgentCatalog.prioritized.first(where: { $0.id == .pi })
+        )
 
         XCTAssertTrue(codex.surfaces.contains(.codexCLI))
         XCTAssertTrue(codex.surfaces.contains(.codexDesktop))
         XCTAssertEqual(dsh.surfaces, [.deepseekHarnessCLI])
         XCTAssertEqual(hermes.surfaces, [.hermesCLI])
+        XCTAssertEqual(pi.surfaces, [.piCLI])
     }
 
     func testSameVendorSessionIDDoesNotCollideAcrossCodexAccounts() {

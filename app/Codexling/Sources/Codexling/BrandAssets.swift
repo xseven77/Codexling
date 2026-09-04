@@ -17,6 +17,7 @@ enum BrandAssetID: String, Sendable {
         case .hermes: .hermesAgent
         case .deepseekHarness: .deepSeek
         case .antigravity: .antigravity
+        case .pi: .piAgent
         default: .codex
         }
     }

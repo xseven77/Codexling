@@ -777,6 +777,7 @@ final class CodexActivityStore {
     private let dshService: DSHActivityService
     private let hermesService: HermesActivityService
     private let antigravityService: AntigravityActivityService
+    private let piService: PiActivityService
     private var baseSnapshot = CodexActivitySnapshot.unavailable
     private var agentEventReducer = AgentEventActivityReducer()
     private var timer: Timer?
@@ -787,12 +788,14 @@ final class CodexActivityStore {
         codexService: CodexActivityService = CodexActivityService(),
         dshService: DSHActivityService = DSHActivityService(),
         hermesService: HermesActivityService = HermesActivityService(),
-        antigravityService: AntigravityActivityService = AntigravityActivityService()
+        antigravityService: AntigravityActivityService = AntigravityActivityService(),
+        piService: PiActivityService = PiActivityService()
     ) {
         self.codexService = codexService
         self.dshService = dshService
         self.hermesService = hermesService
         self.antigravityService = antigravityService
+        self.piService = piService
     }
 
     func start() {
@@ -823,6 +826,7 @@ final class CodexActivityStore {
         let dshService = self.dshService
         let hermesService = self.hermesService
         let antigravityService = self.antigravityService
+        let piService = self.piService
         refreshTask = Task { [weak self] in
             let next = await Task.detached {
                 CodexActivitySnapshot.merged([
@@ -830,6 +834,7 @@ final class CodexActivityStore {
                     dshService.loadSnapshot(),
                     hermesService.loadSnapshot(),
                     antigravityService.loadSnapshot(),
+                    piService.loadSnapshot(),
                 ])
             }.value
             guard !Task.isCancelled, let self else { return }

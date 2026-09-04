@@ -1808,7 +1808,7 @@ public final class GatewayStore {
     // 维度一计算属性：本地 Agent 伴侣活动
     // ----------------------------------------------------
     public var todayCompanionDurationText: String {
-        let minutes = companionStatsStore?.todayMinutes ?? 0
+        let minutes = (companionStatsStore ?? CompanionStatsStore()).todayMinutes
         if minutes == 0 {
             return "0 分钟 (今日活动)"
         }
@@ -1831,7 +1831,7 @@ public final class GatewayStore {
         // 1. Google Antigravity
         let agTasks = tasks.filter { $0.id.hasPrefix("antigravity:") }
         let agIsActive = agTasks.contains { $0.state.showsActivityWave } || !agTasks.isEmpty
-        let agTodaySeconds = companionStatsStore?.seconds(for: "antigravity") ?? 0
+        let agTodaySeconds = companionStatsStore?.seconds(for: "antigravity") ?? CompanionStatsStore().seconds(for: "antigravity")
         let agDuration = Self.formatDuration(seconds: agTodaySeconds)
         let agTodayTasks = AntigravityActivityService().countTodaySessions()
         let agDetail = agTasks.first?.detail ?? (agTodayTasks > 0 ? "今日已交互 \(agTodayTasks) 个会话" : "当前空闲")
@@ -1851,10 +1851,11 @@ public final class GatewayStore {
         let codexTasks = tasks.filter {
             !$0.id.hasPrefix("antigravity:") &&
             !$0.id.hasPrefix("dsh:") &&
-            !$0.id.hasPrefix("hermes:")
+            !$0.id.hasPrefix("hermes:") &&
+            !$0.id.hasPrefix("pi:")
         }
         let codexIsActive = codexTasks.contains { $0.state.showsActivityWave }
-        let codexTodaySeconds = companionStatsStore?.seconds(for: "codex") ?? 0
+        let codexTodaySeconds = companionStatsStore?.seconds(for: "codex") ?? CompanionStatsStore().seconds(for: "codex")
         let codexDuration = Self.formatDuration(seconds: codexTodaySeconds)
         let codexTodayTasks = CodexActivityService().countTodayThreads()
         let codexDetail = codexTasks.first?.detail ?? (codexTodayTasks > 0 ? "今日已交互 \(codexTodayTasks) 个任务" : "当前空闲")
@@ -1873,32 +1874,58 @@ public final class GatewayStore {
         // 3. Deepseek Harness (CLI)
         let dshTasks = tasks.filter { $0.id.hasPrefix("dsh:") }
         let dshIsActive = dshTasks.contains { $0.state.showsActivityWave }
+        let dshTodaySeconds = companionStatsStore?.seconds(for: "dsh") ?? CompanionStatsStore().seconds(for: "dsh")
+        let dshDuration = Self.formatDuration(seconds: dshTodaySeconds)
+        let dshTodayTasks = DSHActivityService().countTodaySessions()
+        let dshDetail = dshTasks.first?.detail ?? (dshTodayTasks > 0 ? "今日已交互 \(dshTodayTasks) 个会话" : "当前空闲")
         let dshRow = GatewayAgentWorkRow(
             id: "dsh",
             agentName: "Deepseek Harness (CLI)",
             iconName: "bolt.horizontal.circle",
             hookPath: "~/.dsh/sessions",
-            durationText: "0 分钟",
-            tasksCount: dshTasks.count,
+            durationText: dshDuration,
+            tasksCount: max(dshTasks.count, dshTodayTasks),
             statusBadge: dshIsActive ? "运行中" : "空闲",
-            detailText: "当前空闲"
+            detailText: dshDetail
         )
 
         // 4. Hermes Agent
         let hermesTasks = tasks.filter { $0.id.hasPrefix("hermes:") }
         let hermesIsActive = hermesTasks.contains { $0.state.showsActivityWave }
+        let hermesTodaySeconds = companionStatsStore?.seconds(for: "hermes") ?? CompanionStatsStore().seconds(for: "hermes")
+        let hermesDuration = Self.formatDuration(seconds: hermesTodaySeconds)
+        let hermesTodayTasks = HermesActivityService().countTodaySessions()
+        let hermesDetail = hermesTasks.first?.detail ?? (hermesTodayTasks > 0 ? "今日已交互 \(hermesTodayTasks) 个会话" : "当前空闲")
         let hermesRow = GatewayAgentWorkRow(
             id: "hermes",
             agentName: "Hermes Agent",
             iconName: "cube.transparent",
             hookPath: "~/.hermes",
-            durationText: "0 分钟",
-            tasksCount: hermesTasks.count,
+            durationText: hermesDuration,
+            tasksCount: max(hermesTasks.count, hermesTodayTasks),
             statusBadge: hermesIsActive ? "运行中" : "空闲",
-            detailText: "当前空闲"
+            detailText: hermesDetail
         )
 
-        return [agRow, codexRow, dshRow, hermesRow]
+        // 5. Pi (CLI)
+        let piTasks = tasks.filter { $0.id.hasPrefix("pi:") }
+        let piIsActive = piTasks.contains { $0.state.showsActivityWave }
+        let piTodaySeconds = companionStatsStore?.seconds(for: "pi") ?? CompanionStatsStore().seconds(for: "pi")
+        let piDuration = Self.formatDuration(seconds: piTodaySeconds)
+        let piTodayTasks = PiActivityService().countTodaySessions()
+        let piDetail = piTasks.first?.detail ?? (piTodayTasks > 0 ? "今日已交互 \(piTodayTasks) 个会话" : "当前空闲")
+        let piRow = GatewayAgentWorkRow(
+            id: "pi",
+            agentName: "Pi (CLI)",
+            iconName: "terminal",
+            hookPath: "~/.pi/agent/sessions",
+            durationText: piDuration,
+            tasksCount: max(piTasks.count, piTodayTasks),
+            statusBadge: piIsActive ? "运行中" : "空闲",
+            detailText: piDetail
+        )
+
+        return [agRow, codexRow, dshRow, hermesRow, piRow]
     }
 
     public var agentRows: [GatewayAgentWorkRow] {

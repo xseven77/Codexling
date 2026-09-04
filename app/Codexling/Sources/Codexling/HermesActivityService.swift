@@ -55,6 +55,38 @@ struct HermesActivityService: Sendable {
         )
     }
 
+    func countTodaySessions(now: Date = Date(), calendar: Calendar = .current) -> Int {
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return 0 }
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            databaseURL.path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+            nil
+        ) == SQLITE_OK, let database else {
+            return 0
+        }
+        defer { sqlite3_close(database) }
+
+        let startOfDay = calendar.startOfDay(for: now).timeIntervalSince1970
+        let sql = """
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE (last_activity_at >= ? OR started_at >= ?) AND archived = 0
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_double(statement, 1, startOfDay)
+        sqlite3_bind_double(statement, 2, startOfDay)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
     struct Session {
         let id: String
         let title: String

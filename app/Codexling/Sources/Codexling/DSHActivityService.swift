@@ -99,6 +99,33 @@ struct DSHActivityService: Sendable {
         return candidates.max { $0.modifiedAt < $1.modifiedAt }
     }
 
+    func countTodaySessions(now: Date = Date(), calendar: Calendar = .current) -> Int {
+        var count = 0
+        let workspaceDirs = (try? FileManager.default.contentsOfDirectory(
+            at: sessionsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for workspace in workspaceDirs {
+            let sessionDirs = (try? FileManager.default.contentsOfDirectory(
+                at: workspace,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for sessionDir in sessionDirs {
+                let file = sessionDir.appendingPathComponent("session.jsonl.zstd")
+                guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                if calendar.isDateInToday(modified) {
+                    count += 1
+                }
+            }
+        }
+        return count
+    }
+
     // MARK: - zstd tail decompression
 
     func decompressedTailText(of url: URL, maxFrames: Int = 64) -> String? {
