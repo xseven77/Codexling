@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_codex_only_catalog_servable_models_and_rejects_others() {
+    fn routes_codex_catalog_models_and_passes_through_new_models() {
         let home = temporary_home();
         let support = home.join("Library/Application Support/Codexling");
         let codex_home = support.join("Runtimes/Codex/abc123-def456");
@@ -798,27 +798,34 @@ mod tests {
         assert_eq!(ep_wm.provider_name, "OpenAI / Codex");
         assert_eq!(ep_wm.target_model, "gpt-5.6-sol");
 
-        // A ChatGPT-only model (e.g. `gpt-5-6-t-mini`) is rejected with a clear
-        // error instead of being passed to the CLI for a confusing 400.
-        let err = match GatewayServer::resolve_upstream_endpoint_for_home(
+        // Newly released models not yet in local cache (e.g. `gpt-6-astra`) pass through
+        // directly to the CLI instead of being blocked by a hardcoded gateway whitelist.
+        let ep_new = GatewayServer::resolve_upstream_endpoint_for_home(
             home_str,
-            "gpt-5-6-t-mini@x-seven-openai",
-        ) {
-            Ok(_) => panic!("expected an error for gpt-5-6-t-mini"),
-            Err(e) => e,
-        };
-        assert!(err.contains("不支持模型 [gpt-5-6-t-mini]"), "got: {err}");
-        assert!(err.contains("gpt-5.6-sol"), "got: {err}");
+            "gpt-6-astra@x-seven-openai",
+        )
+        .unwrap();
+        assert_eq!(ep_new.provider_name, "OpenAI / Codex");
+        assert_eq!(ep_new.target_model, "gpt-6-astra");
 
-        // A dash-form ChatGPT model (`gpt-5-5`) is not servable either.
-        let err2 = match GatewayServer::resolve_upstream_endpoint_for_home(
+        // Newly released model with `-wm` suffix also normalizes properly.
+        let ep_new_wm = GatewayServer::resolve_upstream_endpoint_for_home(
             home_str,
-            "gpt-5-5@x-seven-openai",
+            "gpt-6-astra-wm@x-seven-openai",
+        )
+        .unwrap();
+        assert_eq!(ep_new_wm.provider_name, "OpenAI / Codex");
+        assert_eq!(ep_new_wm.target_model, "gpt-6-astra");
+
+        // Empty model is rejected.
+        let err_empty = match GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "@x-seven-openai",
         ) {
-            Ok(_) => panic!("expected an error for gpt-5-5"),
+            Ok(_) => panic!("expected an error for empty model"),
             Err(e) => e,
         };
-        assert!(err2.contains("不支持模型 [gpt-5-5]"), "got: {err2}");
+        assert!(err_empty.contains("不支持模型"), "got: {err_empty}");
 
         fs::remove_dir_all(home).unwrap();
     }
@@ -1261,6 +1268,77 @@ mod tests {
 
         // 无 usageMetadata 时返回 None，让调用方回退到估算并标注 estimated。
         assert_eq!(GatewayServer::gemini_usage_metadata(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn test_gemini_thinking_budget_mappings() {
+        // 1. OpenAI reasoning_effort mappings
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "none"})),
+            Some(0)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "disabled"})),
+            Some(0)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "off"})),
+            Some(0)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "low"})),
+            Some(1024)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "medium"})),
+            Some(2048)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": "high"})),
+            Some(8192)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"reasoning_effort": 512})),
+            Some(512)
+        );
+
+        // 2. Anthropic thinking object mappings
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"thinking": {"type": "disabled"}})),
+            Some(0)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"thinking": {"type": "enabled", "budget_tokens": 3072}})),
+            Some(3072)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"thinking": false})),
+            Some(0)
+        );
+
+        // 3. Direct thinking_budget / thinkingBudget
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"thinking_budget": 1200})),
+            Some(1200)
+        );
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({"thinkingBudget": 2400})),
+            Some(2400)
+        );
+
+        // 4. Nested thinkingConfig
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({
+                "thinkingConfig": {"thinkingBudget": 4096}
+            })),
+            Some(4096)
+        );
+
+        // 5. None when not specified
+        assert_eq!(
+            GatewayServer::gemini_thinking_budget(&serde_json::json!({})),
+            None
+        );
     }
 
     #[test]
@@ -2147,11 +2225,12 @@ impl GatewayServer {
                 Ok(u) => {
                     let is_consolidated = u.routing_mode == "consolidated";
                     if let Some(codex_home) = u.codex_home.clone() {
-                        return self.proxy_codex_subscription(
+                        return self.proxy_codex_http(
                             &agent,
                             requested_model,
                             &u,
                             &codex_home,
+                            &raw_req,
                             &clean_messages,
                             is_stream,
                             now_unix,
@@ -2199,6 +2278,12 @@ impl GatewayServer {
                     }
                     if let Some(tc) = raw_req.get("tool_choice") {
                         payload["tool_choice"] = tc.clone();
+                    }
+                    if let Some(re) = raw_req.get("reasoning_effort") {
+                        payload["reasoning_effort"] = re.clone();
+                    }
+                    if let Some(th) = raw_req.get("thinking") {
+                        payload["thinking"] = th.clone();
                     }
 
                     let payload_str = payload.to_string();
@@ -2725,6 +2810,14 @@ impl GatewayServer {
             .or_else(|| raw_req.get("max_completion_tokens"))
         {
             generation.insert("maxOutputTokens".into(), value.clone());
+        }
+        if let Some(budget) = Self::gemini_thinking_budget(raw_req) {
+            generation.insert(
+                "thinkingConfig".into(),
+                serde_json::json!({
+                    "thinkingBudget": budget
+                }),
+            );
         }
         if !generation.is_empty() {
             generation_request["generationConfig"] = serde_json::Value::Object(generation);
@@ -3343,6 +3436,72 @@ impl GatewayServer {
         Some(message)
     }
 
+    /// Extract or map an incoming thinking/reasoning budget for Gemini's `thinkingConfig`.
+    /// Supports OpenAI's `reasoning_effort` ("none" -> 0, "low" -> 1024, "medium" -> 2048, "high" -> 8192),
+    /// Anthropic's `thinking` object ({"type":"disabled"} -> 0, {"budget_tokens":N} -> N),
+    /// and Gemini native `thinking_budget` / `thinkingBudget` / `thinkingConfig.thinkingBudget`.
+    pub(crate) fn gemini_thinking_budget(raw_req: &serde_json::Value) -> Option<i64> {
+        // 1. OpenAI reasoning_effort
+        if let Some(re) = raw_req.get("reasoning_effort") {
+            if let Some(s) = re.as_str() {
+                let trimmed = s.trim().to_lowercase();
+                match trimmed.as_str() {
+                    "none" | "off" | "disabled" => return Some(0),
+                    "low" => return Some(1024),
+                    "medium" => return Some(2048),
+                    "high" => return Some(8192),
+                    _ => {
+                        if let Ok(num) = trimmed.parse::<i64>() {
+                            return Some(num);
+                        }
+                    }
+                }
+            } else if let Some(num) = re.as_i64() {
+                return Some(num);
+            }
+        }
+
+        // 2. Anthropic thinking block
+        if let Some(th) = raw_req.get("thinking") {
+            if let Some(obj) = th.as_object() {
+                if let Some(t) = obj.get("type").and_then(|v| v.as_str()) {
+                    if t.eq_ignore_ascii_case("disabled") {
+                        return Some(0);
+                    }
+                }
+                if let Some(budget) = obj.get("budget_tokens").and_then(|v| v.as_i64()) {
+                    return Some(budget);
+                }
+            } else if let Some(b) = th.as_bool() {
+                if !b {
+                    return Some(0);
+                }
+            }
+        }
+
+        // 3. Direct thinking_budget / thinkingBudget
+        if let Some(tb) = raw_req.get("thinking_budget").or_else(|| raw_req.get("thinkingBudget")) {
+            if let Some(num) = tb.as_i64() {
+                return Some(num);
+            } else if let Some(s) = tb.as_str() {
+                if let Ok(num) = s.trim().parse::<i64>() {
+                    return Some(num);
+                }
+            }
+        }
+
+        // 4. Nested thinkingConfig / thinking_config
+        if let Some(num) = raw_req
+            .pointer("/thinkingConfig/thinkingBudget")
+            .or_else(|| raw_req.pointer("/thinking_config/thinking_budget"))
+            .and_then(|v| v.as_i64())
+        {
+            return Some(num);
+        }
+
+        None
+    }
+
     /// Extract the real token usage from a Gemini `GenerateContentResponse`.
     /// Cloud Code wraps the response in an outer `response` object; plain
     /// Gemini API responses carry `usageMetadata` at the top level.
@@ -3375,16 +3534,17 @@ impl GatewayServer {
         Some((input, candidates + thoughts, cache_read, total))
     }
 
-    /// Bridge a ChatGPT/Codex subscription through the local Codex client.
-    /// This is deliberately a single-account process: `CODEX_HOME` is the
-    /// account's private runtime directory and no API key or other account is
-    /// ever consulted.
-    fn proxy_codex_subscription(
+    /// Bridge an OpenAI / Codex subscription directly through OpenAI's native
+    /// Responses API over HTTP/SSE (`https://chatgpt.com/backend-api/codex/responses`).
+    /// This bypasses any requirement for a local `codex` CLI binary and supports
+    /// native SSE streaming directly from OpenAI.
+    fn proxy_codex_http(
         &self,
         agent: &str,
         requested_model: &str,
         upstream: &UpstreamEndpoint,
         codex_home: &str,
+        raw_req: &serde_json::Value,
         messages: &[serde_json::Value],
         is_stream: bool,
         now_unix: u64,
@@ -3394,28 +3554,79 @@ impl GatewayServer {
     ) -> std::io::Result<bool> {
         let target_model = &upstream.target_model;
         let account_name = &upstream._account_name;
-        if let Err(message) = Self::prepare_codex_auth(codex_home) {
-            return Self::write_gateway_error(
-                stream,
-                requested_model,
-                is_stream,
-                now_unix,
-                &message,
-            );
+
+        let access_token = match Self::codex_oauth_access_token(codex_home) {
+            Ok(token) => token,
+            Err(error) => {
+                return Self::write_gateway_error(
+                    stream,
+                    requested_model,
+                    is_stream,
+                    now_unix,
+                    &error,
+                );
+            }
+        };
+
+        let mut input = Vec::new();
+        let mut instructions: Option<String> = None;
+
+        for message in messages {
+            let role = message
+                .get("role")
+                .and_then(|value| value.as_str())
+                .unwrap_or("user");
+            let content = message.get("content");
+
+            if role == "system" || role == "developer" {
+                if let Some(text) = Self::message_text(content) {
+                    if !text.trim().is_empty() {
+                        if instructions.is_none() {
+                            instructions = Some(text);
+                        } else {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "developer",
+                                "content": [{"type": "input_text", "text": text}]
+                            }));
+                        }
+                    }
+                }
+            } else if role == "user" {
+                if let Some(text) = Self::message_text(content) {
+                    input.push(serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}]
+                    }));
+                }
+            } else if role == "assistant" {
+                let mut parts = Vec::new();
+                if let Some(text) = Self::message_text(content) {
+                    if !text.trim().is_empty() {
+                        parts.push(serde_json::json!({"type": "output_text", "text": text}));
+                    }
+                }
+                if !parts.is_empty() {
+                    input.push(serde_json::json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": parts
+                    }));
+                }
+            } else if role == "tool" {
+                if let Some(call_id) = message.get("tool_call_id").and_then(|v| v.as_str()) {
+                    let output_text = Self::message_text(content).unwrap_or_default();
+                    input.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output_text
+                    }));
+                }
+            }
         }
 
-        let prompt = messages
-            .iter()
-            .filter_map(|message| {
-                let role = message
-                    .get("role")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("user");
-                Self::message_text(message.get("content")).map(|text| format!("{role}: {text}"))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if prompt.trim().is_empty() {
+        if input.is_empty() && instructions.is_none() {
             return Self::write_gateway_error(
                 stream,
                 requested_model,
@@ -3425,75 +3636,267 @@ impl GatewayServer {
             );
         }
 
-        let output_path = std::env::temp_dir().join(format!(
-            "codexling-gateway-{}-{}.txt",
-            std::process::id(),
-            now_unix
-        ));
-        let instruction = format!("Do not use tools. Answer the supplied conversation as a concise assistant response.\n\n{prompt}");
-        let result = std::process::Command::new("codex")
-            .env("CODEX_HOME", codex_home)
-            .arg("exec")
-            .arg("--ephemeral")
-            .arg("--skip-git-repo-check")
-            .arg("--sandbox")
-            .arg("read-only")
-            .arg("--output-last-message")
-            .arg(&output_path)
-            .arg("--model")
-            .arg(target_model)
-            .arg(instruction)
-            .output();
+        let mut payload = serde_json::json!({
+            "model": target_model,
+            "store": false,
+            "stream": true,
+            "input": input,
+        });
 
-        let answer = match result {
-            Ok(output) if output.status.success() => std::fs::read_to_string(&output_path)
-                .ok()
-                .filter(|text| !text.trim().is_empty()),
-            Ok(output) => {
-                let detail = String::from_utf8_lossy(&output.stderr);
-                let trimmed = detail.trim();
-                let message = if trimmed.is_empty() {
-                    "Codex 上游调用失败，未执行回退。"
-                } else {
-                    trimmed
-                };
-                None.or_else(|| Some(format!("[ERROR] {message}")))
+        if let Some(inst) = instructions {
+            payload["instructions"] = serde_json::json!(inst);
+        }
+
+        // Note: OpenAI Codex backend-api/codex/responses rejects `temperature` and `max_output_tokens`
+        // with "Unsupported parameter: ..." (HTTP 400). Do not forward them.
+
+        if let Some(tools) = raw_req.get("tools").and_then(|v| v.as_array()) {
+            let mut responses_tools = Vec::new();
+            for tool in tools {
+                if let Some(func) = tool.get("function") {
+                    let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let desc = func.get("description");
+                    let params = func.get("parameters").cloned().unwrap_or(serde_json::json!({}));
+                    let mut t = serde_json::json!({
+                        "type": "function",
+                        "name": name,
+                        "parameters": params,
+                    });
+                    if let Some(d) = desc {
+                        t["description"] = d.clone();
+                    }
+                    responses_tools.push(t);
+                }
             }
-            Err(error) => Some(format!("[ERROR] 无法启动本机 Codex 会话：{error}")),
-        };
-        let _ = std::fs::remove_file(&output_path);
+            if !responses_tools.is_empty() {
+                payload["tools"] = serde_json::Value::Array(responses_tools);
+            }
+        }
+        if let Some(re) = raw_req.get("reasoning_effort").and_then(|v| v.as_str()) {
+            payload["reasoning"] = serde_json::json!({
+                "effort": re
+            });
+        }
 
-        let Some(answer) = answer else {
+        let execute_stream = |token_to_use: &str| -> std::io::Result<(std::process::Child, std::process::ChildStdout)> {
+            let mut cmd = std::process::Command::new("curl");
+            cmd.arg("-sN")
+                .arg("--connect-timeout")
+                .arg("10")
+                .arg("--max-time")
+                .arg("300")
+                .arg("-X")
+                .arg("POST")
+                .arg("https://chatgpt.com/backend-api/codex/responses")
+                .arg("-H")
+                .arg(format!("Authorization: Bearer {token_to_use}"))
+                .arg("-H")
+                .arg("Content-Type: application/json")
+                .arg("-H")
+                .arg("Accept: text/event-stream")
+                .arg("-H")
+                .arg("User-Agent: codex_cli_rs/0.153.4 (Macos; arm64) codex_exec")
+                .arg("-H")
+                .arg("OpenAI-Beta: responses_websockets=2026-02-06")
+                .arg("--data-binary")
+                .arg("@-")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+
+            let mut child = cmd.spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(payload.to_string().as_bytes());
+            }
+            let stdout = child.stdout.take().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture curl stdout")
+            })?;
+            Ok((child, stdout))
+        };
+
+        let (mut child, stdout) = match execute_stream(&access_token) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Self::write_gateway_error(
+                    stream,
+                    requested_model,
+                    is_stream,
+                    now_unix,
+                    &format!("无法启动网络连接：{e}"),
+                );
+            }
+        };
+
+        use std::io::{BufRead, BufReader, Write};
+        let mut reader = BufReader::new(stdout);
+        let mut first_line = String::new();
+        let _ = reader.read_line(&mut first_line);
+
+        let trimmed_first = first_line.trim();
+        if trimmed_first.starts_with('{')
+            && (trimmed_first.contains("\"detail\"") || trimmed_first.contains("\"error\""))
+            && (trimmed_first.contains("Unauthorized") || trimmed_first.contains("token_expired"))
+        {
+            let _ = child.kill();
+            if let Ok(new_token) = Self::force_refresh_codex_token(codex_home) {
+                if let Ok((new_child, new_stdout)) = execute_stream(&new_token) {
+                    child = new_child;
+                    reader = BufReader::new(new_stdout);
+                    first_line.clear();
+                    let _ = reader.read_line(&mut first_line);
+                }
+            }
+        }
+
+        let trimmed_first = first_line.trim();
+        if trimmed_first.starts_with('{')
+            && (trimmed_first.contains("\"detail\"") || trimmed_first.contains("\"error\""))
+        {
+            let _ = child.kill();
+            let err_msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed_first) {
+                v.get("detail")
+                    .and_then(|d| d.as_str())
+                    .or_else(|| v.pointer("/error/message").and_then(|m| m.as_str()))
+                    .unwrap_or(trimmed_first)
+                    .to_string()
+            } else {
+                trimmed_first.to_string()
+            };
             return Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
-                "Codex 上游未返回回答；未执行回退。",
+                &err_msg,
             );
+        }
+
+        let mut header_sent = false;
+        let mut accumulated_text = String::new();
+        let mut input_tokens = (messages.len() * 10) as i64;
+        let mut output_tokens = 0i64;
+
+        let mut process_data_line = |data_json: &str, s: &mut TcpStream| -> std::io::Result<()> {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data_json) {
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "response.output_text.delta" {
+                    if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                        accumulated_text.push_str(delta);
+                        if is_stream {
+                            if !header_sent {
+                                let hdr = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n",
+                                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
+                                );
+                                s.write_all(hdr.as_bytes())?;
+                                header_sent = true;
+                            }
+                            let chunk = serde_json::json!({
+                                "id": "resp_codex",
+                                "object": "chat.completion.chunk",
+                                "created": now_unix,
+                                "model": requested_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {
+                                        "role": "assistant",
+                                        "content": delta
+                                    },
+                                    "finish_reason": serde_json::Value::Null
+                                }]
+                            });
+                            s.write_all(format!("data: {chunk}\n\n").as_bytes())?;
+                            s.flush()?;
+                        }
+                    }
+                } else if event_type == "response.completed" {
+                    if let Some(usage) = event.pointer("/response/usage") {
+                        if let Some(in_t) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+                            input_tokens = in_t;
+                        }
+                        if let Some(out_t) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
+                            output_tokens = out_t;
+                        }
+                    }
+                }
+            }
+            Ok(())
         };
-        if let Some(error) = answer.strip_prefix("[ERROR] ") {
-            return Self::write_gateway_error(stream, requested_model, is_stream, now_unix, error);
+
+        if trimmed_first.starts_with("data:") {
+            let data_part = trimmed_first[5..].trim();
+            process_data_line(data_part, stream)?;
+        }
+
+        let mut line_buf = String::new();
+        while let Ok(n) = reader.read_line(&mut line_buf) {
+            if n == 0 {
+                break;
+            }
+            let trimmed = line_buf.trim();
+            if trimmed.starts_with("data:") {
+                let data_part = trimmed[5..].trim();
+                process_data_line(data_part, stream)?;
+            }
+            line_buf.clear();
+        }
+
+        let _ = child.wait();
+
+        if is_stream {
+            if !header_sent {
+                let hdr = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n",
+                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
+                );
+                stream.write_all(hdr.as_bytes())?;
+            }
+            let stop_chunk = serde_json::json!({
+                "id": "resp_codex",
+                "object": "chat.completion.chunk",
+                "created": now_unix,
+                "model": requested_model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            });
+            stream.write_all(format!("data: {stop_chunk}\n\ndata: [DONE]\n\n").as_bytes())?;
+            stream.flush()?;
+        } else {
+            let resp = serde_json::json!({
+                "id": "resp_codex",
+                "object": "chat.completion",
+                "created": now_unix,
+                "model": requested_model,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": accumulated_text
+                    },
+                    "finish_reason": "stop"
+                }]
+            });
+            let body = resp.to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+                upstream.connection_id,
+                upstream.quota_score,
+                upstream.routing_mode
+            );
+            stream.write_all(header.as_bytes())?;
+            stream.flush()?;
         }
 
         let latency_ms = start_time.elapsed().as_millis() as u64;
-        let escaped_answer =
-            serde_json::to_string(&answer).unwrap_or_else(|_| "\"Codex 输出无法编码\"".into());
-        let response = if is_stream {
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"resp_codex\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
-                upstream.connection_id, upstream.quota_score, upstream.routing_mode,
-                model = serde_json::to_string(requested_model).unwrap(), answer = escaped_answer,
-            )
-        } else {
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{{\"id\":\"resp_codex\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":{answer}}},\"finish_reason\":\"stop\"}}]}}",
-                upstream.connection_id, upstream.quota_score, upstream.routing_mode,
-                model = serde_json::to_string(requested_model).unwrap(), answer = escaped_answer,
-            )
-        };
-        stream.write_all(response.as_bytes())?;
-        stream.flush()?;
+        if output_tokens == 0 {
+            output_tokens = (accumulated_text.len() / 4).max(1) as i64;
+        }
+
         if let Ok(mut lock) = self.recent_requests.lock() {
             lock.push_front(GatewayRequestRecord {
                 id: format!("req_{}_{}", now_unix, requested_model.replace(' ', "_")),
@@ -3505,8 +3908,8 @@ impl GatewayServer {
                 target_model: target_model.into(),
                 latency_ms,
                 ttft_ms: latency_ms,
-                tokens: (answer.len() / 4).max(1),
-                fidelity: "100%".into(),
+                tokens: output_tokens as usize,
+                fidelity: "native".into(),
                 status: "200 OK".into(),
             });
         }
@@ -3519,26 +3922,146 @@ impl GatewayServer {
             account: account_name.into(),
             model_alias: requested_model.into(),
             target_model: target_model.into(),
-            input_tokens: Some((messages.len() * 10) as i64),
-            output_tokens: Some(((answer.len() / 4).max(1)) as i64),
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
             cache_read_tokens: None,
             cache_write_tokens: None,
-            total_tokens: Some(((messages.len() * 10) + (answer.len() / 4).max(1)) as i64),
+            total_tokens: Some(input_tokens + output_tokens),
             latency_ms: latency_ms as i64,
             ttft_ms: latency_ms as i64,
             status_code: 200,
             status: "success".into(),
             error_category: None,
-            // The Codex CLI bridge does not report token usage, so these
-            // counts are rough character/message estimates and must not be
-            // presented as measured data.
-            fidelity: "estimated".into(),
+            fidelity: "native".into(),
             is_stream,
             tool_calls_count: 0,
             estimated_cost: None,
             currency: None,
         });
         Ok(true)
+    }
+
+    fn codex_oauth_access_token(codex_home: &str) -> Result<String, String> {
+        let home = std::path::Path::new(codex_home);
+        let path = home.join("oauth_token.json");
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|_| "Codex 账号会话文件不存在；请在 Codexling 中检查登录状态。".to_string())?;
+        let token: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| "Codex 账号会话文件格式无效。".to_string())?;
+
+        let existing_access = token
+            .get("accessToken")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string);
+
+        if existing_access.is_some() && Self::codex_access_token_is_fresh(&token) {
+            return Ok(existing_access.unwrap());
+        }
+
+        if let Ok(new_token) = Self::force_refresh_codex_token(codex_home) {
+            return Ok(new_token);
+        }
+
+        existing_access.ok_or_else(|| "Codex OAuth access token 不存在；请重新登录".to_string())
+    }
+
+    fn codex_access_token_is_fresh(token: &serde_json::Value) -> bool {
+        let Some(expires_at) = token.get("expiresAt").and_then(|value| value.as_str()) else {
+            return true;
+        };
+        let Some(expires_unix) = Self::parse_rfc3339_utc(expires_at) else {
+            return true;
+        };
+        let now_unix = Self::current_unix_seconds();
+        expires_unix.saturating_sub(now_unix) >= 60
+    }
+
+    fn force_refresh_codex_token(codex_home: &str) -> Result<String, String> {
+        let home = std::path::Path::new(codex_home);
+        let path = home.join("oauth_token.json");
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|_| "Codex 账号会话文件不存在。".to_string())?;
+        let token: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| "Codex 账号会话文件格式无效。".to_string())?;
+        let refresh_token = token
+            .get("refreshToken")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| "Codex refresh token 不存在".to_string())?;
+
+        let refreshed = Self::refresh_codex_oauth_token(refresh_token)?;
+        if let Some(new_access) = refreshed.get("access_token").and_then(|v| v.as_str()) {
+            let mut updated = token.clone();
+            updated["accessToken"] = serde_json::json!(new_access);
+            if let Some(new_refresh) = refreshed.get("refresh_token").and_then(|v| v.as_str()) {
+                if !new_refresh.is_empty() {
+                    updated["refreshToken"] = serde_json::json!(new_refresh);
+                }
+            }
+            if let Some(new_id) = refreshed.get("id_token").and_then(|v| v.as_str()) {
+                updated["idToken"] = serde_json::json!(new_id);
+            }
+            let expires_in = refreshed
+                .get("expires_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(86400);
+            let expires_unix = Self::current_unix_seconds() + expires_in as i64;
+            updated["expiresAt"] = serde_json::json!(Self::format_rfc3339_utc(expires_unix));
+            let _ = Self::persist_codex_oauth_token(&path, &updated);
+            return Ok(new_access.to_string());
+        }
+        Err("OpenAI 未返回新的 access_token".to_string())
+    }
+
+    fn refresh_codex_oauth_token(refresh_token: &str) -> Result<serde_json::Value, String> {
+        let mut command = std::process::Command::new("curl");
+        command
+            .arg("-sS")
+            .arg("--connect-timeout")
+            .arg("10")
+            .arg("--max-time")
+            .arg("30")
+            .arg("-X")
+            .arg("POST")
+            .arg("https://auth.openai.com/oauth/token")
+            .arg("-H")
+            .arg("Content-Type: application/x-www-form-urlencoded")
+            .arg("--data-urlencode")
+            .arg("grant_type=refresh_token")
+            .arg("--data-urlencode")
+            .arg("client_id=app_EMoamEEZ73f0CkXaXp7hrann")
+            .arg("--data-urlencode")
+            .arg(format!("refresh_token={refresh_token}"));
+
+        let output = command
+            .output()
+            .map_err(|error| format!("could not start refresh helper: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("network helper failed: {}", stderr.trim()));
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|_| "OpenAI returned a non-JSON refresh response".to_string())
+    }
+
+    fn persist_codex_oauth_token(path: &std::path::Path, token: &serde_json::Value) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(token)
+            .map_err(|_| "could not encode refreshed OAuth credentials".to_string())?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temporary_path = format!("{}.refreshing-{}-{nonce}", path.display(), std::process::id());
+        std::fs::write(&temporary_path, encoded)
+            .map_err(|_| "could not save refreshed OAuth credentials".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&temporary_path, path)
+            .map_err(|_| "could not replace refreshed OAuth credentials".to_string())
     }
 
     fn message_text(content: Option<&serde_json::Value>) -> Option<String> {
@@ -3557,38 +4080,6 @@ impl GatewayServer {
             ),
             _ => None,
         }
-    }
-
-    fn prepare_codex_auth(codex_home: &str) -> Result<(), String> {
-        let home = std::path::Path::new(codex_home);
-        let source = home.join("oauth_token.json");
-        let raw = std::fs::read_to_string(&source)
-            .map_err(|_| "Codex 账号会话文件不存在。".to_string())?;
-        let token: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|_| "Codex 账号会话文件格式无效。".to_string())?;
-        let access = token
-            .get("accessToken")
-            .and_then(|v| v.as_str())
-            .ok_or("Codex 会话缺少 access token。")?;
-        let refresh = token
-            .get("refreshToken")
-            .and_then(|v| v.as_str())
-            .ok_or("Codex 会话缺少 refresh token。")?;
-        let id = token
-            .get("idToken")
-            .and_then(|v| v.as_str())
-            .ok_or("Codex 会话缺少 id token。")?;
-        // Codex refreshes a ChatGPT session based on these three values. The
-        // account id is optional in the CLI auth format and intentionally is
-        // not guessed from a different local account.
-        let auth = serde_json::json!({
-            "auth_mode": "chatgpt",
-            "OPENAI_API_KEY": serde_json::Value::Null,
-            "tokens": {"access_token": access, "refresh_token": refresh, "id_token": id, "account_id": serde_json::Value::Null},
-            "last_refresh": "1970-01-01T00:00:00Z",
-        });
-        std::fs::write(home.join("auth.json"), auth.to_string())
-            .map_err(|error| format!("无法准备 Codex 会话：{error}"))
     }
 
     fn write_gateway_error(
@@ -4630,33 +5121,40 @@ impl GatewayServer {
         catalog
     }
 
-    /// Sources the codex-CLI-servable model catalog. The CLI's `debug models`
-    /// command is authoritative and re-fetches a stale `models_cache.json`
-    /// automatically, so this is what makes new models detectable without a
-    /// manual allowlist. We only shell out in a non-test build; unit tests read
-    /// the on-disk cache so the expected catalog stays deterministic and
-    /// network-independent. If the CLI is unavailable the command fails and we
-    /// degrade to reading `models_cache.json` (the CLI refreshes it every time a
-    /// real request is routed through `codex exec`).
+    /// Sources the OpenAI Codex model catalog directly from the API.
+    /// In non-test builds, it requests `https://chatgpt.com/backend-api/codex/models` using the
+    /// OAuth access token, caching the result to `models_cache.json`.
+    /// In test builds or if the network request fails, it falls back to reading `models_cache.json`.
     fn fetch_codex_catalog(codex_home: &str) -> Vec<serde_json::Value> {
+        let path = std::path::Path::new(codex_home).join("models_cache.json");
         if !cfg!(test) {
-            if let Ok(output) = std::process::Command::new("codex")
-                .args(["debug", "models"])
-                .env("CODEX_HOME", codex_home)
-                .stdin(std::process::Stdio::null())
-                .output()
-            {
-                if output.status.success() {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                        let catalog = Self::parse_visible_codex_models(&json);
-                        if !catalog.is_empty() {
-                            return catalog;
+            if let Ok(access_token) = Self::codex_oauth_access_token(codex_home) {
+                let output = std::process::Command::new("curl")
+                    .arg("-sS")
+                    .arg("--connect-timeout")
+                    .arg("5")
+                    .arg("--max-time")
+                    .arg("10")
+                    .arg("https://chatgpt.com/backend-api/codex/models?client_version=0.153.4")
+                    .arg("-H")
+                    .arg(format!("Authorization: Bearer {}", access_token))
+                    .arg("-H")
+                    .arg("User-Agent: codex_cli_rs/0.153.4 (Macos; arm64) codex_exec")
+                    .stdin(std::process::Stdio::null())
+                    .output();
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                            let catalog = Self::parse_visible_codex_models(&json);
+                            if !catalog.is_empty() {
+                                let _ = std::fs::write(&path, &output.stdout);
+                                return catalog;
+                            }
                         }
                     }
                 }
             }
         }
-        let path = std::path::Path::new(codex_home).join("models_cache.json");
         if let Ok(raw) = std::fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
                 let catalog = Self::parse_visible_codex_models(&json);
@@ -4719,12 +5217,24 @@ impl GatewayServer {
                 })
                 .and_then(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
         };
-        find(requested).or_else(|| {
-            requested
-                .strip_suffix("-wm")
-                .map(str::trim)
-                .and_then(find)
-        })
+        find(requested)
+            .or_else(|| {
+                requested
+                    .strip_suffix("-wm")
+                    .map(str::trim)
+                    .and_then(find)
+            })
+            // Fallback: If not found in cached catalog, do not hardcode a rejection!
+            // Allow newly released models (e.g. `gpt-6-astra`) or custom models to pass through
+            // directly to `codex exec`, stripping ChatGPT web `-wm` suffix if present.
+            .or_else(|| {
+                let stripped = requested.strip_suffix("-wm").map(str::trim).unwrap_or(requested);
+                if !stripped.is_empty() {
+                    Some(stripped.to_string())
+                } else {
+                    Some(requested.to_string())
+                }
+            })
     }
 
     /// Loads the user-owned Gemini OAuth session and refreshes it when a

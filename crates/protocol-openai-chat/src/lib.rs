@@ -134,4 +134,17 @@ mod tests {
         assert_eq!(req.tools[1].name, "run_command");
         assert_eq!(req.items.len(), 5);
     }
+
+    #[test]
+    fn test_decode_chat_request_with_reasoning_effort() {
+        let json = r#"{
+            "model": "o3-mini",
+            "messages": [{"role": "user", "content": "solve math"}],
+            "reasoning_effort": "low"
+        }"#;
+        let raw: OpenAiChatRequest = serde_json::from_str(json).unwrap();
+        let res = decode_chat_request(raw, "req_reasoning");
+        assert_eq!(res.value.generation.reasoning_effort.as_deref(), Some("low"));
+    }
 }
+

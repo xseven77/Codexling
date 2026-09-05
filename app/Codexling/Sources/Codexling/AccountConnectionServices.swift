@@ -127,9 +127,17 @@ struct CodexAccountRuntimeManager: @unchecked Sendable {
     }
 
     func authenticationState(for connection: CodexAccountConnection) -> ConnectionAuthenticationState {
+        if let tokenURL = try? oauthTokenURL(for: connection),
+           fileManager.fileExists(atPath: tokenURL.path),
+           let data = try? Data(contentsOf: tokenURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let access = json["accessToken"] as? String, !access.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .connected
+        }
+
         guard let codex = try? locateCodexExecutable(),
               let home = try? homeURL(for: connection) else {
-            return .invalid
+            return .needsLogin
         }
         let process = Process()
         process.executableURL = codex

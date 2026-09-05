@@ -21,6 +21,7 @@ pub fn decode_chat_request(raw: OpenAiChatRequest, request_id: impl Into<String>
     canonical.generation.max_output_tokens = raw.max_tokens.or(raw.max_completion_tokens);
     canonical.generation.presence_penalty = raw.presence_penalty;
     canonical.generation.frequency_penalty = raw.frequency_penalty;
+    canonical.generation.reasoning_effort = raw.reasoning_effort;
 
     if let Some(stop) = raw.stop {
         match stop {

@@ -76,6 +76,9 @@ pub fn format_chat_request(req: &CanonicalRequest, target_model: &str) -> serde_
     if let Some(max) = req.generation.max_output_tokens {
         payload["max_tokens"] = json!(max);
     }
+    if let Some(ref r) = req.generation.reasoning_effort {
+        payload["reasoning_effort"] = json!(r);
+    }
 
     if !req.tools.is_empty() {
         let tools_json: Vec<_> = req

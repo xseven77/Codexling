@@ -146,4 +146,28 @@ mod tests {
         assert!(chunks3[1].starts_with("event: message_delta\n"));
         assert!(chunks3[2].starts_with("event: message_stop\n"));
     }
+
+    #[test]
+    fn test_decode_anthropic_thinking() {
+        let json_disabled = r#"{
+            "model": "claude-3-7-sonnet",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled"}
+        }"#;
+        let raw1: AnthropicMessagesRequest = serde_json::from_str(json_disabled).unwrap();
+        let res1 = decode_anthropic_request(raw1, "req1");
+        assert_eq!(res1.value.generation.reasoning_effort.as_deref(), Some("none"));
+
+        let json_enabled = r#"{
+            "model": "claude-3-7-sonnet",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": 2048}
+        }"#;
+        let raw2: AnthropicMessagesRequest = serde_json::from_str(json_enabled).unwrap();
+        let res2 = decode_anthropic_request(raw2, "req2");
+        assert_eq!(res2.value.generation.reasoning_effort.as_deref(), Some("2048"));
+    }
 }
+

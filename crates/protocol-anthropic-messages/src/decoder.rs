@@ -25,6 +25,18 @@ pub fn decode_anthropic_request(
         canonical.generation.stop_sequences = stops;
     }
 
+    if let Some(th) = raw.thinking {
+        if let Some(obj) = th.as_object() {
+            if obj.get("type").and_then(|t| t.as_str()) == Some("disabled") {
+                canonical.generation.reasoning_effort = Some("none".into());
+            } else if let Some(budget) = obj.get("budget_tokens").and_then(|b| b.as_u64()) {
+                canonical.generation.reasoning_effort = Some(budget.to_string());
+            } else {
+                canonical.generation.reasoning_effort = Some("medium".into());
+            }
+        }
+    }
+
     // System instructions
     if let Some(sys) = raw.system {
         match sys {
