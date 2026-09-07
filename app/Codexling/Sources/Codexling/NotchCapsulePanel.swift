@@ -1074,10 +1074,23 @@ private struct NotchCapsuleView: View {
                     Spacer(minLength: 0)
                     StatusBarBrandBadge(asset: provider.asset, size: 26)
                 }
-                Text("可用额度")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .padding(.top, 12)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("可用额度")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.45))
+                    if let resetTime = provider.resetTimeText, !resetTime.isEmpty {
+                        Spacer(minLength: 4)
+                        HStack(spacing: 3) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 8.5))
+                            Text(resetTime)
+                                .font(.system(size: 10))
+                        }
+                        .foregroundStyle(.white.opacity(0.40))
+                        .lineLimit(1)
+                    }
+                }
+                .padding(.top, 12)
                 ProviderQuotaTextView(
                     provider: provider,
                     font: .system(size: 17, weight: .bold, design: .rounded),

@@ -1747,7 +1747,7 @@ private struct GeminiDashboardCard: View {
 
 enum GeminiQuotaResetFormatter {
     static func displayText(_ raw: String?, now: Date = Date()) -> String? {
-        guard let resetDate = resetDate(raw, now: now) else { return raw?.isEmpty == false ? "刷新时间待更新" : nil }
+        guard let resetDate = resetDate(raw, now: now) else { return raw?.isEmpty == false ? "重置时间待更新" : nil }
         return adaptiveCountdown(resetDate.timeIntervalSince(now))
     }
 
@@ -1787,7 +1787,7 @@ enum GeminiQuotaResetFormatter {
     }
 
     private static func adaptiveCountdown(_ interval: TimeInterval) -> String {
-        guard interval > 0 else { return "即将刷新" }
+        guard interval > 0 else { return "即将重置" }
         let totalSeconds = max(1, Int(ceil(interval)))
         let days = totalSeconds / 86_400
         let hours = (totalSeconds % 86_400) / 3_600
@@ -1802,7 +1802,7 @@ enum GeminiQuotaResetFormatter {
             .filter { $0.0 > 0 }
             .prefix(2)
             .map { "\($0.0)\($0.1)" }
-        return parts.joined() + "后刷新"
+        return parts.joined() + "后重置"
     }
 
     private static func isoDate(_ raw: String) -> Date? {

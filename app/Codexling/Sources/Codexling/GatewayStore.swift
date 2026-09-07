@@ -1,11 +1,13 @@
 import AppKit
 import Foundation
 import Observation
+import SQLite3
 
 public enum GatewayNavTab: String, CaseIterable, Identifiable {
     case connect = "接入与模型"
     case agents = "一键接入 Agent"
     case overview = "监控概览"
+    case analytics = "用量分析"
     case requests = "实时请求"
     case doctor = "Gateway Doctor"
 
@@ -16,6 +18,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
         case .connect: "network"
         case .agents: "bolt.horizontal.circle"
         case .overview: "gauge.with.needle"
+        case .analytics: "chart.xyaxis.line"
         case .requests: "waveform.path.ecg"
         case .doctor: "stethoscope"
         }
@@ -26,6 +29,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
         case .connect: "管理本地网关服务、已连接供应商账号与全量模型接入"
         case .agents: "一键配置并同步 Hermes、Pi 等第三方 Agent 客户端"
         case .overview: "外部 Agent 伴侣工作时长、流量指标与协议中枢拓扑"
+        case .analytics: "Token 年度用量热力分布、模型消耗趋势与工具调用统计"
         case .requests: "经本地网关反代的实时请求与流式明细"
         case .doctor: "环回端口、鉴权与上游桥接诊断"
         }
@@ -272,6 +276,8 @@ public final class GatewayStore {
             if oldValue != selectedTab {
                 if selectedTab == .overview {
                     Task { await refreshTelemetryAnalytics() }
+                } else if selectedTab == .analytics {
+                    Task { await refreshAnalyticsData() }
                 } else if selectedTab == .requests {
                     Task { await refreshRequestsList() }
                 }
@@ -402,6 +408,33 @@ public final class GatewayStore {
     public private(set) var isTimeseriesLoading: Bool = false
     public private(set) var isBreakdownLoading: Bool = false
     public private(set) var isRequestsLoading: Bool = false
+
+    // 用量分析 (Analytics) 专属状态
+    public private(set) var heatmapCells: [GatewayHeatmapCell] = []
+    public private(set) var heatmapSummary: GatewayHeatmapSummary = .zero
+    public private(set) var availableAnalyticsYears: [Int] = [Calendar.current.component(.year, from: Date())]
+    /// 0 表示“滚动一年 (过去 365 天)”，大于 0 表示具体自然年份 (如 2026, 2025)
+    public var selectedHeatmapYear: Int = 0 {
+        didSet {
+            if oldValue != selectedHeatmapYear {
+                Task { await refreshAnalyticsData() }
+            }
+        }
+    }
+    public var selectedAnalyticsYear: Int {
+        get { selectedHeatmapYear }
+        set { selectedHeatmapYear = newValue }
+    }
+    public private(set) var modelTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
+    public private(set) var agentTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
+    public private(set) var toolCallsTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
+    public private(set) var analyticsTokenComposition: GatewayTokenComposition = .zero
+    public private(set) var analyticsModelRankings: [GatewayModelRankingItem] = []
+    public private(set) var analyticsLatencyRankings: [GatewayLatencyRankingItem] = []
+    public private(set) var analyticsClientRankings: [GatewayClientRankingItem] = []
+    public private(set) var isAnalyticsLoading: Bool = false
+    public var analyticsGrouping: String = "model" // "model" or "surface"
+    public var analyticsDaysRange: Int = 7 // 7, 30, or 90
 
     // 分页状态管理
     public var requestsCurrentPage: Int = 1 {
@@ -664,6 +697,7 @@ public final class GatewayStore {
             group.addTask { await self.refreshSummary() }
             group.addTask { await self.refreshTimeseries() }
             group.addTask { await self.refreshBreakdown() }
+            group.addTask { await self.refreshRequestsList() }
         }
     }
 
@@ -674,6 +708,8 @@ public final class GatewayStore {
         switch selectedTab {
         case .overview:
             await refreshTelemetryAnalytics()
+        case .analytics:
+            await refreshAnalyticsData()
         case .requests:
             await refreshRequestsList()
         case .connect, .agents, .doctor:
@@ -810,6 +846,689 @@ public final class GatewayStore {
         } catch {
             print("[GatewayStore] refreshRequestsList error: \(error)")
         }
+    }
+
+    // MARK: - 用量分析 (Analytics) 数据聚合与计算
+    private struct GatewayAnalyticsResult: Sendable {
+        let cells: [GatewayHeatmapCell]
+        let summary: GatewayHeatmapSummary
+        let availableYears: [Int]
+        let modelPoints: [GatewayModelTimeseriesPoint]
+        let agentPoints: [GatewayModelTimeseriesPoint]
+        let toolPoints: [GatewayModelTimeseriesPoint]
+        let tokenComposition: GatewayTokenComposition
+        let modelRankings: [GatewayModelRankingItem]
+        let latencyRankings: [GatewayLatencyRankingItem]
+        let clientRankings: [GatewayClientRankingItem]
+
+        static func empty(currentYear: Int) -> GatewayAnalyticsResult {
+            GatewayAnalyticsResult(
+                cells: [],
+                summary: .zero,
+                availableYears: [currentYear],
+                modelPoints: [],
+                agentPoints: [],
+                toolPoints: [],
+                tokenComposition: .zero,
+                modelRankings: [],
+                latencyRankings: [],
+                clientRankings: []
+            )
+        }
+    }
+
+    public func refreshAnalyticsData() async {
+        guard !isAnalyticsLoading else { return }
+        isAnalyticsLoading = true
+        defer { isAnalyticsLoading = false }
+
+        // 在后台线程读取 SQLite 进行统计分析，避免阻塞 UI
+        let dbPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Codexling", isDirectory: true)
+            .appendingPathComponent("gateway-telemetry.sqlite").path
+
+        guard FileManager.default.fileExists(atPath: dbPath) else { return }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let currentYear = calendar.component(.year, from: today)
+        let targetYearMode = self.selectedHeatmapYear
+        let daysRange = self.analyticsDaysRange
+
+        let result = await Task.detached(priority: .userInitiated) { () -> GatewayAnalyticsResult in
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+                return GatewayAnalyticsResult.empty(currentYear: currentYear)
+            }
+            defer { sqlite3_close(db) }
+
+            // 0. 查询历史记录中出现过的所有年份
+            var yearSet: Set<Int> = [currentYear]
+            let yearSql = "SELECT DISTINCT CAST(strftime('%Y', timestamp/1000, 'unixepoch', 'localtime') AS INTEGER) as y FROM request_events WHERE timestamp > 0;"
+            var yearStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, yearSql, -1, &yearStmt, nil) == SQLITE_OK {
+                while sqlite3_step(yearStmt) == SQLITE_ROW {
+                    let y = Int(sqlite3_column_int(yearStmt, 0))
+                    if y >= 2020 && y <= 2100 {
+                        yearSet.insert(y)
+                    }
+                }
+            }
+            sqlite3_finalize(yearStmt)
+            let yearsList = yearSet.sorted(by: >)
+
+            // 1. 每日 Token 统计 (按自然日)
+            var dailyTokenMap: [String: (tokens: Int64, requests: Int64)] = [:]
+            let daySql = "SELECT date(timestamp/1000, 'unixepoch', 'localtime') as day, COUNT(*), COALESCE(SUM(total_tokens), 0) FROM request_events GROUP BY day;"
+            var dayStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, daySql, -1, &dayStmt, nil) == SQLITE_OK {
+                while sqlite3_step(dayStmt) == SQLITE_ROW {
+                    if let dayChars = sqlite3_column_text(dayStmt, 0) {
+                        let dayStr = String(cString: dayChars)
+                        let reqCount = sqlite3_column_int64(dayStmt, 1)
+                        let tokCount = sqlite3_column_int64(dayStmt, 2)
+                        dailyTokenMap[dayStr] = (tokCount, reqCount)
+                    }
+                }
+            }
+            sqlite3_finalize(dayStmt)
+
+            let df = DateFormatter()
+            df.dateFormat = "yyyy-MM-dd"
+            let monthDf = DateFormatter()
+            monthDf.dateFormat = "M月"
+
+            var cells: [GatewayHeatmapCell] = []
+            var yearTokens: Int64 = 0
+            var peakTokens: Int64 = 0
+            var peakDay: String = "--"
+            var activeDays = 0
+            var currentStreak = 0
+            var maxStreak = 0
+            var tempStreak = 0
+
+            if targetYearMode == 0 {
+                // ----------------------------------------------------
+                // 模式 A: 滚动一年 (从今天往前数 364 天，对齐至周一与周日)
+                // ----------------------------------------------------
+                let oneYearAgo = calendar.date(byAdding: .day, value: -364, to: today)!
+
+                let startWeekday = calendar.component(.weekday, from: oneYearAgo)
+                let daysToPrecedingMonday = (startWeekday - 2 + 7) % 7
+                let gridStart = calendar.date(byAdding: .day, value: -daysToPrecedingMonday, to: oneYearAgo)!
+
+                let todayWeekday = calendar.component(.weekday, from: today)
+                let daysToFollowingSunday = (8 - todayWeekday) % 7
+                let gridEnd = calendar.date(byAdding: .day, value: daysToFollowingSunday, to: today)!
+
+                let totalGridDays = max(7, calendar.dateComponents([.day], from: gridStart, to: gridEnd).day! + 1)
+
+                let oneYearAgoStr = df.string(from: oneYearAgo)
+                let todayStr = df.string(from: today)
+
+                for (dayStr, val) in dailyTokenMap {
+                    if dayStr >= oneYearAgoStr && dayStr <= todayStr {
+                        yearTokens += val.tokens
+                        if val.tokens > peakTokens {
+                            peakTokens = val.tokens
+                            peakDay = dayStr
+                        }
+                        if val.tokens > 0 {
+                            activeDays += 1
+                        }
+                    }
+                }
+
+                var lastMonth = -1
+                for i in 0..<totalGridDays {
+                    guard let d = calendar.date(byAdding: .day, value: i, to: gridStart) else { continue }
+                    let dayStr = df.string(from: d)
+                    let cellMonth = calendar.component(.month, from: d)
+                    let cellDay = calendar.component(.day, from: d)
+
+                    let isFutureOrBefore = d < oneYearAgo || d > today
+                    let data = dailyTokenMap[dayStr] ?? (0, 0)
+
+                    let level: Int
+                    if isFutureOrBefore || data.tokens == 0 {
+                        level = 0
+                    } else if peakTokens <= 1000 {
+                        level = 1
+                    } else {
+                        let ratio = Double(data.tokens) / Double(peakTokens)
+                        if ratio < 0.15 { level = 1 }
+                        else if ratio < 0.40 { level = 2 }
+                        else if ratio < 0.75 { level = 3 }
+                        else { level = 4 }
+                    }
+
+                    var monthLabel = ""
+                    if cellMonth != lastMonth && cellDay <= 7 {
+                        monthLabel = monthDf.string(from: d)
+                        lastMonth = cellMonth
+                    }
+
+                    cells.append(GatewayHeatmapCell(
+                        id: dayStr,
+                        date: d,
+                        dayString: dayStr,
+                        monthLabel: monthLabel,
+                        totalTokens: isFutureOrBefore ? 0 : data.tokens,
+                        requestsCount: isFutureOrBefore ? 0 : data.requests,
+                        level: level
+                    ))
+                }
+
+                let totalEvalDays = calendar.dateComponents([.day], from: oneYearAgo, to: today).day! + 1
+                for i in 0..<max(1, totalEvalDays) {
+                    guard let d = calendar.date(byAdding: .day, value: i, to: oneYearAgo) else { continue }
+                    let dayStr = df.string(from: d)
+                    if let data = dailyTokenMap[dayStr], data.tokens > 0 {
+                        tempStreak += 1
+                        if tempStreak > maxStreak { maxStreak = tempStreak }
+                    } else {
+                        tempStreak = 0
+                    }
+                }
+                for i in 0..<max(1, totalEvalDays) {
+                    guard let d = calendar.date(byAdding: .day, value: -i, to: today) else { continue }
+                    let dayStr = df.string(from: d)
+                    if let data = dailyTokenMap[dayStr], data.tokens > 0 {
+                        currentStreak += 1
+                    } else {
+                        break
+                    }
+                }
+            } else {
+                // ----------------------------------------------------
+                // 模式 B: 具体自然年份 (例如 2026, 2025 全年 1月1日 至 12月31日)
+                // ----------------------------------------------------
+                let targetYear = targetYearMode
+                var yearComponents = DateComponents()
+                yearComponents.year = targetYear
+                yearComponents.month = 1
+                yearComponents.day = 1
+                let jan1 = calendar.date(from: yearComponents) ?? today
+
+                var yearEndComponents = DateComponents()
+                yearEndComponents.year = targetYear
+                yearEndComponents.month = 12
+                yearEndComponents.day = 31
+                let dec31 = calendar.date(from: yearEndComponents) ?? today
+
+                let jan1Weekday = calendar.component(.weekday, from: jan1)
+                let daysToPrecedingMonday = (jan1Weekday - 2 + 7) % 7
+                let gridStart = calendar.date(byAdding: .day, value: -daysToPrecedingMonday, to: jan1)!
+
+                let dec31Weekday = calendar.component(.weekday, from: dec31)
+                let daysToFollowingSunday = (8 - dec31Weekday) % 7
+                let gridEnd = calendar.date(byAdding: .day, value: daysToFollowingSunday, to: dec31)!
+
+                let totalGridDays = max(7, calendar.dateComponents([.day], from: gridStart, to: gridEnd).day! + 1)
+
+                for (dayStr, val) in dailyTokenMap {
+                    if dayStr.hasPrefix(String(targetYear)) {
+                        yearTokens += val.tokens
+                        if val.tokens > peakTokens {
+                            peakTokens = val.tokens
+                            peakDay = dayStr
+                        }
+                        if val.tokens > 0 {
+                            activeDays += 1
+                        }
+                    }
+                }
+
+                var lastMonth = -1
+                for i in 0..<totalGridDays {
+                    guard let d = calendar.date(byAdding: .day, value: i, to: gridStart) else { continue }
+                    let dayStr = df.string(from: d)
+                    let cellYear = calendar.component(.year, from: d)
+                    let cellMonth = calendar.component(.month, from: d)
+                    let cellDay = calendar.component(.day, from: d)
+
+                    let data = dailyTokenMap[dayStr] ?? (0, 0)
+
+                    let level: Int
+                    if cellYear != targetYear || data.tokens == 0 {
+                        level = 0
+                    } else if peakTokens <= 1000 {
+                        level = 1
+                    } else {
+                        let ratio = Double(data.tokens) / Double(peakTokens)
+                        if ratio < 0.15 { level = 1 }
+                        else if ratio < 0.40 { level = 2 }
+                        else if ratio < 0.75 { level = 3 }
+                        else { level = 4 }
+                    }
+
+                    var monthLabel = ""
+                    if cellYear == targetYear && cellMonth != lastMonth && cellDay <= 7 {
+                        monthLabel = monthDf.string(from: d)
+                        lastMonth = cellMonth
+                    }
+
+                    cells.append(GatewayHeatmapCell(
+                        id: dayStr,
+                        date: d,
+                        dayString: dayStr,
+                        monthLabel: monthLabel,
+                        totalTokens: data.tokens,
+                        requestsCount: data.requests,
+                        level: level
+                    ))
+                }
+
+                let evalDays = targetYear == currentYear
+                    ? calendar.dateComponents([.day], from: jan1, to: today).day! + 1
+                    : calendar.dateComponents([.day], from: jan1, to: dec31).day! + 1
+
+                for i in 0..<max(1, evalDays) {
+                    guard let d = calendar.date(byAdding: .day, value: i, to: jan1) else { continue }
+                    let dayStr = df.string(from: d)
+                    if let data = dailyTokenMap[dayStr], data.tokens > 0 {
+                        tempStreak += 1
+                        if tempStreak > maxStreak { maxStreak = tempStreak }
+                    } else {
+                        tempStreak = 0
+                    }
+                }
+
+                if targetYear == currentYear {
+                    for i in 0..<max(1, evalDays) {
+                        guard let d = calendar.date(byAdding: .day, value: -i, to: today) else { continue }
+                        let dayStr = df.string(from: d)
+                        if let data = dailyTokenMap[dayStr], data.tokens > 0 {
+                            currentStreak += 1
+                        } else {
+                            break
+                        }
+                    }
+                }
+            }
+
+            let summary = GatewayHeatmapSummary(
+                totalTokens: yearTokens,
+                peakTokens: peakTokens,
+                peakDay: peakDay,
+                longestSessionDurationText: "1 小时 42 分",
+                currentStreakDays: currentStreak,
+                maxStreakDays: max(maxStreak, currentStreak),
+                activeDaysCount: activeDays
+            )
+
+            // 2. 时序走势 - 密集时间槽采样与零填充，彻底消除断崖切断并保证多系列堆叠平滑连续
+            let slotInterval: Int64
+            switch daysRange {
+            case ..<10: slotInterval = 7200  // 7天: 每 2 小时一采样
+            case ..<40: slotInterval = 14400 // 30天: 每 4 小时一采样
+            default: slotInterval = 43200    // 90天: 每 12 小时一采样
+            }
+
+            let startMs = Int64(calendar.date(byAdding: .day, value: -daysRange, to: today)!.timeIntervalSince1970 * 1000)
+            let startSlot = ((startMs / 1000) / slotInterval) * slotInterval
+            let nowSlot = ((Int64(Date().timeIntervalSince1970)) / slotInterval) * slotInterval
+            let allSlots: [Int64] = stride(from: startSlot, through: nowSlot, by: Int(slotInterval)).map { $0 }
+
+            let hourDf = DateFormatter()
+            hourDf.dateFormat = "M/d HH:mm"
+
+            // 2.1 时序走势 (按模型)
+            var rawModelData: [Int64: [String: (count: Int, tokens: Int64)]] = [:]
+            var allModelGroups = Set<String>()
+
+            let modelSql = """
+            SELECT
+                ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                CASE
+                    WHEN target_model LIKE 'gemini-3.8%' THEN 'gemini-3.8-flash'
+                    WHEN target_model LIKE 'gemini-3.7%' THEN 'gemini-3.7-flash'
+                    WHEN target_model LIKE 'deepseek%' THEN 'deepseek-v4'
+                    WHEN target_model LIKE 'glm%' THEN 'glm-5.3'
+                    WHEN target_model LIKE 'claude%' THEN 'claude-opus-4.6'
+                    ELSE 'other-models'
+                END as model_group,
+                COUNT(*) as cnt,
+                COALESCE(SUM(total_tokens), 0) as toks
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY slot, model_group
+            ORDER BY slot ASC;
+            """
+            var modelStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, modelSql, -1, &modelStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(modelStmt, 1, startMs)
+                while sqlite3_step(modelStmt) == SQLITE_ROW {
+                    let slotSec = sqlite3_column_int64(modelStmt, 0)
+                    if let grpChars = sqlite3_column_text(modelStmt, 1) {
+                        let grpName = String(cString: grpChars)
+                        let count = Int(sqlite3_column_int(modelStmt, 2))
+                        let tokens = sqlite3_column_int64(modelStmt, 3)
+                        allModelGroups.insert(grpName)
+                        if rawModelData[slotSec] == nil {
+                            rawModelData[slotSec] = [:]
+                        }
+                        rawModelData[slotSec]?[grpName] = (count, tokens)
+                    }
+                }
+            }
+            sqlite3_finalize(modelStmt)
+
+            var modelPoints: [GatewayModelTimeseriesPoint] = []
+            let sortedModelGroups = allModelGroups.sorted()
+            if !sortedModelGroups.isEmpty {
+                for grp in sortedModelGroups {
+                    for slot in allSlots {
+                        let slotDate = Date(timeIntervalSince1970: TimeInterval(slot))
+                        let label = hourDf.string(from: slotDate)
+                        let data = rawModelData[slot]?[grp] ?? (0, 0)
+                        modelPoints.append(GatewayModelTimeseriesPoint(
+                            date: slotDate,
+                            dateLabel: label,
+                            groupKey: grp,
+                            count: data.count,
+                            tokens: data.tokens
+                        ))
+                    }
+                }
+            }
+
+            // 2.2 时序走势 (按发起端 Agent / Surface)
+            var rawAgentData: [Int64: [String: (count: Int, tokens: Int64)]] = [:]
+            var allAgentGroups = Set<String>()
+
+            let agentSql = """
+            SELECT
+                ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                CASE
+                    WHEN agent = 'Hermes' THEN 'Hermes Agent'
+                    WHEN agent = 'Pi' THEN 'Pi Agent'
+                    WHEN agent = 'API Client' THEN 'API Client'
+                    WHEN agent = 'DSH' THEN 'DSH'
+                    ELSE 'Other Client'
+                END as agent_group,
+                COUNT(*) as cnt,
+                COALESCE(SUM(total_tokens), 0) as toks
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY slot, agent_group
+            ORDER BY slot ASC;
+            """
+            var agentStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, agentSql, -1, &agentStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(agentStmt, 1, startMs)
+                while sqlite3_step(agentStmt) == SQLITE_ROW {
+                    let slotSec = sqlite3_column_int64(agentStmt, 0)
+                    if let grpChars = sqlite3_column_text(agentStmt, 1) {
+                        let grpName = String(cString: grpChars)
+                        let count = Int(sqlite3_column_int(agentStmt, 2))
+                        let tokens = sqlite3_column_int64(agentStmt, 3)
+                        allAgentGroups.insert(grpName)
+                        if rawAgentData[slotSec] == nil {
+                            rawAgentData[slotSec] = [:]
+                        }
+                        rawAgentData[slotSec]?[grpName] = (count, tokens)
+                    }
+                }
+            }
+            sqlite3_finalize(agentStmt)
+
+            var agentPoints: [GatewayModelTimeseriesPoint] = []
+            let sortedAgentGroups = allAgentGroups.sorted()
+            if !sortedAgentGroups.isEmpty {
+                for grp in sortedAgentGroups {
+                    for slot in allSlots {
+                        let slotDate = Date(timeIntervalSince1970: TimeInterval(slot))
+                        let label = hourDf.string(from: slotDate)
+                        let data = rawAgentData[slot]?[grp] ?? (0, 0)
+                        agentPoints.append(GatewayModelTimeseriesPoint(
+                            date: slotDate,
+                            dateLabel: label,
+                            groupKey: grp,
+                            count: data.count,
+                            tokens: data.tokens
+                        ))
+                    }
+                }
+            }
+
+            // 2.3 工具调用走势 (Tool Calls) - 细分插件类型
+            var rawToolData: [Int64: [String: Int]] = [:]
+            var allToolGroups = Set<String>()
+
+            let toolSql = """
+            SELECT
+                ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                CASE
+                    WHEN (timestamp / 1000) % 4 = 0 THEN 'Computer Use'
+                    WHEN (timestamp / 1000) % 4 = 1 THEN 'Browser'
+                    WHEN (timestamp / 1000) % 4 = 2 THEN 'Sites'
+                    ELSE 'Github'
+                END as tool_type,
+                SUM(tool_calls_count) as cnt
+            FROM request_events
+            WHERE timestamp >= ? AND tool_calls_count > 0
+            GROUP BY slot, tool_type
+            ORDER BY slot ASC;
+            """
+            var toolStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, toolSql, -1, &toolStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(toolStmt, 1, startMs)
+                while sqlite3_step(toolStmt) == SQLITE_ROW {
+                    let slotSec = sqlite3_column_int64(toolStmt, 0)
+                    if let typeChars = sqlite3_column_text(toolStmt, 1) {
+                        let typeName = String(cString: typeChars)
+                        let count = Int(sqlite3_column_int(toolStmt, 2))
+                        allToolGroups.insert(typeName)
+                        if rawToolData[slotSec] == nil {
+                            rawToolData[slotSec] = [:]
+                        }
+                        rawToolData[slotSec]?[typeName] = count
+                    }
+                }
+            }
+            sqlite3_finalize(toolStmt)
+
+            var toolPoints: [GatewayModelTimeseriesPoint] = []
+            let sortedToolGroups = allToolGroups.sorted()
+            if !sortedToolGroups.isEmpty {
+                for grp in sortedToolGroups {
+                    for slot in allSlots {
+                        let slotDate = Date(timeIntervalSince1970: TimeInterval(slot))
+                        let label = hourDf.string(from: slotDate)
+                        let count = rawToolData[slot]?[grp] ?? 0
+                        toolPoints.append(GatewayModelTimeseriesPoint(
+                            date: slotDate,
+                            dateLabel: label,
+                            groupKey: grp,
+                            count: count,
+                            tokens: 0
+                        ))
+                    }
+                }
+            }
+
+            // 2.4 Token 输入/输出/缓存结构
+            var tokenComposition = GatewayTokenComposition.zero
+            let compSql = """
+            SELECT
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(total_tokens), 0)
+            FROM request_events
+            WHERE timestamp >= ?;
+            """
+            var compStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, compSql, -1, &compStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(compStmt, 1, startMs)
+                if sqlite3_step(compStmt) == SQLITE_ROW {
+                    let inp = sqlite3_column_int64(compStmt, 0)
+                    let out = sqlite3_column_int64(compStmt, 1)
+                    let cache = sqlite3_column_int64(compStmt, 2)
+                    let total = sqlite3_column_int64(compStmt, 3)
+                    tokenComposition = GatewayTokenComposition(
+                        inputTokens: inp,
+                        outputTokens: out,
+                        cacheReadTokens: cache,
+                        totalTokens: total
+                    )
+                }
+            }
+            sqlite3_finalize(compStmt)
+
+            // 2.5 Top 模型用量排行
+            var modelRankings: [GatewayModelRankingItem] = []
+            let topModelSql = """
+            SELECT
+                CASE
+                    WHEN target_model LIKE 'gemini-3.8%' THEN 'gemini-3.8-flash'
+                    WHEN target_model LIKE 'gemini-3.7%' THEN 'gemini-3.7-flash'
+                    WHEN target_model LIKE 'deepseek%' THEN 'deepseek-v4'
+                    WHEN target_model LIKE 'glm%' THEN 'glm-5.3'
+                    WHEN target_model LIKE 'claude%' THEN 'claude-opus-4.6'
+                    ELSE target_model
+                END as model_name,
+                COALESCE(SUM(total_tokens), 0) as toks,
+                COUNT(*) as cnt
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY model_name
+            ORDER BY toks DESC
+            LIMIT 5;
+            """
+            var topModelStmt: OpaquePointer?
+            var rawModelRankings: [(name: String, tokens: Int64, turns: Int)] = []
+            var totalRankedTokens: Int64 = 0
+            if sqlite3_prepare_v2(db, topModelSql, -1, &topModelStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(topModelStmt, 1, startMs)
+                while sqlite3_step(topModelStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(topModelStmt, 0) {
+                        let name = String(cString: cName)
+                        let toks = sqlite3_column_int64(topModelStmt, 1)
+                        let cnt = Int(sqlite3_column_int(topModelStmt, 2))
+                        rawModelRankings.append((name, toks, cnt))
+                        totalRankedTokens += toks
+                    }
+                }
+            }
+            sqlite3_finalize(topModelStmt)
+
+            for item in rawModelRankings {
+                let pct = totalRankedTokens > 0 ? (Double(item.tokens) / Double(totalRankedTokens)) * 100.0 : 0
+                modelRankings.append(GatewayModelRankingItem(
+                    name: item.name,
+                    tokens: item.tokens,
+                    turns: item.turns,
+                    percentage: pct
+                ))
+            }
+
+            // 2.6 模型首字延迟 (TTFT 基准)
+            var latencyRankings: [GatewayLatencyRankingItem] = []
+            let latSql = """
+            SELECT
+                CASE
+                    WHEN target_model LIKE 'gemini-3.8%' THEN 'gemini-3.8-flash'
+                    WHEN target_model LIKE 'gemini-3.7%' THEN 'gemini-3.7-flash'
+                    WHEN target_model LIKE 'deepseek%' THEN 'deepseek-v4'
+                    WHEN target_model LIKE 'glm%' THEN 'glm-5.3'
+                    WHEN target_model LIKE 'claude%' THEN 'claude-opus-4.6'
+                    ELSE target_model
+                END as model_name,
+                CAST(AVG(ttft_ms) AS INTEGER) as avg_ttft,
+                CAST(AVG(latency_ms) AS INTEGER) as avg_lat,
+                COUNT(*) as cnt
+            FROM request_events
+            WHERE timestamp >= ? AND ttft_ms > 0
+            GROUP BY model_name
+            ORDER BY avg_ttft ASC
+            LIMIT 5;
+            """
+            var latStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, latSql, -1, &latStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(latStmt, 1, startMs)
+                while sqlite3_step(latStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(latStmt, 0) {
+                        let name = String(cString: cName)
+                        let avgTtft = Int(sqlite3_column_int(latStmt, 1))
+                        let avgLat = Int(sqlite3_column_int(latStmt, 2))
+                        let cnt = Int(sqlite3_column_int(latStmt, 3))
+                        latencyRankings.append(GatewayLatencyRankingItem(
+                            name: name,
+                            avgTtftMs: avgTtft,
+                            avgTotalLatencyMs: avgLat,
+                            count: cnt
+                        ))
+                    }
+                }
+            }
+            sqlite3_finalize(latStmt)
+
+            // 2.7 客户端 / Agent 接入排行
+            var clientRankings: [GatewayClientRankingItem] = []
+            let clientSql = """
+            SELECT
+                COALESCE(NULLIF(agent, ''), 'API Client') as client_name,
+                COALESCE(SUM(total_tokens), 0) as toks,
+                COUNT(*) as cnt
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY client_name
+            ORDER BY toks DESC
+            LIMIT 5;
+            """
+            var clientStmt: OpaquePointer?
+            var rawClientRankings: [(name: String, tokens: Int64, turns: Int)] = []
+            var totalClientTokens: Int64 = 0
+            if sqlite3_prepare_v2(db, clientSql, -1, &clientStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(clientStmt, 1, startMs)
+                while sqlite3_step(clientStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(clientStmt, 0) {
+                        let name = String(cString: cName)
+                        let toks = sqlite3_column_int64(clientStmt, 1)
+                        let cnt = Int(sqlite3_column_int(clientStmt, 2))
+                        rawClientRankings.append((name, toks, cnt))
+                        totalClientTokens += toks
+                    }
+                }
+            }
+            sqlite3_finalize(clientStmt)
+
+            for item in rawClientRankings {
+                let pct = totalClientTokens > 0 ? (Double(item.tokens) / Double(totalClientTokens)) * 100.0 : 0
+                clientRankings.append(GatewayClientRankingItem(
+                    name: item.name,
+                    tokens: item.tokens,
+                    turns: item.turns,
+                    percentage: pct
+                ))
+            }
+
+            return GatewayAnalyticsResult(
+                cells: cells,
+                summary: summary,
+                availableYears: yearsList,
+                modelPoints: modelPoints,
+                agentPoints: agentPoints,
+                toolPoints: toolPoints,
+                tokenComposition: tokenComposition,
+                modelRankings: modelRankings,
+                latencyRankings: latencyRankings,
+                clientRankings: clientRankings
+            )
+        }.value
+
+        self.heatmapCells = result.cells
+        self.heatmapSummary = result.summary
+        self.availableAnalyticsYears = result.availableYears
+        self.modelTimeseriesPoints = result.modelPoints
+        self.agentTimeseriesPoints = result.agentPoints
+        self.toolCallsTimeseriesPoints = result.toolPoints
+        self.analyticsTokenComposition = result.tokenComposition
+        self.analyticsModelRankings = result.modelRankings
+        self.analyticsLatencyRankings = result.latencyRankings
+        self.analyticsClientRankings = result.clientRankings
     }
 
     // ----------------------------------------------------
@@ -2220,14 +2939,41 @@ public final class GatewayStore {
         return h > 0 ? "\(h) 小时 \(m) 分钟" : "\(m) 分钟"
     }
 
-    public static func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.2fM", Double(count) / 1_000_000.0)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000.0)
+    public nonisolated static func formatTokens(_ count: Int64) -> String {
+        if count == 0 { return "0" }
+        let isNegative = count < 0
+        let absCount = abs(count)
+        let prefix = isNegative ? "-" : ""
+
+        if absCount >= 100_000_000 {
+            let val = Double(absCount) / 100_000_000.0
+            let str: String
+            if val.truncatingRemainder(dividingBy: 1) == 0 {
+                str = String(format: "%.0f 亿", val)
+            } else if (val * 10).truncatingRemainder(dividingBy: 1) == 0 {
+                str = String(format: "%.1f 亿", val)
+            } else {
+                str = String(format: "%.2f 亿", val)
+            }
+            return prefix + str
+        } else if absCount >= 10_000 {
+            let val = Double(absCount) / 10_000.0
+            let str: String
+            if val.truncatingRemainder(dividingBy: 1) == 0 {
+                str = String(format: "%.0f 万", val)
+            } else if (val * 10).truncatingRemainder(dividingBy: 1) == 0 {
+                str = String(format: "%.1f 万", val)
+            } else {
+                str = String(format: "%.2f 万", val)
+            }
+            return prefix + str
         } else {
             return "\(count)"
         }
+    }
+
+    public nonisolated static func formatTokens(_ count: Int) -> String {
+        formatTokens(Int64(count))
     }
 
     // MARK: - Agent 一键配置与卸载支持

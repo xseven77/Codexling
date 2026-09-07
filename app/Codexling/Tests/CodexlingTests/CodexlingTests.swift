@@ -1027,6 +1027,60 @@ final class CodexlingTests: XCTestCase {
         ])
     }
 
+    func testNotchProviderTickFactoryPopulatesResetTimeText() throws {
+        // 1. Gemini with reset desc
+        let gemini = GeminiAccountConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "Gemini Pro",
+            credentialHandle: "gemini-pro",
+            authenticationState: .connected,
+            planName: "Google AI Pro",
+            geminiWeeklyRemaining: 0.85,
+            geminiWeeklyResetDesc: "2 days",
+            geminiFiveHourRemaining: 0.90,
+            geminiFiveHourResetDesc: "3 hours",
+            createdAt: Date()
+        )
+        let geminiTick = StatusBarProviderTickFactory.geminiTick(gemini)
+        XCTAssertNotNil(geminiTick.resetTimeText)
+        XCTAssertTrue(geminiTick.resetTimeText?.contains("后重置") == true)
+
+        // 2. Codex with reset time
+        var snapshot = CodexUsageSnapshot.preview
+        snapshot.shortWindow = UsageWindow(label: "5 小时", remaining: 10, total: 100, resetsAt: "2026-07-07 18:30:00")
+        let codexTick = try XCTUnwrap(StatusBarProviderTickFactory.codexTick(
+            id: "codex.test",
+            label: "Codex Test",
+            accountName: "Codex Test",
+            usage: snapshot,
+            isConnected: true
+        ))
+        XCTAssertNotNil(codexTick.resetTimeText)
+        XCTAssertTrue(codexTick.resetTimeText?.hasSuffix("重置") == true)
+
+        // 3. DeepSeek has no reset time
+        let deepSeek = DeepSeekAPIConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "DeepSeek Primary",
+            credentialHandle: "ds-handle",
+            keySuffix: "1234",
+            authenticationState: .connected,
+            balance: ProviderBalanceSnapshot(
+                connectionID: ConnectionID(rawValue: UUID()),
+                providerID: .deepSeek,
+                scope: .account,
+                currency: "CNY",
+                total: 50,
+                granted: 10,
+                toppedUp: 40,
+                fetchedAt: Date()
+            ),
+            createdAt: Date()
+        )
+        let deepSeekTick = try XCTUnwrap(StatusBarProviderTickFactory.deepSeekTick(deepSeek))
+        XCTAssertNil(deepSeekTick.resetTimeText)
+    }
+
     func testUsageParserReadsRateLimitInsideUsageAndOmitsMissingSecondaryWindow() throws {
         let payload: [String: Any] = [
             "plan_type": "free",

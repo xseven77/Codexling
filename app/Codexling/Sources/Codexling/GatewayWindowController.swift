@@ -7,8 +7,8 @@ import SwiftUI
 public final class GatewayWindowController: NSObject, NSWindowDelegate {
     public static let shared = GatewayWindowController()
 
-    public static let minWindowWidth: CGFloat = 860
-    public static let minWindowHeight: CGFloat = 600
+    public static let minWindowWidth: CGFloat = 960
+    public static let minWindowHeight: CGFloat = 640
 
     private let window: NSWindow
     private var hostingController: NSHostingController<GatewayView>!
@@ -22,11 +22,13 @@ public final class GatewayWindowController: NSObject, NSWindowDelegate {
     public static func defaultWindowSize(for screen: NSScreen? = nil) -> NSSize {
         let currentScreen = screen ?? NSScreen.main
         let visibleFrame = currentScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let width: CGFloat = minWindowWidth
+        // 默认窗口宽度 1080pt，兼顾宽屏呼吸感与多列看板完整展示；自适应屏幕可用宽度
+        let defaultWidth: CGFloat = 1080
+        let targetWidth = min(defaultWidth, max(minWindowWidth, visibleFrame.width - 60))
         // 显示器视窗允许的情况下，默认打开时尽量占满可用高度（上下各留 20pt 呼吸边距），
         // 充分展示多账号与模型长列表，减少不必要的滚动。
         let maxAvailableHeight = max(minWindowHeight, visibleFrame.height - 40)
-        return NSSize(width: width, height: maxAvailableHeight)
+        return NSSize(width: targetWidth, height: maxAvailableHeight)
     }
 
     public override init() {
@@ -73,7 +75,7 @@ public final class GatewayWindowController: NSObject, NSWindowDelegate {
         let targetScreen = screen ?? window.screen ?? NSScreen.main
         let idealSize = Self.defaultWindowSize(for: targetScreen)
 
-        if !window.isVisible || window.frame.height < idealSize.height {
+        if !window.isVisible || window.frame.width < idealSize.width || window.frame.height < idealSize.height {
             window.setContentSize(idealSize)
         }
 

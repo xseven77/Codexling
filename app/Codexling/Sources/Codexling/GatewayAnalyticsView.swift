@@ -1,0 +1,1069 @@
+import AppKit
+import Charts
+import SwiftUI
+
+@MainActor
+struct GatewayAnalyticsView: View {
+    @Bindable var store: GatewayStore
+
+    @State private var hoveredHeatmapCell: GatewayHeatmapCell? = nil
+    @State private var hoveredCellLocation: (week: Int, day: Int)? = nil
+    @State private var hiddenAnalyticsGroups: Set<String> = []
+    @State private var hoveredSlotDate: Date? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // 1. 全局里程碑指标看板 (参考图4顶部极简数据条)
+            analyticsMilestoneStripView
+
+            // 2. Token 年度活跃热力图 (参考图4 GitHub 风格全年 52 周矩阵)
+            tokenHeatmapSectionView
+
+            // 3. 轮次与用量趋势分析 (参考图2/3平滑极光面积波形图)
+            turnsStackedChartSectionView
+
+            // 4. 下方分栏: 模型用量与 Token 构成透视 & 网关性能与接入场景
+            HStack(alignment: .top, spacing: 16) {
+                modelAndTokenCompositionSectionView
+                    .frame(maxWidth: .infinity)
+                performanceAndClientsSectionView
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .onAppear {
+            Task {
+                await store.refreshAnalyticsData()
+            }
+        }
+    }
+
+    // MARK: - 1. 全局里程碑指标看板 (参考图 2 极简无边框设计)
+    private var analyticsMilestoneStripView: some View {
+        let summary = store.heatmapSummary
+        let totalTokText = summary.totalTokens > 0 ? GatewayStore.formatTokens(Int(summary.totalTokens)) : "0"
+        let peakTokText = summary.peakTokens > 0 ? GatewayStore.formatTokens(Int(summary.peakTokens)) : "0"
+
+        return HStack(spacing: 0) {
+            milestoneMetricCard(
+                value: totalTokText,
+                title: "累计 Token 数"
+            )
+            CodexDivider(.vertical)
+                .frame(height: 28)
+            milestoneMetricCard(
+                value: peakTokText,
+                title: "峰值 Token 数"
+            )
+            CodexDivider(.vertical)
+                .frame(height: 28)
+            milestoneMetricCard(
+                value: summary.longestSessionDurationText,
+                title: "最长连入时长"
+            )
+            CodexDivider(.vertical)
+                .frame(height: 28)
+            milestoneMetricCard(
+                value: "\(summary.currentStreakDays) 天",
+                title: "当前连续天数"
+            )
+            CodexDivider(.vertical)
+                .frame(height: 28)
+            milestoneMetricCard(
+                value: "\(summary.maxStreakDays) 天",
+                title: "最长连续天数"
+            )
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
+        .background(Color.codexCard.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.7)
+        )
+    }
+
+    private func milestoneMetricCard(
+        value: String,
+        title: String
+    ) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+
+            Text(title)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - 2. Token 活跃热力图 (参考图 2 极简圆形网格矩阵)
+    private var tokenHeatmapSectionView: some View {
+        let cells = store.heatmapCells
+        let weeks = stride(from: 0, to: cells.count, by: 7).map {
+            Array(cells[$0..<min($0 + 7, cells.count)])
+        }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            // 顶栏: 左侧 'Token 活跃'，右侧 '滚动年 / 某年份' Tab 选择器
+            HStack(alignment: .center) {
+                Text("Token 活跃")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.codexInk)
+
+                Spacer()
+
+                // 范围切换胶囊: 滚动一年 + 历史各自然年份
+                HStack(spacing: 2) {
+                    // 1. 滚动一年按钮 (0)
+                    let isRolling = store.selectedHeatmapYear == 0
+                    Button {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
+                            store.selectedHeatmapYear = 0
+                        }
+                    } label: {
+                        Text("滚动一年")
+                            .font(.system(size: 11, weight: isRolling ? .semibold : .medium))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3.5)
+                            .background(
+                                isRolling ? Color.codexCard : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            )
+                            .shadow(color: isRolling ? Color.black.opacity(0.06) : Color.clear, radius: 1, y: 0.5)
+                            .foregroundStyle(isRolling ? Color.codexInk : Color.codexMuted)
+                    }
+                    .buttonStyle(.plain)
+
+                    // 2. 具体年份按钮 (如 2026年, 2025年)
+                    ForEach(store.availableAnalyticsYears, id: \.self) { yr in
+                        let isSelected = store.selectedHeatmapYear == yr
+                        Button {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
+                                store.selectedHeatmapYear = yr
+                            }
+                        } label: {
+                            Text("\(String(yr))年")
+                                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 3.5)
+                                .background(
+                                    isSelected ? Color.codexCard : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                )
+                                .shadow(color: isSelected ? Color.black.opacity(0.06) : Color.clear, radius: 1, y: 0.5)
+                                .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(Color.codexMist.opacity(0.65), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            if cells.isEmpty && store.isAnalyticsLoading {
+                HStack {
+                    Spacer()
+                    ProgressView().controlSize(.small)
+                    Text(store.selectedHeatmapYear == 0 ? "正在统计滚动一年 Token 活跃数据..." : "正在统计 \(store.selectedHeatmapYear) 年 Token 活跃数据...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                    Spacer()
+                }
+                .padding(.vertical, 24)
+            } else {
+                let totalWeeks = max(1, weeks.count)
+                let cellSize: CGFloat = 9.5
+                let colSpacing: CGFloat = 3.5
+                let colPitch: CGFloat = cellSize + colSpacing
+                let matrixWidth: CGFloat = CGFloat(totalWeeks) * cellSize + CGFloat(max(0, totalWeeks - 1)) * colSpacing
+
+                VStack(alignment: .leading, spacing: 6) {
+                    // 方块点矩阵 (圆角矩形，每列 7 天，周一到周日)
+                    HStack(spacing: colSpacing) {
+                        ForEach(weeks.indices, id: \.self) { weekIdx in
+                            let weekCells = weeks[weekIdx]
+                            VStack(spacing: colSpacing) {
+                                ForEach(weekCells.indices, id: \.self) { dayIdx in
+                                    let cell = weekCells[dayIdx]
+                                    RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                                        .fill(heatmapColor(for: cell.level))
+                                        .frame(width: cellSize, height: cellSize)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                                                .stroke(hoveredHeatmapCell?.id == cell.id ? Color.codexInk : Color.clear, lineWidth: 1.2)
+                                        )
+                                        .contentShape(Rectangle())
+                                        .onHover { isHovered in
+                                            if isHovered {
+                                                hoveredHeatmapCell = cell
+                                                hoveredCellLocation = (week: weekIdx, day: dayIdx)
+                                            } else if hoveredHeatmapCell?.id == cell.id {
+                                                hoveredHeatmapCell = nil
+                                                hoveredCellLocation = nil
+                                            }
+                                        }
+                                }
+                            }
+                        }
+                    }
+
+                    // 月份标签行：采用与矩阵宽度对齐的定位，保证与上方网格列完全对应
+                    ZStack(alignment: .leading) {
+                        Color.clear
+                            .frame(width: matrixWidth, height: 14)
+
+                        ForEach(weeks.indices, id: \.self) { weekIdx in
+                            let weekCells = weeks[weekIdx]
+                            if let label = weekCells.first(where: { !$0.monthLabel.isEmpty })?.monthLabel, !label.isEmpty {
+                                Text(label)
+                                    .font(.system(size: 9.5, weight: .regular))
+                                    .foregroundStyle(Color.codexMuted.opacity(0.85))
+                                    .fixedSize()
+                                    .offset(x: CGFloat(weekIdx) * colPitch)
+                            }
+                        }
+                    }
+                    .frame(width: matrixWidth, alignment: .leading)
+                }
+                .frame(width: matrixWidth, alignment: .leading)
+                .overlay(alignment: .topLeading) {
+                    // 悬停浮层气泡 (精确定位在当前悬停单元格上方)
+                    if let hovered = hoveredHeatmapCell, let loc = hoveredCellLocation {
+                        let tipX = CGFloat(loc.week) * colPitch + cellSize / 2
+                        let tipY = CGFloat(loc.day) * colPitch - 14
+                        heatmapTooltipView(for: hovered)
+                            .position(
+                                x: tipX,
+                                y: max(14, tipY)
+                            )
+                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center) // 水平完美居中
+                .padding(.top, 2)
+            }
+        }
+        .padding(14)
+        .background(Color.codexCard.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.7)
+        )
+    }
+
+    private func heatmapTooltipView(for cell: GatewayHeatmapCell) -> some View {
+        let df = DateFormatter()
+        df.dateFormat = "M月d日"
+        let dateStr = df.string(from: cell.date)
+        let tokenStr = cell.totalTokens > 0 ? GatewayStore.formatTokens(Int(cell.totalTokens)) : "0"
+
+        return HStack(spacing: 0) {
+            Text("\(dateStr) 使用了 \(tokenStr) 个 Token")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.codexInk)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .shadow(color: Color.black.opacity(0.12), radius: 6, y: 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+        )
+    }
+
+    private func heatmapColor(for level: Int) -> Color {
+        switch level {
+        case 0: return Color.codexDynamic(
+            light: (0.915, 0.925, 0.938),
+            dark: (0.22, 0.23, 0.25)
+        )
+        case 1: return Color(red: 0.68, green: 0.82, blue: 0.98)
+        case 2: return Color(red: 0.44, green: 0.68, blue: 0.95)
+        case 3: return Color(red: 0.22, green: 0.50, blue: 0.90)
+        case 4: return Color(red: 0.12, green: 0.35, blue: 0.78)
+        default: return Color.codexMist.opacity(0.4)
+        }
+    }
+
+    // MARK: - 3. 轮次与用量趋势分析 (参考图2/3顶层看板与波形图)
+    private var turnsStackedChartSectionView: some View {
+        let isSurface = store.analyticsGrouping == "surface"
+        let allPoints = isSurface ? store.agentTimeseriesPoints : store.modelTimeseriesPoints
+        let uniqueGroups = Array(Set(allPoints.map { $0.groupKey })).sorted()
+        let activePoints = allPoints
+            .filter { !hiddenAnalyticsGroups.contains($0.groupKey) }
+            .sorted {
+                if $0.groupKey != $1.groupKey {
+                    return $0.groupKey < $1.groupKey
+                }
+                return $0.date < $1.date
+            }
+        let slotDates: [Date] = Array(Set(activePoints.map { $0.date })).sorted()
+        let totalTurns = activePoints.reduce(0) { $0 + $1.count }
+        let totalTokens = activePoints.reduce(Int64(0)) { $0 + $1.tokens }
+        let selectedSlotDate: Date? = hoveredSlotDate
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // 顶栏: 类似图 2/3 的 Hero Title 与指标
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isSurface ? "客户端会话轮次" : "模型交互轮次")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+
+                    if let selectedSlotDate {
+                        let hoverMatching = activePoints.filter { pt in
+                            abs(pt.date.timeIntervalSince(selectedSlotDate)) < 1.0
+                        }
+                        let hTurns = hoverMatching.reduce(0) { sum, pt in sum + pt.count }
+                        let hToks = hoverMatching.reduce(0) { sum, pt in sum + pt.tokens }
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(hTurns)")
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.accentColor)
+
+                            Text("· \(GatewayStore.formatTokens(Int(hToks))) Tokens (选定时段)")
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(totalTurns)")
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+
+                            Text("· \(GatewayStore.formatTokens(Int(totalTokens))) Tokens")
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                // 控制栏: 胶囊切换 (By model | By surface) + 时间跨度 (7天 | 30天 | 90天)
+                HStack(spacing: 10) {
+                    // Grouping Pill
+                    HStack(spacing: 2) {
+                        groupingPillButton(title: "By model", key: "model")
+                        groupingPillButton(title: "By surface", key: "surface")
+                    }
+                    .padding(2)
+                    .background(Color.codexMist.opacity(0.6), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+                    )
+
+                    // Days Pill
+                    HStack(spacing: 2) {
+                        daysPillButton(days: 7)
+                        daysPillButton(days: 30)
+                        daysPillButton(days: 90)
+                    }
+                    .padding(2)
+                    .background(Color.codexMist.opacity(0.6), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+                    )
+                }
+            }
+
+            if activePoints.isEmpty {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 6) {
+                        Image(systemName: "chart.xyaxis.line")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Color.codexMuted.opacity(0.6))
+                        Text(allPoints.isEmpty ? "当前所选时间段暂无请求轮次数据" : "当前所有图例分类已被隐藏")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.codexMuted)
+                        if !hiddenAnalyticsGroups.isEmpty {
+                            Button("重置显示所有图例") {
+                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                    hiddenAnalyticsGroups.removeAll()
+                                }
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .buttonStyle(.link)
+                            .padding(.top, 4)
+                        }
+                    }
+                    .padding(.vertical, 36)
+                    Spacer()
+                }
+            } else {
+                turnsStackedChartView(activePoints: activePoints, slotDates: slotDates)
+                    .id("turns_chart_\(hiddenAnalyticsGroups.count)")
+                    .frame(height: 200)
+
+                // 交互式可点击图例栏 (单行圆点排布，支持点击过滤与切换)
+                HStack(spacing: 8) {
+                    ForEach(uniqueGroups, id: \.self) { grp in
+                        legendItemButton(grp: grp, uniqueGroups: uniqueGroups)
+                    }
+
+                    if !hiddenAnalyticsGroups.isEmpty {
+                        Spacer()
+                        Button {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                hiddenAnalyticsGroups.removeAll()
+                            }
+                        } label: {
+                            Text("重置图例")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Spacer()
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(16)
+        .background(Color.codexCard.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.8)
+        )
+    }
+
+
+    private func findClosestSlotDate(to targetDate: Date, in slotDates: [Date]) -> Date? {
+        guard !slotDates.isEmpty else { return nil }
+        var closestDate = slotDates[0]
+        var minDiff = abs(slotDates[0].timeIntervalSince(targetDate))
+        for dt in slotDates {
+            let diff = abs(dt.timeIntervalSince(targetDate))
+            if diff < minDiff {
+                minDiff = diff
+                closestDate = dt
+            }
+        }
+        return closestDate
+    }
+
+    @ViewBuilder
+    private func chartTooltipPopup(for date: Date, in activePoints: [GatewayModelTimeseriesPoint]) -> some View {
+        let matching = activePoints.filter { abs($0.date.timeIntervalSince(date)) < 1.0 }
+        let totalTurns = matching.reduce(0) { $0 + $1.count }
+        let totalTokens = matching.reduce(0) { $0 + $1.tokens }
+        let dateString: String = {
+            let df = DateFormatter()
+            df.dateFormat = "MM/dd HH:mm"
+            return df.string(from: date)
+        }()
+
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text(dateString)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                Spacer(minLength: 4)
+                Text("\(totalTurns) 轮")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.09, green: 0.49, blue: 0.98))
+            }
+
+            if totalTokens > 0 {
+                Text("\(GatewayStore.formatTokens(Int(totalTokens))) Tokens")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.codexMuted.opacity(0.85))
+            }
+
+            Rectangle()
+                .fill(Color.codexLine.opacity(0.25))
+                .frame(height: 0.6)
+
+            let activeItems = matching.filter { $0.count > 0 || $0.tokens > 0 }
+            if activeItems.isEmpty {
+                Text("无活动记录")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
+            } else {
+                ForEach(activeItems, id: \.groupKey) { item in
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(colorForCategory(item.groupKey))
+                            .frame(width: 5.5, height: 5.5)
+                        Text(item.groupKey)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.codexInk.opacity(0.88))
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text("\(item.count) 轮")
+                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(width: 165)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.codexCard.opacity(0.96))
+                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+        )
+    }
+
+    @ViewBuilder
+    private func turnsStackedChartView(activePoints: [GatewayModelTimeseriesPoint], slotDates: [Date]) -> some View {
+        Chart(activePoints) { (pt: GatewayModelTimeseriesPoint) in
+            AreaMark(
+                x: .value("Date", pt.date),
+                y: .value("Turns", pt.count),
+                series: .value("Group", pt.groupKey),
+                stacking: .standard
+            )
+            .interpolationMethod(.monotone)
+            .foregroundStyle(colorForCategory(pt.groupKey).opacity(0.78))
+
+            if let selectedSlotDate = hoveredSlotDate {
+                RuleMark(x: .value("SelectedDate", selectedSlotDate))
+                    .foregroundStyle(Color(red: 0.09, green: 0.49, blue: 0.98).opacity(0.85))
+                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
+            }
+        }
+        .chartLegend(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    .foregroundStyle(Color.codexLine.opacity(0.25))
+                AxisValueLabel {
+                    if let intVal = value.as(Int.self) {
+                        Text("\(intVal)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted.opacity(0.8))
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { (value: AxisValue) in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    .foregroundStyle(Color.codexLine.opacity(0.2))
+                if let dt = value.as(Date.self) {
+                    AxisValueLabel {
+                        Text(dt, format: .dateTime.month(.defaultDigits).day())
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted.opacity(0.8))
+                    }
+                }
+            }
+        }
+        .chartOverlay { (proxy: ChartProxy) in
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                guard let plotFrame = proxy.plotFrame else { return }
+                                let plotArea = geo[plotFrame]
+
+                                // 允许横向在 plotArea 边缘有微量缓冲（±8px），超出则取消 hover
+                                guard location.x >= plotArea.minX - 8 && location.x <= plotArea.maxX + 8 else {
+                                    if hoveredSlotDate != nil {
+                                        hoveredSlotDate = nil
+                                    }
+                                    return
+                                }
+                                guard location.y >= 0 && location.y <= geo.size.height else {
+                                    if hoveredSlotDate != nil {
+                                        hoveredSlotDate = nil
+                                    }
+                                    return
+                                }
+
+                                // 关键修复：proxy.value(atX:) 接受的是相对于 plotArea 绘图区域的 x 坐标！
+                                let xInPlot = max(0, min(location.x - plotArea.origin.x, plotArea.width))
+                                if let date: Date = proxy.value(atX: xInPlot),
+                                   let snapped = findClosestSlotDate(to: date, in: slotDates) {
+                                    if hoveredSlotDate != snapped {
+                                        hoveredSlotDate = snapped
+                                    }
+                                }
+                            case .ended:
+                                if hoveredSlotDate != nil {
+                                    hoveredSlotDate = nil
+                                }
+                            }
+                        }
+
+                    if let selectedSlotDate = hoveredSlotDate,
+                       let xPos = proxy.position(forX: selectedSlotDate),
+                       let plotFrame = proxy.plotFrame {
+                        let actualX = xPos + geo[plotFrame].origin.x
+                        let plotWidth = geo[plotFrame].width
+                        let isRightSide = actualX > (geo[plotFrame].minX + plotWidth / 2)
+                        let tooltipX: CGFloat = isRightSide
+                            ? max(actualX - 98, geo[plotFrame].minX + 92)
+                            : min(actualX + 98, geo[plotFrame].maxX - 92)
+                        let tooltipY: CGFloat = geo[plotFrame].minY + 45
+
+                        chartTooltipPopup(for: selectedSlotDate, in: activePoints)
+                            .position(x: tooltipX, y: tooltipY)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+        }
+    }
+
+// MARK: - 4. 模型消耗与 Token 构成透视 (左卡片)
+    private var modelAndTokenCompositionSectionView: some View {
+        let comp = store.analyticsTokenComposition
+        let models = store.analyticsModelRankings
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // 头部指标
+            VStack(alignment: .leading, spacing: 2) {
+                Text("模型消耗与 Token 结构")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(comp.totalTokens > 0 ? GatewayStore.formatTokens(comp.totalTokens) : "0")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.codexInk)
+                    Text("总 Token 吞吐")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                }
+            }
+
+            // 1. Token 输入/输出/缓存 比例条
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Token 构成透视")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.codexInk.opacity(0.85))
+                    Spacer()
+                    if comp.totalTokens > 0 {
+                        Text("输入 \(Int(comp.inputPercentage))% · 输出 \(Int(comp.outputPercentage))%")
+                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                }
+
+                // 双段比例条
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let inW = comp.totalTokens > 0 ? max(2, w * CGFloat(comp.inputPercentage / 100.0)) : 0
+                    let outW = max(0, w - inW)
+
+                    HStack(spacing: 2) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color(red: 0.09, green: 0.49, blue: 0.98))
+                            .frame(width: max(0, inW - 1))
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color(red: 0.45, green: 0.75, blue: 0.98))
+                            .frame(width: max(0, outW - 1))
+                    }
+                }
+                .frame(height: 7)
+
+                // 比例指标项
+                HStack(spacing: 12) {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color(red: 0.09, green: 0.49, blue: 0.98)).frame(width: 5.5, height: 5.5)
+                        Text("输入: \(GatewayStore.formatTokens(comp.inputTokens))")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.codexMuted)
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 4) {
+                        Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.98)).frame(width: 5.5, height: 5.5)
+                        Text("输出: \(GatewayStore.formatTokens(comp.outputTokens))")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.codexMuted)
+                            .lineLimit(1)
+                    }
+                    if comp.cacheReadTokens > 0 {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color(red: 0.14, green: 0.30, blue: 0.66)).frame(width: 5.5, height: 5.5)
+                            Text("缓存: \(GatewayStore.formatTokens(comp.cacheReadTokens))")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Rectangle()
+                .fill(Color.codexLine.opacity(0.25))
+                .frame(height: 0.6)
+
+            // 2. Top 模型用量排行
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Top 模型消耗排行")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+
+                if models.isEmpty {
+                    Text("暂无模型记录")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.vertical, 8)
+                } else {
+                    let maxToks = max(1, models.first?.tokens ?? 1)
+                    ForEach(models) { item in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(colorForCategory(item.name))
+                                .frame(width: 6, height: 6)
+                            Text(item.name)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                                .frame(width: 95, alignment: .leading)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+
+                            // 进度条
+                            GeometryReader { g in
+                                let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxToks))
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.codexMist.opacity(0.4))
+                                    Capsule().fill(colorForCategory(item.name).opacity(0.85))
+                                        .frame(width: barW)
+                                }
+                            }
+                            .frame(height: 6)
+
+                            // 数值与百分比
+                            HStack(spacing: 4) {
+                                Spacer(minLength: 0)
+                                Text(GatewayStore.formatTokens(item.tokens))
+                                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
+                                    .lineLimit(1)
+                                Text("(\(String(format: "%.0f%%", item.percentage)))")
+                                    .font(.system(size: 8.5))
+                                    .foregroundStyle(Color.codexMuted)
+                                    .lineLimit(1)
+                            }
+                            .lineLimit(1)
+                            .frame(width: 96, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.codexCard.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.8)
+        )
+    }
+
+    // MARK: - 5. 网关性能基准与客户端透视 (右卡片)
+    private var performanceAndClientsSectionView: some View {
+        let latencies = store.analyticsLatencyRankings
+        let clients = store.analyticsClientRankings
+        let overallAvgTtft = latencies.isEmpty ? 0 : latencies.reduce(0) { $0 + $1.avgTtftMs } / latencies.count
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // 头部指标
+            VStack(alignment: .leading, spacing: 2) {
+                Text("网关性能与接入场景")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(overallAvgTtft > 0 ? "\(overallAvgTtft) ms" : "--")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.codexInk)
+                    Text("平均首字延迟 (TTFT)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.codexMuted)
+                }
+            }
+
+            // 1. 各模型首字延迟基准 (TTFT 吐字速度)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("模型首字延迟 (TTFT 流式吐字速度)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.codexInk.opacity(0.85))
+                    Spacer()
+                    Text("越低越快")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Color.codexMuted.opacity(0.7))
+                }
+
+                if latencies.isEmpty {
+                    Text("暂无首字延迟采样记录")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.vertical, 8)
+                } else {
+                    let maxTtft = max(1, latencies.map { $0.avgTtftMs }.max() ?? 1)
+                    ForEach(latencies) { item in
+                        HStack(spacing: 8) {
+                            Text(item.name)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                                .frame(width: 95, alignment: .leading)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+
+                            // 延迟条
+                            GeometryReader { g in
+                                let barW = max(4, g.size.width * CGFloat(item.avgTtftMs) / CGFloat(max(maxTtft, 1200)))
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.codexMist.opacity(0.4))
+                                    Capsule()
+                                        .fill(ttftColor(item.avgTtftMs))
+                                        .frame(width: barW)
+                                }
+                            }
+                            .frame(height: 6)
+
+                            // 毫秒数与速度徽标
+                            HStack(spacing: 3) {
+                                Spacer(minLength: 0)
+                                Text("\(item.avgTtftMs)ms")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
+                                    .lineLimit(1)
+                                Text(ttftBadge(item.avgTtftMs))
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundStyle(ttftColor(item.avgTtftMs))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 3.5)
+                                    .padding(.vertical, 1)
+                                    .background(ttftColor(item.avgTtftMs).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                            }
+                            .lineLimit(1)
+                            .frame(width: 78, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Rectangle()
+                .fill(Color.codexLine.opacity(0.25))
+                .frame(height: 0.6)
+
+            // 2. 客户端 / Agent 接入排行
+            VStack(alignment: .leading, spacing: 8) {
+                Text("客户端 / Agent 接入排行")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+
+                if clients.isEmpty {
+                    Text("暂无客户端数据")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.vertical, 8)
+                } else {
+                    let maxClientToks = max(1, clients.first?.tokens ?? 1)
+                    ForEach(clients) { item in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(colorForCategory(item.name))
+                                .frame(width: 6, height: 6)
+                            Text(item.name)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                                .frame(width: 95, alignment: .leading)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+
+                            // 进度条
+                            GeometryReader { g in
+                                let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxClientToks))
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.codexMist.opacity(0.4))
+                                    Capsule().fill(colorForCategory(item.name).opacity(0.85))
+                                        .frame(width: barW)
+                                }
+                            }
+                            .frame(height: 6)
+
+                            // 数值与轮次
+                            HStack(spacing: 4) {
+                                Spacer(minLength: 0)
+                                Text(GatewayStore.formatTokens(item.tokens))
+                                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
+                                    .lineLimit(1)
+                                Text("(\(item.turns)轮)")
+                                    .font(.system(size: 8.5))
+                                    .foregroundStyle(Color.codexMuted)
+                                    .lineLimit(1)
+                            }
+                            .lineLimit(1)
+                            .frame(width: 108, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.codexCard.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.8)
+        )
+    }
+
+    private func ttftColor(_ ms: Int) -> Color {
+        if ms < 500 {
+            return Color(red: 0.10, green: 0.65, blue: 0.40)
+        } else if ms < 1000 {
+            return Color(red: 0.09, green: 0.49, blue: 0.98)
+        } else {
+            return Color(red: 0.85, green: 0.52, blue: 0.15)
+        }
+    }
+
+    private func ttftBadge(_ ms: Int) -> String {
+        if ms < 500 {
+            return "极速"
+        } else if ms < 1000 {
+            return "良好"
+        } else {
+            return "较慢"
+        }
+    }
+
+    private let elegantBluePalette: [Color] = [
+        Color(red: 0.09, green: 0.49, blue: 0.98), // 0: 经典亮蓝 (Primary Tech Blue - 图1核心主色)
+        Color(red: 0.45, green: 0.75, blue: 0.98), // 1: 柔和天蓝 (Soft Sky Blue - 图1右侧柱状层浅色)
+        Color(red: 0.14, green: 0.30, blue: 0.66), // 2: 沉稳藏青 (Deep Cobalt Navy)
+        Color(red: 0.24, green: 0.60, blue: 0.90), // 3: 蔚蓝海蓝 (Cerulean Azure)
+        Color(red: 0.38, green: 0.52, blue: 0.70), // 4: 雅致钢蓝 (Steel Slate Blue)
+        Color(red: 0.60, green: 0.82, blue: 0.96), // 5: 浅冰晶蓝 (Glacier Ice Blue)
+        Color(red: 0.30, green: 0.44, blue: 0.62), // 6: 沉静灰蓝 (Muted Slate Blue)
+    ]
+
+    private func colorForCategory(_ key: String) -> Color {
+        let k = key.lowercased()
+        if k.contains("3.7") || k.contains("hermes") {
+            return elegantBluePalette[0] // 经典亮蓝
+        } else if k.contains("3.8") || k.contains("api") {
+            return elegantBluePalette[1] // 柔和天蓝
+        } else if k.contains("deepseek") || k.contains("pi") {
+            return elegantBluePalette[2] // 沉稳藏青
+        } else if k.contains("claude") || k.contains("computer") {
+            return elegantBluePalette[3] // 蔚蓝海蓝
+        } else if k.contains("glm") || k.contains("dsh") || k.contains("browser") {
+            return elegantBluePalette[4] // 雅致钢蓝
+        } else if k.contains("sites") || k.contains("github") {
+            return elegantBluePalette[5] // 浅冰晶蓝
+        } else {
+            let hash = abs(k.hashValue)
+            return elegantBluePalette[hash % elegantBluePalette.count]
+        }
+    }
+
+    private func groupingPillButton(title: String, key: String) -> some View {
+        let isSelected = store.analyticsGrouping == key
+        return Button {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                store.analyticsGrouping = key
+                hiddenAnalyticsGroups.removeAll()
+            }
+        } label: {
+            Text(title)
+                .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
+                .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func daysPillButton(days: Int) -> some View {
+        let isSelected = store.analyticsDaysRange == days
+        return Button {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                store.analyticsDaysRange = days
+                hiddenAnalyticsGroups.removeAll()
+            }
+            Task { await store.refreshAnalyticsData() }
+        } label: {
+            Text("\(days)天")
+                .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
+                .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggleLegendGroup(_ grp: String, uniqueGroups: [String]) {
+        if hiddenAnalyticsGroups.contains(grp) {
+            hiddenAnalyticsGroups.remove(grp)
+        } else {
+            let activeCount = uniqueGroups.filter { !hiddenAnalyticsGroups.contains($0) }.count
+            if activeCount <= 1 {
+                hiddenAnalyticsGroups.removeAll()
+            } else {
+                hiddenAnalyticsGroups.insert(grp)
+            }
+        }
+    }
+
+    private func legendItemButton(grp: String, uniqueGroups: [String]) -> some View {
+        let isHidden = hiddenAnalyticsGroups.contains(grp)
+        return Button {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                toggleLegendGroup(grp, uniqueGroups: uniqueGroups)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(isHidden ? Color.codexMuted.opacity(0.25) : colorForCategory(grp))
+                    .frame(width: 7, height: 7)
+                    .overlay(
+                        Circle()
+                            .stroke(isHidden ? Color.codexLine.opacity(0.5) : Color.clear, lineWidth: 1)
+                    )
+                Text(grp)
+                    .font(.system(size: 10.5, weight: isHidden ? .regular : .medium))
+                    .foregroundStyle(isHidden ? Color.codexMuted.opacity(0.40) : Color.codexInk.opacity(0.90))
+                    .strikethrough(isHidden, color: Color.codexMuted.opacity(0.40))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                isHidden ? Color.clear : Color.codexMist.opacity(0.4),
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isHidden ? "点击重新展示 \(grp)" : "点击隐藏 \(grp)")
+    }
+
+}

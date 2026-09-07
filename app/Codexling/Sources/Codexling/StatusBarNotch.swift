@@ -230,6 +230,8 @@ struct StatusBarProviderTick: Identifiable, Equatable, Sendable {
     /// 该供应商账号对应的工作间跳转地址（例如 OpenCode 的 workspace 页面）。
     /// nil 时面板不展示「工作区跳转」按钮。
     var workspaceURL: String?
+    /// 额度刷新/重置时间展示文本（如 "3小时后刷新" 或 "今天 18:30 重置"）。
+    var resetTimeText: String?
 }
 
 /// 双维度独立轮播索引：左区 Agent 与右区 Provider 各自独立计时切换。
@@ -323,6 +325,12 @@ enum StatusBarProviderTickFactory {
             segments = [StatusBarQuotaSegment(text: quotaText, health: .gray)]
         }
         let primaryHealth = segments.first?.health ?? .gray
+        let resetRaw = (usage.hasShortWindow ? usage.shortWindow?.resetsAt : nil) ?? usage.weekly.resetsAt
+        let resetTimeText: String? = if !resetRaw.isEmpty && resetRaw != "未知" {
+            "\(UsageDateFormat.dateAndTime(resetRaw)) 重置"
+        } else {
+            nil
+        }
         return StatusBarProviderTick(
             id: id,
             providerName: "Codex",
@@ -331,7 +339,8 @@ enum StatusBarProviderTickFactory {
             quotaText: quotaText,
             detailText: usage.planName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             quotaHealth: primaryHealth,
-            quotaSegments: segments
+            quotaSegments: segments,
+            resetTimeText: resetTimeText
         )
     }
 
@@ -436,6 +445,12 @@ enum StatusBarProviderTickFactory {
             email: connection.email,
             fallbackLabel: connection.label
         )
+        let resetRaw = connection.geminiFiveHourResetDesc ?? connection.geminiWeeklyResetDesc
+        let resetTimeText: String? = if !isQuotaUnavailable && !requiresAccountValidation {
+            GeminiQuotaResetFormatter.displayText(resetRaw)
+        } else {
+            nil
+        }
         return StatusBarProviderTick(
             id: "gemini.\(connection.id.rawValue.uuidString.lowercased())",
             providerName: "Gemini",
@@ -444,7 +459,8 @@ enum StatusBarProviderTickFactory {
             quotaText: quotaText,
             detailText: connection.resolvedPlanDisplayName,
             quotaHealth: health,
-            quotaSegments: segments
+            quotaSegments: segments,
+            resetTimeText: resetTimeText
         )
     }
 }

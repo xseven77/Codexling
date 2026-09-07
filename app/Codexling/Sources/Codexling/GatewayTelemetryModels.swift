@@ -435,3 +435,136 @@ public enum GatewayColumnCategory: String, CaseIterable, Identifiable, Sendable 
         GatewayRequestColumn.allCases.filter { $0.category == self }
     }
 }
+
+// MARK: - Token 活动热力图与用量分析数据模型
+
+public struct GatewayHeatmapCell: Identifiable, Sendable {
+    public let id: String
+    public let date: Date
+    public let dayString: String // "yyyy-MM-dd"
+    public let monthLabel: String // "8月" or empty
+    public let totalTokens: Int64
+    public let requestsCount: Int64
+    public let level: Int // 0..4
+
+    public init(id: String, date: Date, dayString: String, monthLabel: String, totalTokens: Int64, requestsCount: Int64, level: Int) {
+        self.id = id
+        self.date = date
+        self.dayString = dayString
+        self.monthLabel = monthLabel
+        self.totalTokens = totalTokens
+        self.requestsCount = requestsCount
+        self.level = level
+    }
+}
+
+public struct GatewayHeatmapSummary: Sendable {
+    public let totalTokens: Int64
+    public let peakTokens: Int64
+    public let peakDay: String
+    public let longestSessionDurationText: String
+    public let currentStreakDays: Int
+    public let maxStreakDays: Int
+    public let activeDaysCount: Int
+
+    public static var zero: GatewayHeatmapSummary {
+        GatewayHeatmapSummary(
+            totalTokens: 0,
+            peakTokens: 0,
+            peakDay: "--",
+            longestSessionDurationText: "--",
+            currentStreakDays: 0,
+            maxStreakDays: 0,
+            activeDaysCount: 0
+        )
+    }
+}
+
+public struct GatewayModelTimeseriesPoint: Identifiable, Sendable {
+    public var id: String { "\(date.timeIntervalSince1970)_\(groupKey)" }
+    public let date: Date
+    public let dateLabel: String
+    public let groupKey: String
+    public let count: Int
+    public let tokens: Int64
+
+    public init(date: Date, dateLabel: String, groupKey: String, count: Int, tokens: Int64) {
+        self.date = date
+        self.dateLabel = dateLabel
+        self.groupKey = groupKey
+        self.count = count
+        self.tokens = tokens
+    }
+}
+
+public struct GatewayTokenComposition: Sendable {
+    public let inputTokens: Int64
+    public let outputTokens: Int64
+    public let cacheReadTokens: Int64
+    public let totalTokens: Int64
+
+    public var inputPercentage: Double {
+        totalTokens > 0 ? (Double(inputTokens) / Double(totalTokens)) * 100.0 : 0
+    }
+    public var outputPercentage: Double {
+        totalTokens > 0 ? (Double(outputTokens) / Double(totalTokens)) * 100.0 : 0
+    }
+
+    public static var zero: GatewayTokenComposition {
+        GatewayTokenComposition(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0)
+    }
+
+    public init(inputTokens: Int64, outputTokens: Int64, cacheReadTokens: Int64, totalTokens: Int64) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.totalTokens = totalTokens
+    }
+}
+
+public struct GatewayModelRankingItem: Identifiable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let tokens: Int64
+    public let turns: Int
+    public let percentage: Double
+
+    public init(name: String, tokens: Int64, turns: Int, percentage: Double) {
+        self.name = name
+        self.tokens = tokens
+        self.turns = turns
+        self.percentage = percentage
+    }
+}
+
+public struct GatewayLatencyRankingItem: Identifiable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let avgTtftMs: Int
+    public let avgTotalLatencyMs: Int
+    public let count: Int
+
+    public init(name: String, avgTtftMs: Int, avgTotalLatencyMs: Int, count: Int) {
+        self.name = name
+        self.avgTtftMs = avgTtftMs
+        self.avgTotalLatencyMs = avgTotalLatencyMs
+        self.count = count
+    }
+}
+
+public struct GatewayClientRankingItem: Identifiable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let tokens: Int64
+    public let turns: Int
+    public let percentage: Double
+
+    public init(name: String, tokens: Int64, turns: Int, percentage: Double) {
+        self.name = name
+        self.tokens = tokens
+        self.turns = turns
+        self.percentage = percentage
+    }
+}
+
+
