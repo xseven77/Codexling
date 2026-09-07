@@ -316,8 +316,30 @@ struct GatewayProviderSectionCard: View {
         return section.accountGroups[0]
     }
 
+    private var isConsolidated: Bool {
+        store.isProviderConsolidated(section.id)
+    }
+
+    private var consolidatedModels: [GatewayExportedModel] {
+        store.consolidatedModels(for: section.id)
+    }
+
+    private var displayModels: [GatewayExportedModel] {
+        isConsolidated ? consolidatedModels : activeGroup.models
+    }
+
+    private var displayRecommendedModels: [String] {
+        if isConsolidated {
+            return Array(consolidatedModels.prefix(4).map(\.modelName))
+        }
+        return activeGroup.recommendedModels
+    }
+
     private var totalModelsCount: Int {
-        section.accountGroups.reduce(0) { $0 + $1.models.count }
+        if isConsolidated {
+            return consolidatedModels.count
+        }
+        return section.accountGroups.reduce(0) { $0 + $1.models.count }
     }
 
     var body: some View {
@@ -325,7 +347,7 @@ struct GatewayProviderSectionCard: View {
             GatewayProviderCardHeader(
                 section: section,
                 totalModelsCount: totalModelsCount,
-                isConsolidated: store.isProviderConsolidated(section.id),
+                isConsolidated: isConsolidated,
                 onToggleConsolidated: { enabled in
                     store.setProviderConsolidated(section.id, enabled: enabled)
                 }
@@ -383,9 +405,9 @@ struct GatewayProviderSectionCard: View {
                 onResync: { syncModels(for: activeGroup) }
             )
 
-            if activeGroup.isProxyEnabled && !activeGroup.recommendedModels.isEmpty {
+            if activeGroup.isProxyEnabled && !displayRecommendedModels.isEmpty {
                 GatewayRecommendedModelsGrid(
-                    models: activeGroup.recommendedModels,
+                    models: displayRecommendedModels,
                     copiedModelId: copiedModelId,
                     onCopy: { modelId in
                         copyModel(modelId, id: modelId)
@@ -395,7 +417,10 @@ struct GatewayProviderSectionCard: View {
 
             if activeGroup.isProxyEnabled && isExpanded {
                 GatewayAccountModelsDrawer(
-                    activeGroup: activeGroup,
+                    quickConnectTip: isConsolidated
+                        ? "已开启账号池聚合调度，所有可用账号将依据健康状态与额度自动均衡分配。在客户端中指定模型名称（包含供应商前缀）即可直接调用。"
+                        : activeGroup.quickConnectTip,
+                    models: displayModels,
                     isAddingModel: $isAddingModel,
                     customModelInput: $customModelInput,
                     copiedModelId: copiedModelId,
@@ -422,30 +447,57 @@ struct GatewayProviderSectionCard: View {
 
     private var accountInfoView: some View {
         VStack(alignment: .leading, spacing: 2.5) {
-            HStack(spacing: 6) {
-                Text("当前选定账号:")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color.codexMuted)
+            if isConsolidated {
+                HStack(spacing: 6) {
+                    Text("当前调度模式:")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
 
-                Text(activeGroup.accountName)
-                    .font(.system(size: 11.5, weight: .bold))
-                    .foregroundStyle(Color.codexInk)
-                    .lineLimit(1)
+                    Text("账号池聚合调度")
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(Color.purple)
+                        .lineLimit(1)
 
-                Text(activeGroup.isProxyEnabled ? activeGroup.badgeText : "代理已停用")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(activeGroup.isProxyEnabled ? Color.green.opacity(0.12) : Color.codexMist, in: Capsule())
-                    .foregroundStyle(activeGroup.isProxyEnabled ? Color.green : Color.codexMuted)
-                    .lineLimit(1)
-            }
+                    let activeCount = section.accountGroups.filter { $0.isProxyEnabled }.count
+                    Text("\(activeCount) 个账号协同")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.12), in: Capsule())
+                        .foregroundStyle(Color.purple)
+                        .lineLimit(1)
+                }
 
-            if let email = activeGroup.email, !email.isEmpty {
-                Text(email)
+                Text("按额度与健康度自动调度，模型名已带供应商统一前缀")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)
+            } else {
+                HStack(spacing: 6) {
+                    Text("当前选定账号:")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.codexMuted)
+
+                    Text(activeGroup.accountName)
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+
+                    Text(activeGroup.isProxyEnabled ? activeGroup.badgeText : "代理已停用")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(activeGroup.isProxyEnabled ? Color.green.opacity(0.12) : Color.codexMist, in: Capsule())
+                        .foregroundStyle(activeGroup.isProxyEnabled ? Color.green : Color.codexMuted)
+                        .lineLimit(1)
+                }
+
+                if let email = activeGroup.email, !email.isEmpty {
+                    Text(email)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                }
             }
         }
     }
@@ -475,7 +527,7 @@ struct GatewayProviderSectionCard: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(isExpanded ? "收起" : "全部模型 (\(activeGroup.models.count))")
+                Text(isExpanded ? "收起" : (isConsolidated ? "全部聚合模型 (\(displayModels.count))" : "全部模型 (\(displayModels.count))"))
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8.5, weight: .bold))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
@@ -964,7 +1016,8 @@ private struct GatewayRecommendedModelsGrid: View {
 
 @MainActor
 private struct GatewayAccountModelsDrawer: View {
-    let activeGroup: GatewayAccountModelGroup
+    let quickConnectTip: String
+    let models: [GatewayExportedModel]
     @Binding var isAddingModel: Bool
     @Binding var customModelInput: String
     let copiedModelId: String?
@@ -982,7 +1035,7 @@ private struct GatewayAccountModelsDrawer: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.orange)
                     .padding(.top, 1)
-                Text(activeGroup.quickConnectTip)
+                Text(quickConnectTip)
                     .font(.system(size: 10.5))
                     .foregroundStyle(Color.codexInk)
                     .lineSpacing(2)
@@ -995,7 +1048,7 @@ private struct GatewayAccountModelsDrawer: View {
             // Custom Model Input & Models Table
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("可访问模型全量清单 (\(activeGroup.models.count))")
+                    Text("可访问模型全量清单 (\(models.count))")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.codexInk)
 
@@ -1036,7 +1089,7 @@ private struct GatewayAccountModelsDrawer: View {
                     .padding(.vertical, 4)
                 }
 
-                ForEach(activeGroup.models) { model in
+                ForEach(models) { model in
                     let isCopied = copiedModelId == model.id
                     HStack(spacing: 8) {
                         Text(model.modelName)

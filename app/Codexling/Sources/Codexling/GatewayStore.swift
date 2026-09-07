@@ -1557,7 +1557,7 @@ public final class GatewayStore {
     }
 
     public var allModelNamesListString: String {
-        accountModelGroups.flatMap { $0.models }.map { $0.modelName }.joined(separator: ", ")
+        allExportedModels.map { $0.modelName }.joined(separator: ", ")
     }
 
     /// Normalizes raw model IDs from ChatGPT / OpenAI API by stripping the `-wm` watermark suffix.
@@ -1695,16 +1695,39 @@ public final class GatewayStore {
     /// accepts the equivalent `model@account` wire syntax.
     nonisolated public static func agentCompatibleModelID(_ displayModelID: String) -> String {
         let trimmed = displayModelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasSuffix(")"), let separator = trimmed.range(of: " (", options: .backwards) else {
-            return trimmed
+
+        // 1. If it has an account scope: "供应商 · 模型名 (account)" or "模型名 (account)"
+        if trimmed.hasSuffix(")"), let parenSep = trimmed.range(of: " (", options: .backwards) {
+            let modelPart = trimmed[..<parenSep.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            let accountStart = parenSep.upperBound
+            let accountEnd = trimmed.index(before: trimmed.endIndex)
+            let account = trimmed[accountStart..<accountEnd].trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let (providerPrefix, baseModel): (String?, String) = {
+                if let dotSep = modelPart.range(of: " · ") {
+                    let prov = modelPart[..<dotSep.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let m = modelPart[dotSep.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                    return (prov, m)
+                }
+                return (nil, modelPart)
+            }()
+
+            guard !baseModel.isEmpty, !account.isEmpty else { return trimmed }
+            if let prov = providerPrefix {
+                return "\(prov)/\(baseModel)@\(accountSlug(name: account))"
+            } else {
+                return "\(baseModel)@\(accountSlug(name: account))"
+            }
         }
-        let model = trimmed[..<separator.lowerBound]
-        let accountStart = separator.upperBound
-        let accountEnd = trimmed.index(before: trimmed.endIndex)
-        let account = trimmed[accountStart..<accountEnd]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty, !account.isEmpty else { return trimmed }
-        return "\(model)@\(accountSlug(name: account))"
+
+        // 2. Consolidated without account scope: "供应商 · 模型名"
+        if let dotSep = trimmed.range(of: " · ") {
+            let provider = trimmed[..<dotSep.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = trimmed[dotSep.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(provider.lowercased())/\(model)"
+        }
+
+        return trimmed
     }
 
     /// Hermes renders configured model IDs as the picker label and does not
@@ -1750,8 +1773,11 @@ public final class GatewayStore {
         return "\(component(provider))·\(component(modelName))"
     }
 
-    nonisolated private static func unscopedModelName(_ modelName: String) -> String {
-        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+    nonisolated public static func unscopedModelName(_ modelName: String) -> String {
+        var trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let sep = trimmed.range(of: " · ") {
+            trimmed = String(trimmed[sep.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard trimmed.hasSuffix(")"), let separator = trimmed.range(of: " (", options: .backwards) else {
             return trimmed
         }
@@ -1765,6 +1791,13 @@ public final class GatewayStore {
         let compatible = agentCompatibleModelID(modelName)
         guard !compatible.isEmpty else { return "" }
         return compatible.contains("@") ? compatible : "\(baseModel)@\(accountSlug(name: accountName))"
+    }
+
+    nonisolated public static func providerName(for sectionID: String) -> String {
+        if sectionID.hasPrefix("google") || sectionID.hasPrefix("gemini") { return "Google" }
+        if sectionID.hasPrefix("deepseek") { return "DeepSeek" }
+        if sectionID.hasPrefix("opencode") { return "OpenCode" }
+        return "OpenAI"
     }
 
     nonisolated private static func hermesProviderName(for groupID: String) -> String {
@@ -2051,7 +2084,7 @@ public final class GatewayStore {
                     // friendly label is built separately for Agent pickers.
                     let mid = rawMid.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !mid.isEmpty else { continue }
-                    let scopedId = "\(mid) (\(slug))"
+                    let scopedId = "Google · \(mid) (\(slug))"
                     if !connModels.contains(where: { $0.modelName == scopedId }) {
                         connModels.append(
                             GatewayExportedModel(
@@ -2066,7 +2099,7 @@ public final class GatewayStore {
                     }
                 }
                 for custom in customModelsByGroup["google_gemini_\(conn.id.rawValue)"] ?? [] {
-                    let scopedID = "\(custom) (\(slug))"
+                    let scopedID = "Google · \(custom) (\(slug))"
                     guard !connModels.contains(where: { $0.modelName == scopedID }) else { continue }
                     connModels.append(
                         GatewayExportedModel(
@@ -2129,11 +2162,11 @@ public final class GatewayStore {
                     badgeText: "官方直连 · 未配置",
                     badgeColor: NSColor.systemBlue,
                     quickConnectTip: "第三方 Agent 填入 deepseek-reasoner 可完整获得 R1 深度思考推理链流式输出；填入 deepseek-chat 或 deepseek-v4-pro 享受极速代码生成，支持任何新发布的 DeepSeek 模型名直接请求。",
-                    recommendedModels: ["deepseek-chat (deepseek)", "deepseek-reasoner (deepseek)", "deepseek-v4-pro (deepseek)"],
+                    recommendedModels: ["DeepSeek · deepseek-chat (deepseek)", "DeepSeek · deepseek-reasoner (deepseek)", "DeepSeek · deepseek-v4-pro (deepseek)"],
                     sampleConfigSnippet: """
                     Base URL: http://127.0.0.1:\(portStr)/v1
                     API Key:  \(token)
-                    Model:    deepseek-reasoner (deepseek)
+                    Model:    DeepSeek · deepseek-reasoner (deepseek)
                     """,
                     models: deepseekModelList
                 )
@@ -2149,7 +2182,7 @@ public final class GatewayStore {
                 let connModels = conn.availableModelIDs.compactMap { rawModel -> GatewayExportedModel? in
                     let model = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !model.isEmpty else { return nil }
-                    let scopedID = "\(model) (\(slug))"
+                    let scopedID = "DeepSeek · \(model) (\(slug))"
                     return GatewayExportedModel(
                         id: scopedID,
                         modelName: scopedID,
@@ -2199,12 +2232,12 @@ public final class GatewayStore {
                     badgeText: "多模型聚合",
                     badgeColor: NSColor.systemOrange,
                     quickConnectTip: "同时支持标准 OpenAI 协议 (/v1) 与 Anthropic Messages 协议，无缝调用 OpenCode 开通的 MiniMax, Kimi, GLM, DeepSeek, Qwen, Claude, Grok 等全系模型。",
-                    recommendedModels: ["deepseek-v4-pro (opencode)", "qwen3.8-max (opencode)", "kimi-k3 (opencode)", "claude-3-7-sonnet (opencode)"],
+                    recommendedModels: ["OpenCode · deepseek-v4-pro (opencode)", "OpenCode · qwen3.8-max (opencode)", "OpenCode · kimi-k3 (opencode)", "OpenCode · claude-3-7-sonnet (opencode)"],
                     sampleConfigSnippet: """
                     OpenAI 端点:    http://127.0.0.1:\(portStr)/v1
                     Anthropic 端点: http://127.0.0.1:\(portStr)
                     API Key:       \(token)
-                    Model:         deepseek-v4-pro (opencode)
+                    Model:         OpenCode · deepseek-v4-pro (opencode)
                     """,
                     models: opencodeModelList
                 )
@@ -2220,7 +2253,7 @@ public final class GatewayStore {
                 var connModels: [GatewayExportedModel] = []
 
                 for mid in conn.availableModelIDs {
-                    let scopedId = "\(mid) (\(slug))"
+                    let scopedId = "OpenCode · \(mid) (\(slug))"
                     connModels.append(
                         GatewayExportedModel(
                             id: scopedId,
@@ -2238,12 +2271,12 @@ public final class GatewayStore {
                 let candidates = ["deepseek-v4-pro", "qwen3.8-max", "kimi-k3", "glm-5.3", "minimax-m3", "grok-4.6", "claude-3-7-sonnet"]
                 for cand in candidates {
                     if conn.availableModelIDs.contains(cand) {
-                        recNames.append("\(cand) (\(slug))")
+                        recNames.append("OpenCode · \(cand) (\(slug))")
                     }
                     if recNames.count >= 4 { break }
                 }
                 if recNames.isEmpty {
-                    recNames = conn.availableModelIDs.prefix(4).map { "\($0) (\(slug))" }
+                    recNames = conn.availableModelIDs.prefix(4).map { "OpenCode · \($0) (\(slug))" }
                 }
 
                 groups.append(
@@ -2264,7 +2297,7 @@ public final class GatewayStore {
                         OpenAI 端点:    http://127.0.0.1:\(portStr)/v1
                         Anthropic 端点: http://127.0.0.1:\(portStr)
                         API Key:       \(token)
-                        Model:         \(recNames.first ?? "deepseek-v4-pro (\(slug))")
+                        Model:         \(recNames.first ?? "OpenCode · deepseek-v4-pro (\(slug))")
                         """,
                         models: connModels
                     )
@@ -2313,112 +2346,15 @@ public final class GatewayStore {
                     ?? servableSlugs.first(where: { $0.contains("5.6") })
                     ?? servableSlugs.first
                 let scopedSol = defaultModel
-                    .map { "\($0) (\(slug))" } ?? "等待模型目录同步"
+                    .map { "OpenAI · \($0) (\(slug))" } ?? "等待模型目录同步"
                 /* Legacy hard-coded suggestions are intentionally disabled.
                  * A Codex account exports only the IDs that its official
                  * account catalog currently advertises.
-                let scopedGpt56 = "gpt-5.6 (\(slug))"
-                let scopedThinking = "gpt-5.6-thinking (\(slug))"
-                let scopedSol = "gpt-5.6-sol (\(slug))"
-                let scopedTerra = "gpt-5.6-terra (\(slug))"
-                let scopedLuna = "gpt-5.6-luna (\(slug))"
-                let scopedMini = "gpt-5.6-mini (\(slug))"
-                let scopedGpt5 = "gpt-5 (\(slug))"
-                let scopedO3 = "o3-mini (\(slug))"
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedO3,
-                        modelName: scopedO3,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 o3-mini",
-                        description: "定向通过账号 [\(friendlyName)] 请求 o3-mini"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedGpt5,
-                        modelName: scopedGpt5,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 GPT-5",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedMini,
-                        modelName: scopedMini,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 GPT-5.6 Mini",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 Mini 极速推理"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedLuna,
-                        modelName: scopedLuna,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 Luna 月亮版",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 Luna 高速敏捷版"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedTerra,
-                        modelName: scopedTerra,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 Terra 地球版",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 Terra 均衡工程版"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedSol,
-                        modelName: scopedSol,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 Sol 太阳版",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 Sol 极限性能版"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedThinking,
-                        modelName: scopedThinking,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 Thinking 思考",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 Thinking 深度思考"
-                    ),
-                    at: 0
-                )
-                connModels.insert(
-                    GatewayExportedModel(
-                        id: scopedGpt56,
-                        modelName: scopedGpt56,
-                        sourceBadge: "专属账号",
-                        sourceBadgeColor: NSColor.systemCyan,
-                        capability: "定向 GPT-5.6 旗舰",
-                        description: "定向通过账号 [\(friendlyName)] 请求 GPT-5.6 旗舰模型"
-                    ),
-                    at: 0
-                )
-
                 */
                 for rawMid in servableSlugs {
                     let catalogModelID = rawMid.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !catalogModelID.isEmpty else { continue }
-                    let scopedId = "\(catalogModelID) (\(slug))"
+                    let scopedId = "OpenAI · \(catalogModelID) (\(slug))"
                     if !connModels.contains(where: { $0.modelName == scopedId }) {
                         connModels.append(
                             GatewayExportedModel(
@@ -2548,7 +2484,37 @@ public final class GatewayStore {
                     result.append(
                         GatewayExportedModel(
                             id: "\(provider.lowercased())/\(baseModel)",
-                            modelName: baseModel,
+                            modelName: "\(provider) · \(baseModel)",
+                            sourceBadge: "\(provider) 聚合",
+                            sourceBadgeColor: model.sourceBadgeColor,
+                            capability: model.capability,
+                            description: "同供应商额度自动调度聚合模型",
+                            isCustom: model.isCustom
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    public func consolidatedModels(for sectionID: String) -> [GatewayExportedModel] {
+        guard let section = providerSections.first(where: { $0.id == sectionID }) else { return [] }
+        let provider = Self.providerName(for: sectionID)
+        var seen = Set<String>()
+        var result: [GatewayExportedModel] = []
+        let activeGroups = section.accountGroups.filter { $0.isProxyEnabled }
+
+        for group in activeGroups {
+            for model in group.models {
+                let baseModel = Self.unscopedModelName(model.modelName)
+                guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                if !seen.contains(baseModel) {
+                    seen.insert(baseModel)
+                    result.append(
+                        GatewayExportedModel(
+                            id: "\(provider.lowercased())/\(baseModel)",
+                            modelName: "\(provider) · \(baseModel)",
                             sourceBadge: "\(provider) 聚合",
                             sourceBadgeColor: model.sourceBadgeColor,
                             capability: model.capability,
@@ -2586,7 +2552,7 @@ public final class GatewayStore {
                         result.append(
                             GatewayExportedModel(
                                 id: "\(provider.lowercased())/\(baseModel)",
-                                modelName: baseModel,
+                                modelName: "\(provider) · \(baseModel)",
                                 sourceBadge: "\(provider) 聚合",
                                 sourceBadgeColor: model.sourceBadgeColor,
                                 capability: model.capability,

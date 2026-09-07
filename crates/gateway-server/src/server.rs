@@ -673,6 +673,33 @@ mod tests {
         assert_eq!(ep_zen.url, "https://opencode.ai/zen/v1/chat/completions");
         assert!(!ep_zen.extra_headers.iter().any(|(k, _)| k == "x-opencode-session"));
 
+        // 6. Consolidated display name with provider prefix: `OpenCode · deepseek-v4-pro`
+        let ep_cons1 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "OpenCode · deepseek-v4-pro",
+        )
+        .unwrap();
+        assert_eq!(ep_cons1.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep_cons1.target_model, "deepseek-v4-pro");
+
+        // 7. Consolidated wire format: `opencode/deepseek-v4-pro`
+        let ep_cons2 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "opencode/deepseek-v4-pro",
+        )
+        .unwrap();
+        assert_eq!(ep_cons2.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep_cons2.target_model, "deepseek-v4-pro");
+
+        // 8. Consolidated bracket format: `[OpenCode] deepseek-v4-pro`
+        let ep_cons3 = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "[OpenCode] deepseek-v4-pro",
+        )
+        .unwrap();
+        assert_eq!(ep_cons3.provider_name, "OpenCode 聚合平台");
+        assert_eq!(ep_cons3.target_model, "deepseek-v4-pro");
+
         fs::remove_dir_all(home).unwrap();
     }
 

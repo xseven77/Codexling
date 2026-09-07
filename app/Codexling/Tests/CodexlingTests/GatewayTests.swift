@@ -474,14 +474,47 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(consolidated, store.consolidatedExportedModels)
 
         // Ensure no scoped account suffixes "(...)" exist in consolidated model names
+        // and that each modelName is prefixed with "供应商 · "
         for model in consolidated {
             XCTAssertFalse(model.modelName.contains(" ("), "Consolidated model should not contain account scope: \(model.modelName)")
+            XCTAssertTrue(model.modelName.contains(" · "), "Consolidated model should contain provider prefix: \(model.modelName)")
             XCTAssertTrue(model.sourceBadge.contains("聚合"))
         }
 
         // Toggle back
         store.isModelConsolidationEnabled = false
         XCTAssertEqual(store.allExportedModels.count, unconsolidatedCount)
+    }
+
+    func testConsolidatedModelNamingAndAgentCompatibility() {
+        XCTAssertEqual(
+            GatewayStore.agentCompatibleModelID("OpenCode · glm-5.3-flash"),
+            "opencode/glm-5.3-flash"
+        )
+        XCTAssertEqual(
+            GatewayStore.agentCompatibleModelID("OpenAI · gpt-5.6-sol"),
+            "openai/gpt-5.6-sol"
+        )
+        XCTAssertEqual(
+            GatewayStore.agentCompatibleModelID("Google · gemini-2.5-flash"),
+            "google/gemini-2.5-flash"
+        )
+        XCTAssertEqual(
+            GatewayStore.unscopedModelName("OpenCode · glm-5.3-flash"),
+            "glm-5.3-flash"
+        )
+        XCTAssertEqual(
+            GatewayStore.unscopedModelName("OpenAI · gpt-5.6-sol"),
+            "gpt-5.6-sol"
+        )
+        XCTAssertEqual(
+            GatewayStore.providerName(for: "opencode"),
+            "OpenCode"
+        )
+        XCTAssertEqual(
+            GatewayStore.providerName(for: "google"),
+            "Google"
+        )
     }
 
     func testPerProviderConsolidationSwitchingAndPersistence() throws {
@@ -537,6 +570,35 @@ final class GatewayTests: XCTestCase {
             XCTAssertTrue(group.isProxyAllowed)
             XCTAssertEqual(group.isProxyEnabled, true)
         }
+    }
+
+    func testPlanBModelNamingAndAgentCompatibility() {
+        // Consolidated models format: 供应商 · 模型名
+        let consolidatedName = "OpenCode · glm-5.3-flash"
+        XCTAssertEqual(GatewayStore.unscopedModelName(consolidatedName), "glm-5.3-flash")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(consolidatedName), "opencode/glm-5.3-flash")
+
+        // Unconsolidated models format: 供应商 · 模型名 (账号标识)
+        let unconsolidatedOpenCode = "OpenCode · glm-5.3-flash (go-opencode-1e29e790)"
+        XCTAssertEqual(GatewayStore.unscopedModelName(unconsolidatedOpenCode), "glm-5.3-flash")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(unconsolidatedOpenCode), "opencode/glm-5.3-flash@go-opencode-1e29e790")
+
+        let unconsolidatedOpenAI = "OpenAI · gpt-5.6-sol (my-openai-a1b2)"
+        XCTAssertEqual(GatewayStore.unscopedModelName(unconsolidatedOpenAI), "gpt-5.6-sol")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(unconsolidatedOpenAI), "openai/gpt-5.6-sol@my-openai-a1b2")
+
+        let unconsolidatedGoogle = "Google · gemini-2.5-flash (x-seven-gemini-a1b2)"
+        XCTAssertEqual(GatewayStore.unscopedModelName(unconsolidatedGoogle), "gemini-2.5-flash")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(unconsolidatedGoogle), "google/gemini-2.5-flash@x-seven-gemini-a1b2")
+
+        let unconsolidatedDeepSeek = "DeepSeek · deepseek-chat (deepseek-official-a1b2)"
+        XCTAssertEqual(GatewayStore.unscopedModelName(unconsolidatedDeepSeek), "deepseek-chat")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(unconsolidatedDeepSeek), "deepseek/deepseek-chat@deepseek-official-a1b2")
+
+        // Also ensure backward compatibility for old style without provider prefix: "模型名 (账号标识)"
+        let legacyUnconsolidated = "glm-5.3-flash (go-opencode-1e29e790)"
+        XCTAssertEqual(GatewayStore.unscopedModelName(legacyUnconsolidated), "glm-5.3-flash")
+        XCTAssertEqual(GatewayStore.agentCompatibleModelID(legacyUnconsolidated), "glm-5.3-flash@go-opencode-1e29e790")
     }
 }
 
