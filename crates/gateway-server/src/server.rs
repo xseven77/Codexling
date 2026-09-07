@@ -624,6 +624,7 @@ mod tests {
         assert_eq!(ep1.target_model, "deepseek-v4-pro");
         assert_eq!(ep1.auth_header, "Bearer opencode-test-api-key");
         assert_eq!(ep1.url, "https://opencode.ai/zen/go/v1/chat/completions");
+        assert!(ep1.extra_headers.iter().any(|(k, _)| k == "x-opencode-session"));
 
         // 2. Explicit provider prefix: `opencode/deepseek-v4-pro@go`
         let ep2 = GatewayServer::resolve_upstream_endpoint_for_home(
@@ -651,6 +652,26 @@ mod tests {
         .unwrap();
         assert_eq!(ep4.provider_name, "OpenCode 聚合平台");
         assert_eq!(ep4.target_model, "deepseek-v4-pro");
+
+        // 5. Zen plan uses zen endpoint and does NOT inject x-opencode-session
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "openCodeConnections": [{
+                    "label": "zen",
+                    "plan": "zen",
+                    "credentialHandle": "opencode-cred-handle",
+                    "isEnabled": true,
+                    "authenticationState": "connected",
+                    "availableModelIDs": ["deepseek-v4-pro"]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let ep_zen = GatewayServer::resolve_upstream_endpoint_for_home(home_str, "deepseek-v4-pro@zen")
+            .unwrap();
+        assert_eq!(ep_zen.url, "https://opencode.ai/zen/v1/chat/completions");
+        assert!(!ep_zen.extra_headers.iter().any(|(k, _)| k == "x-opencode-session"));
 
         fs::remove_dir_all(home).unwrap();
     }
@@ -4989,6 +5010,20 @@ impl GatewayServer {
                                         } else {
                                             "https://opencode.ai/zen/go/v1/chat/completions".into()
                                         };
+                                        let mut extra_headers = Vec::new();
+                                        if !plan.eq_ignore_ascii_case("zen") {
+                                            let session_id = if !short_id.is_empty() && short_id != "default" {
+                                                short_id.clone()
+                                            } else {
+                                                let clean_id = id.replace('-', "").to_lowercase();
+                                                if clean_id.len() >= 8 {
+                                                    clean_id[..8].to_string()
+                                                } else {
+                                                    "codexling-session".to_string()
+                                                }
+                                            };
+                                            extra_headers.push(("x-opencode-session".to_string(), session_id));
+                                        }
                                         let score = Self::score_opencode_account(account);
                                         let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("opencode");
                                         let routing_mode = if is_consolidated {
@@ -4999,7 +5034,7 @@ impl GatewayServer {
                                         let endpoint = UpstreamEndpoint {
                                             url,
                                             auth_header: format!("Bearer {key}"),
-                                            extra_headers: vec![],
+                                            extra_headers,
                                             project: None,
                                             target_model,
                                             provider_name: "OpenCode 聚合平台".into(),
