@@ -1444,7 +1444,6 @@ private struct GatewayProviderRoutingBar: View {
                 }
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                .frame(maxWidth: 320)
 
                 // If pinnedAccount is active, show account dropdown menu
                 if currentMode == .pinnedAccount && !accountGroups.isEmpty {
