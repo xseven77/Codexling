@@ -2030,6 +2030,7 @@ pub struct UpstreamEndpoint {
     pub routing_mode: String,
 }
 
+#[derive(Clone)]
 pub struct GatewayServer {
     pub token: String,
     pub route_table: RouteTable,
@@ -2142,6 +2143,14 @@ impl GatewayServer {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
         let initial_targets = self.model_health.collect_targets(&home, &scope);
         let initial_total = initial_targets.len();
+
+        if initial_total == 0 {
+            return Self::response(
+                "400 Bad Request",
+                "application/json",
+                r#"{"error":"未找到可探测的模型（目标账号可能未启用或无可用模型）"}"#,
+            );
+        }
 
         if self.model_health.try_start_job(&scope_desc, initial_total).is_err() {
             return Self::response(
@@ -7635,18 +7644,16 @@ impl GatewayServer {
                 break;
             }
             if let Ok(stream) = stream_res {
-                match self.handle_client(stream) {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(e) => {
-                        // Client disconnects, broken pipes or connection resets should never crash the gateway daemon
+                let server = self.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = server.handle_client(stream) {
                         if e.kind() != std::io::ErrorKind::BrokenPipe
                             && e.kind() != std::io::ErrorKind::ConnectionReset
                         {
                             eprintln!("[Gateway] Client error: {e}");
                         }
                     }
-                }
+                });
             }
         }
         Ok(())

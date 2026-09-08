@@ -792,6 +792,18 @@ pub struct ModelTarget {
 }
 
 impl ModelHealthEngine {
+    pub fn provider_matches(query: &str, target_key: &str) -> bool {
+        let q = query.trim().to_ascii_lowercase();
+        let t = target_key.trim().to_ascii_lowercase();
+        if q == t {
+            return true;
+        }
+        matches!(
+            (q.as_str(), t.as_str()),
+            ("codex", "openai") | ("openai", "codex") | ("gemini", "google") | ("google", "gemini")
+        )
+    }
+
     /// Collect targets to check according to scope
     pub fn collect_targets(&self, home: &str, scope: &CheckScope) -> Vec<ModelTarget> {
         let registry_path = PathBuf::from(home)
@@ -839,7 +851,7 @@ impl ModelHealthEngine {
                         provider: p,
                         connection_id: id,
                     } => {
-                        let p_match = p.eq_ignore_ascii_case(provider_key);
+                        let p_match = Self::provider_matches(p, provider_key);
                         let clean_id = id.replace('-', "").to_lowercase();
                         let clean_cid = cid.replace('-', "").to_lowercase();
                         let cid_match = clean_id == clean_cid
@@ -855,12 +867,7 @@ impl ModelHealthEngine {
                         all_accounts,
                     } => {
                         let p_match = providers.is_empty()
-                            || providers.iter().any(|p| {
-                                let norm_p = p.trim().to_ascii_lowercase();
-                                norm_p == provider_key
-                                    || (norm_p == "codex" && provider_key == "openai")
-                                    || (norm_p == "gemini" && provider_key == "google")
-                            });
+                            || providers.iter().any(|p| Self::provider_matches(p, provider_key));
                         if !p_match {
                             continue;
                         }
@@ -1836,5 +1843,18 @@ mod tests {
                 "Inspection results must commit after job finishes"
             );
         }
+    }
+
+    #[test]
+    fn test_provider_matches() {
+        assert!(ModelHealthEngine::provider_matches("codex", "openai"));
+        assert!(ModelHealthEngine::provider_matches("openai", "codex"));
+        assert!(ModelHealthEngine::provider_matches("openai", "openai"));
+        assert!(ModelHealthEngine::provider_matches("gemini", "google"));
+        assert!(ModelHealthEngine::provider_matches("google", "gemini"));
+        assert!(ModelHealthEngine::provider_matches("deepseek", "deepseek"));
+        assert!(ModelHealthEngine::provider_matches("opencode", "opencode"));
+        assert!(!ModelHealthEngine::provider_matches("google", "openai"));
+        assert!(!ModelHealthEngine::provider_matches("deepseek", "opencode"));
     }
 }

@@ -1168,6 +1168,16 @@ public final class GatewayStore {
         }
         self.isModelCheckRunning = true
         self.checkingAccountScopes = [optimisticScope]
+        self.modelCheckStatus = GatewayModelCheckJobStatus(
+            running: true,
+            scope: optimisticScope,
+            done: 0,
+            total: 0,
+            current: "正在启动探测...",
+            startedAt: Int64(Date().timeIntervalSince1970),
+            lastFinishedAt: self.modelCheckStatus?.lastFinishedAt,
+            lastSummary: self.modelCheckStatus?.lastSummary
+        )
         self.startPollingModelCheckStatus()
 
         let localToken = GatewaySupervisor.shared.localToken
@@ -1198,14 +1208,20 @@ public final class GatewayStore {
                     await self.pollModelCheckStatus()
                     return (true, "已启动模型巡检")
                 } else if http.statusCode == 409 {
-                    // 服务器已有任务运行：保留轮询（下次 poll 会同步真实 scope）
+                    // 服务器已有任务运行：保留轮询以同步真实 scope 与状态
                     await self.pollModelCheckStatus()
-                    return (true, "模型巡检任务已在运行")
+                    return (false, "已有巡检任务正在运行，请等待完成或先在顶部横幅取消")
                 } else {
                     // 失败回滚乐观置位
                     self.isModelCheckRunning = false
                     self.checkingAccountScopes.removeAll()
-                    let errStr = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                    let errStr: String = {
+                        if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let err = dict["error"] as? String {
+                            return err
+                        }
+                        return String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                    }()
                     return (false, "触发失败: \(errStr)")
                 }
             }

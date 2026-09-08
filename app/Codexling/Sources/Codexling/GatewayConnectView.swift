@@ -669,7 +669,7 @@ struct GatewayProviderSectionCard: View {
                                 .controlSize(.mini)
                             if store.isCancellingModelCheck {
                                 Text("正在取消...")
-                            } else if let progress = store.modelCheckStatus, progress.total > 0 {
+                            } else if let progress = store.modelCheckStatus, progress.total > 0, progress.scope != "all" {
                                 Text("巡检 \(progress.done)/\(progress.total)")
                             } else {
                                 Text("巡检中...")
