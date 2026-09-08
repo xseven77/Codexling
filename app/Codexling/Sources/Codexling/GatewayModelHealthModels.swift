@@ -1,0 +1,110 @@
+import Foundation
+
+public struct GatewayModelHealthSummary: Codable, Sendable {
+    public let total: Int
+    public let available: Int
+    public let unavailable: Int
+    public let error: Int
+    public let unchecked: Int
+    public let skipped: Int
+
+    public init(total: Int = 0, available: Int = 0, unavailable: Int = 0, error: Int = 0, unchecked: Int = 0, skipped: Int = 0) {
+        self.total = total
+        self.available = available
+        self.unavailable = unavailable
+        self.error = error
+        self.unchecked = unchecked
+        self.skipped = skipped
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.total = (try? container.decode(Int.self, forKey: .total)) ?? 0
+        self.available = (try? container.decode(Int.self, forKey: .available)) ?? 0
+        self.unavailable = (try? container.decode(Int.self, forKey: .unavailable)) ?? 0
+        self.error = (try? container.decode(Int.self, forKey: .error)) ?? 0
+        self.unchecked = (try? container.decode(Int.self, forKey: .unchecked)) ?? 0
+        self.skipped = (try? container.decode(Int.self, forKey: .skipped)) ?? 0
+    }
+}
+
+public struct GatewayModelHealthItem: Codable, Identifiable, Sendable {
+    public var id: String
+    public let scopedId: String
+    public let status: String // "available", "unavailable", "error", "skipped", "unchecked"
+    public let reason: String?
+    public let latencyMs: UInt64?
+    public let checkedAt: Int64?
+    public let retries: UInt32?
+    public let exported: Bool
+
+    public var isAvailable: Bool {
+        status == "available"
+    }
+
+    public var isUnavailable: Bool {
+        status == "unavailable"
+    }
+
+    public var isError: Bool {
+        status == "error"
+    }
+
+    public var isUnchecked: Bool {
+        status == "unchecked"
+    }
+
+    public var isSkipped: Bool {
+        status == "skipped"
+    }
+}
+
+public struct GatewayAccountHealth: Codable, Identifiable, Sendable {
+    public var id: String { connectionId }
+    public let provider: String
+    public let providerName: String
+    public let connectionId: String
+    public let slug: String
+    public let label: String
+    public let checkedAt: Int64?
+    public let summary: GatewayModelHealthSummary
+    public let models: [GatewayModelHealthItem]
+}
+
+public struct GatewayModelCheckJobStatus: Codable, Sendable {
+    public let running: Bool
+    public let scope: String
+    public let done: Int
+    public let total: Int
+    public let current: String
+    public let startedAt: Int64
+    public let lastFinishedAt: Int64?
+    public let lastSummary: GatewayModelHealthSummary?
+
+    public init(
+        running: Bool,
+        scope: String,
+        done: Int,
+        total: Int,
+        current: String,
+        startedAt: Int64,
+        lastFinishedAt: Int64? = nil,
+        lastSummary: GatewayModelHealthSummary? = nil
+    ) {
+        self.running = running
+        self.scope = scope
+        self.done = done
+        self.total = total
+        self.current = current
+        self.startedAt = startedAt
+        self.lastFinishedAt = lastFinishedAt
+        self.lastSummary = lastSummary
+    }
+}
+
+public struct GatewayModelHealthResponse: Codable, Sendable {
+    public let lastFullCheckAt: Int64?
+    public let summary: GatewayModelHealthSummary?
+    public let accounts: [GatewayAccountHealth]
+    public let job: GatewayModelCheckJobStatus?
+}

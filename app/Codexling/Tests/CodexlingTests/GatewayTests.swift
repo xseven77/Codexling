@@ -385,19 +385,26 @@ final class GatewayTests: XCTestCase {
 
         // Initial load when file does not exist should yield default settings
         let defaultSettings = storage.load()
-        XCTAssertEqual(defaultSettings.schemaVersion, 1)
+        XCTAssertEqual(defaultSettings.schemaVersion, GatewaySettings.currentSchemaVersion)
         XCTAssertFalse(defaultSettings.modelConsolidationEnabled)
+        XCTAssertFalse(defaultSettings.autoCheckOnStartupWithHistory)
+        XCTAssertEqual(defaultSettings.healthCheckInterval, HealthCheckInterval.oneHour.rawValue)
         XCTAssertTrue(defaultSettings.allowFailover)
         XCTAssertEqual(defaultSettings.cooldownSeconds, 300)
         XCTAssertEqual(defaultSettings.maxFailoverRetries, 2)
+        XCTAssertEqual(defaultSettings.routingMode(for: "google"), .smooth)
 
         // Save customized settings
-        let custom = GatewaySettings(
+        var custom = GatewaySettings(
             modelConsolidationEnabled: true,
             allowFailover: false,
             cooldownSeconds: 600,
-            maxFailoverRetries: 3
+            maxFailoverRetries: 3,
+            autoCheckOnStartupWithHistory: true,
+            healthCheckInterval: HealthCheckInterval.midnight.rawValue
         )
+        custom.setRoutingMode(for: "google", mode: ProviderRoutingMode.stickyHighQuota)
+        custom.setRoutingMode(for: "openai", mode: ProviderRoutingMode.pinnedAccount, pinnedAccountId: "pinned-uuid-1")
         try storage.save(custom)
 
         // Verify file permissions 0600
@@ -408,6 +415,12 @@ final class GatewayTests: XCTestCase {
         // Readback check
         let loaded = storage.load()
         XCTAssertEqual(loaded, custom)
+        XCTAssertTrue(loaded.autoCheckOnStartupWithHistory)
+        XCTAssertEqual(loaded.healthCheckInterval, HealthCheckInterval.midnight.rawValue)
+        XCTAssertEqual(loaded.routingMode(for: "google"), ProviderRoutingMode.stickyHighQuota)
+        XCTAssertEqual(loaded.routingMode(for: "openai"), ProviderRoutingMode.pinnedAccount)
+        XCTAssertEqual(loaded.pinnedAccountId(for: "openai"), "pinned-uuid-1")
+        XCTAssertNil(loaded.pinnedAccountId(for: "google"))
     }
 
     func testGatewayStoreModelConsolidationTogglePersists() throws {
@@ -599,6 +612,136 @@ final class GatewayTests: XCTestCase {
         let legacyUnconsolidated = "glm-5.3-flash (go-opencode-1e29e790)"
         XCTAssertEqual(GatewayStore.unscopedModelName(legacyUnconsolidated), "glm-5.3-flash")
         XCTAssertEqual(GatewayStore.agentCompatibleModelID(legacyUnconsolidated), "glm-5.3-flash@go-opencode-1e29e790")
+    }
+
+    func testModelExportableFiltersUnavailableModels() {
+        let store = GatewayStore()
+        let testConnID = ConnectionID(rawValue: UUID(uuidString: "1E29E790-7565-4D03-923A-91BA5E18E174")!)
+
+        let healthyItem = GatewayModelHealthItem(
+            id: "deepseek-v4-flash",
+            scopedId: "opencode/deepseek-v4-flash@GO-opencode-1e29e790",
+            status: "available",
+            reason: nil,
+            latencyMs: 2200,
+            checkedAt: 12345,
+            retries: 0,
+            exported: true
+        )
+        let unavailableItem = GatewayModelHealthItem(
+            id: "grok-4.5",
+            scopedId: "opencode/grok-4.5@GO-opencode-1e29e790",
+            status: "unavailable",
+            reason: "Endpoint is unavailable",
+            latencyMs: 1000,
+            checkedAt: 12345,
+            retries: 0,
+            exported: false
+        )
+        let errorItem = GatewayModelHealthItem(
+            id: "grok-4.6",
+            scopedId: "opencode/grok-4.6@GO-opencode-1e29e790",
+            status: "error",
+            reason: "Internal error",
+            latencyMs: 800,
+            checkedAt: 12345,
+            retries: 1,
+            exported: false
+        )
+
+        let accountHealth = GatewayAccountHealth(
+            provider: "opencode",
+            providerName: "OpenCode",
+            connectionId: "1E29E790-7565-4D03-923A-91BA5E18E174",
+            slug: "GO-opencode-1e29e790",
+            label: "OpenCode (GO)",
+            checkedAt: 12345,
+            summary: GatewayModelHealthSummary(total: 3, available: 1, unavailable: 1, error: 1),
+            models: [healthyItem, unavailableItem, errorItem]
+        )
+
+        store.modelHealthResponse = GatewayModelHealthResponse(
+            lastFullCheckAt: 12345,
+            summary: GatewayModelHealthSummary(total: 3, available: 1, unavailable: 1, error: 1),
+            accounts: [accountHealth],
+            job: nil
+        )
+
+        // Non-consolidated checks
+        XCTAssertTrue(store.isModelExportable(baseModel: "deepseek-v4-flash", providerId: "opencode", connectionID: testConnID, isConsolidated: false))
+        XCTAssertFalse(store.isModelExportable(baseModel: "grok-4.5", providerId: "opencode", connectionID: testConnID, isConsolidated: false))
+        XCTAssertFalse(store.isModelExportable(baseModel: "grok-4.6", providerId: "opencode", connectionID: testConnID, isConsolidated: false))
+        // Verify display names with spaces also match normalized IDs
+        XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.5", providerId: "opencode", connectionID: testConnID, isConsolidated: false))
+        XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.6", providerId: "opencode", connectionID: testConnID, isConsolidated: false))
+
+        // Consolidated checks
+        XCTAssertTrue(store.isModelExportable(baseModel: "deepseek-v4-flash", providerId: "opencode", connectionID: nil, isConsolidated: true))
+        XCTAssertFalse(store.isModelExportable(baseModel: "grok-4.5", providerId: "opencode", connectionID: nil, isConsolidated: true))
+        XCTAssertFalse(store.isModelExportable(baseModel: "grok-4.6", providerId: "opencode", connectionID: nil, isConsolidated: true))
+        // Consolidated checks with display names containing spaces
+        XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.5", providerId: "opencode", connectionID: nil, isConsolidated: true))
+        XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.6", providerId: "opencode", connectionID: nil, isConsolidated: true))
+
+        // Persistence test: persist and reload
+        let resp = store.modelHealthResponse!
+        store.persistModelHealth(resp)
+        store.modelHealthResponse = nil
+        store.loadCachedModelHealth()
+        XCTAssertNotNil(store.modelHealthResponse)
+        XCTAssertEqual(store.modelHealthResponse?.accounts.first?.models.count, 3)
+    }
+
+    func testGatewayAutomationTasksStorageAndStoreCRUD() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-automation-tasks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        XCTAssertTrue(store.automationTasks.isEmpty)
+
+        // 1. Add task
+        let task1 = GatewayAutomationTask(
+            name: "Codex 每日三检",
+            taskType: .modelHealthCheck,
+            enabled: true,
+            providers: ["openai"],
+            allAccounts: true,
+            accountIds: [],
+            hours: [8, 14, 21]
+        )
+        store.addAutomationTask(task1)
+        XCTAssertEqual(store.automationTasks.count, 1)
+        XCTAssertEqual(store.automationTasks.first?.name, "Codex 每日三检")
+        XCTAssertEqual(store.automationTasks.first?.hours, [8, 14, 21])
+        XCTAssertEqual(store.automationTasks.first?.hoursDescription, "08:00, 14:00, 21:00")
+
+        // 2. Verify disk persistence
+        let reloadedSettings = storage.load()
+        XCTAssertEqual(reloadedSettings.automationTasks.count, 1)
+        XCTAssertEqual(reloadedSettings.automationTasks.first?.id, task1.id)
+
+        // 3. Toggle task
+        store.toggleAutomationTask(id: task1.id)
+        XCTAssertFalse(store.automationTasks.first!.enabled)
+
+        // 4. Update task
+        var modified = task1
+        modified.name = "Codex 每日两检"
+        modified.hours = [9, 18]
+        store.updateAutomationTask(modified)
+        XCTAssertEqual(store.automationTasks.first?.name, "Codex 每日两检")
+        XCTAssertEqual(store.automationTasks.first?.hours, [9, 18])
+
+        // 5. Delete task
+        store.deleteAutomationTask(id: task1.id)
+        XCTAssertTrue(store.automationTasks.isEmpty)
+        let finalReload = storage.load()
+        XCTAssertTrue(finalReload.automationTasks.isEmpty)
     }
 }
 

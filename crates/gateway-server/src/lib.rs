@@ -1,4 +1,6 @@
+pub mod model_health;
 pub mod server;
+pub use model_health::ModelHealthEngine;
 pub use server::GatewayServer;
 
 #[cfg(test)]
@@ -134,6 +136,49 @@ mod tests {
         let resp = send_request(port, &req);
         assert!(resp.contains("502 Bad Gateway"));
         assert!(!resp.contains("event: message_stop"));
+
+        // Shutdown
+        let shutdown_req = format!("POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        send_request(port, &shutdown_req);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_server_model_health_endpoints() {
+        let (port, token, handle) = spawn_test_server();
+
+        // 1. GET /v1/models/all without auth -> 401
+        let unauth = send_request(port, "GET /v1/models/all HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(unauth.contains("401 Unauthorized"));
+
+        // 2. GET /v1/models/all with auth -> 200 OK
+        let auth_req = format!("GET /v1/models/all HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let resp = send_request(port, &auth_req);
+        assert!(resp.contains("200 OK"));
+        assert!(resp.contains("\"accounts\""));
+
+        // 3. GET /internal/model-check/status without auth -> 401
+        let unauth_status = send_request(port, "GET /internal/model-check/status HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(unauth_status.contains("401 Unauthorized"));
+
+        // 4. GET /internal/model-check/status with auth -> 200 OK
+        let auth_status_req = format!("GET /internal/model-check/status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let status_resp = send_request(port, &auth_status_req);
+        assert!(status_resp.contains("200 OK"));
+        assert!(status_resp.contains("\"running\":false"));
+
+        // 5. POST /internal/model-check without auth -> 401
+        let unauth_post = send_request(port, "POST /internal/model-check HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(unauth_post.contains("401 Unauthorized"));
+
+        // 6. POST /internal/model-check/cancel without auth -> 401
+        let unauth_cancel = send_request(port, "POST /internal/model-check/cancel HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(unauth_cancel.contains("401 Unauthorized"));
+
+        // 7. POST /internal/model-check/cancel with auth when no job running -> 200 OK (idempotent idle)
+        let auth_cancel = format!("POST /internal/model-check/cancel HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let cancel_resp = send_request(port, &auth_cancel);
+        assert!(cancel_resp.contains("200 OK") && cancel_resp.contains("alreadyIdle"));
 
         // Shutdown
         let shutdown_req = format!("POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");

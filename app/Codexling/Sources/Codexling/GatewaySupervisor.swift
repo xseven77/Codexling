@@ -110,7 +110,7 @@ public final class GatewaySupervisor {
             let errPipe = Pipe()
 
             proc.executableURL = executable
-            proc.arguments = ["--port", "58349", "--token", localToken]
+            proc.arguments = ["--port", "58349", "--token", localToken, "--auto-check"]
             var environment = ProcessInfo.processInfo.environment
             let geminiOAuth = GeminiOAuthConfiguration.load()
             if geminiOAuth.isConfigured {
@@ -165,6 +165,10 @@ public final class GatewaySupervisor {
             self.endpoint = URL(string: "http://\(host):\(port)")
             self.hasAttemptedStaleGatewayRecovery = false
             self.consecutiveHealthFailures = 0
+
+            Task { @MainActor in
+                await GatewayStore.shared.refreshModelHealth()
+            }
 
             proc.terminationHandler = { [weak self] terminatedProcess in
                 DispatchQueue.main.async {
@@ -307,6 +311,10 @@ public final class GatewaySupervisor {
                     outputTokens: outTokens,
                     toolCalls: toolCalls
                 )
+
+                if let jobDict = json["model_health_job"] as? [String: Any] {
+                    GatewayStore.shared.updateModelCheckJobStatus(from: jobDict)
+                }
 
                 if let rawList = json["recent_requests"] as? [[String: Any]] {
                     let rows: [GatewayRequestRow] = rawList.compactMap { dict in

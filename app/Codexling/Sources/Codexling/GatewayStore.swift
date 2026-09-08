@@ -5,6 +5,7 @@ import SQLite3
 
 public enum GatewayNavTab: String, CaseIterable, Identifiable {
     case connect = "接入与模型"
+    case automation = "自动化任务"
     case agents = "一键接入 Agent"
     case overview = "监控概览"
     case analytics = "用量分析"
@@ -16,6 +17,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
     public var symbolName: String {
         switch self {
         case .connect: "network"
+        case .automation: "clock.arrow.2.circlepath"
         case .agents: "bolt.horizontal.circle"
         case .overview: "gauge.with.needle"
         case .analytics: "chart.xyaxis.line"
@@ -27,6 +29,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
     public var subtitle: String {
         switch self {
         case .connect: "管理本地网关服务、已连接供应商账号与全量模型接入"
+        case .automation: "编排并管理本地模型定时巡检与自动化计划"
         case .agents: "一键配置并同步 Hermes、Pi 等第三方 Agent 客户端"
         case .overview: "外部 Agent 伴侣工作时长、流量指标与协议中枢拓扑"
         case .analytics: "Token 年度用量热力分布、模型消耗趋势与工具调用统计"
@@ -274,7 +277,9 @@ public final class GatewayStore {
     public var selectedTab: GatewayNavTab = .connect {
         didSet {
             if oldValue != selectedTab {
-                if selectedTab == .overview {
+                if selectedTab == .connect {
+                    Task { await refreshModelHealth() }
+                } else if selectedTab == .overview {
                     Task { await refreshTelemetryAnalytics() }
                 } else if selectedTab == .analytics {
                     Task { await refreshAnalyticsData() }
@@ -307,6 +312,24 @@ public final class GatewayStore {
         }
     }
 
+    public var autoCheckOnStartupWithHistory: Bool {
+        get { gatewaySettings.autoCheckOnStartupWithHistory }
+        set {
+            guard gatewaySettings.autoCheckOnStartupWithHistory != newValue else { return }
+            gatewaySettings.autoCheckOnStartupWithHistory = newValue
+        }
+    }
+
+    public var healthCheckInterval: HealthCheckInterval {
+        get {
+            HealthCheckInterval(rawValue: gatewaySettings.healthCheckInterval) ?? .oneHour
+        }
+        set {
+            guard gatewaySettings.healthCheckInterval != newValue.rawValue else { return }
+            gatewaySettings.healthCheckInterval = newValue.rawValue
+        }
+    }
+
     public var isModelConsolidationEnabled: Bool {
         get { gatewaySettings.modelConsolidationEnabled }
         set {
@@ -333,6 +356,64 @@ public final class GatewayStore {
         Task { [weak self] in
             await self?.syncConfiguredAgentCatalogsIfNeeded()
         }
+    }
+
+    public func providerRoutingMode(for providerID: String) -> ProviderRoutingMode {
+        gatewaySettings.routingMode(for: providerID)
+    }
+
+    public func setProviderRoutingMode(_ providerID: String, mode: ProviderRoutingMode, pinnedAccountId: String? = nil) {
+        gatewaySettings.setRoutingMode(for: providerID, mode: mode, pinnedAccountId: pinnedAccountId)
+        Task { [weak self] in
+            await self?.syncConfiguredAgentCatalogsIfNeeded()
+        }
+    }
+
+    public func providerPinnedAccountId(for providerID: String) -> String? {
+        gatewaySettings.pinnedAccountId(for: providerID)
+    }
+
+    // ==========================================
+    // 自动化任务 (Automation Tasks)
+    // ==========================================
+    public var automationTasks: [GatewayAutomationTask] {
+        get { gatewaySettings.automationTasks }
+        set { gatewaySettings.automationTasks = newValue }
+    }
+
+    public func addAutomationTask(_ task: GatewayAutomationTask) {
+        gatewaySettings.automationTasks.append(task)
+    }
+
+    public func updateAutomationTask(_ task: GatewayAutomationTask) {
+        if let idx = gatewaySettings.automationTasks.firstIndex(where: { $0.id == task.id }) {
+            gatewaySettings.automationTasks[idx] = task
+        }
+    }
+
+    public func deleteAutomationTask(id: String) {
+        gatewaySettings.automationTasks.removeAll(where: { $0.id == id })
+    }
+
+    public func toggleAutomationTask(id: String) {
+        if let idx = gatewaySettings.automationTasks.firstIndex(where: { $0.id == id }) {
+            gatewaySettings.automationTasks[idx].enabled.toggle()
+        }
+    }
+
+    public func runAutomationTaskNow(_ task: GatewayAutomationTask) async -> (success: Bool, message: String) {
+        let res = await triggerModelCheck(
+            providers: task.providers.isEmpty ? nil : task.providers,
+            accountIds: task.allAccounts ? nil : task.accountIds,
+            allAccounts: task.allAccounts
+        )
+        if res.success {
+            if let idx = gatewaySettings.automationTasks.firstIndex(where: { $0.id == task.id }) {
+                gatewaySettings.automationTasks[idx].lastRunAt = Int64(Date().timeIntervalSince1970)
+                gatewaySettings.automationTasks[idx].lastRunStatus = "running"
+            }
+        }
+        return res
     }
 
     // Agent status is discovered off the main actor when the Agents page is
@@ -435,6 +516,19 @@ public final class GatewayStore {
     public private(set) var isAnalyticsLoading: Bool = false
     public var analyticsGrouping: String = "model" // "model" or "surface"
     public var analyticsDaysRange: Int = 7 // 7, 30, or 90
+
+    // 模型健康巡检状态
+    public var modelHealthResponse: GatewayModelHealthResponse?
+    public var isModelHealthLoading: Bool = false
+    public var isModelCheckRunning: Bool = false
+    public var isCancellingModelCheck: Bool = false
+    public var modelCheckStatus: GatewayModelCheckJobStatus?
+    public var checkingAccountScopes: Set<String> = []
+    /// 巡检结束时的完成反馈（由视图 onToast 消费后清空）
+    public var modelCheckFinishMessage: String?
+    public var modelCheckFinishSuccess: Bool = true
+    public var modelCheckFinishToken: UUID?
+    private var modelCheckPollingTask: Task<Void, Never>?
 
     // 分页状态管理
     public var requestsCurrentPage: Int = 1 {
@@ -581,6 +675,12 @@ public final class GatewayStore {
         self.hermesConfigurator = HermesGatewayConfigurator()
         self.piConfigurator = PiGatewayConfigurator()
         loadCustomModels()
+        loadCachedModelHealth()
+        if modelHealthResponse != nil {
+            Task { [weak self] in
+                await self?.syncConfiguredAgentCatalogsIfNeeded()
+            }
+        }
     }
 
     init(
@@ -597,6 +697,12 @@ public final class GatewayStore {
         self.settingsStorage = settingsStorage
         self.gatewaySettings = settingsStorage.load()
         loadCustomModels()
+        loadCachedModelHealth()
+        if modelHealthResponse != nil {
+            Task { [weak self] in
+                await self?.syncConfiguredAgentCatalogsIfNeeded()
+            }
+        }
     }
 
     private func loadCustomModels() {
@@ -712,7 +818,7 @@ public final class GatewayStore {
             await refreshAnalyticsData()
         case .requests:
             await refreshRequestsList()
-        case .connect, .agents, .doctor:
+        case .connect, .agents, .doctor, .automation:
             break
         }
     }
@@ -845,6 +951,315 @@ public final class GatewayStore {
             self.requestsTotalCount = resp.total
         } catch {
             print("[GatewayStore] refreshRequestsList error: \(error)")
+        }
+    }
+
+    // MARK: - 模型巡检历史持久化 (Model Health Cache Persistence)
+    private static var modelHealthCacheURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/gateway-model-health-cache.json")
+    }
+
+    public func loadCachedModelHealth() {
+        let url = Self.modelHealthCacheURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let resp = try decoder.decode(GatewayModelHealthResponse.self, from: data)
+            self.modelHealthResponse = resp
+            if let job = resp.job {
+                self.modelCheckStatus = GatewayModelCheckJobStatus(
+                    running: false,
+                    scope: job.scope,
+                    done: job.done,
+                    total: job.total,
+                    current: "",
+                    startedAt: job.startedAt,
+                    lastFinishedAt: job.lastFinishedAt,
+                    lastSummary: job.lastSummary
+                )
+                self.isModelCheckRunning = false
+                self.checkingAccountScopes.removeAll()
+            }
+        } catch {
+            print("[GatewayStore] loadCachedModelHealth error: \(error)")
+        }
+    }
+
+    public func persistModelHealth(_ resp: GatewayModelHealthResponse) {
+        let url = Self.modelHealthCacheURL
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted]
+            let data = try encoder.encode(resp)
+            let parent = url.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[GatewayStore] persistModelHealth error: \(error)")
+        }
+    }
+
+    // MARK: - 模型健康巡检 (Model Health Check)
+    public func refreshModelHealth() async {
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        let localToken = GatewaySupervisor.shared.localToken
+        let url = base.appendingPathComponent("v1/models/all")
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 6
+
+        isModelHealthLoading = true
+        defer { isModelHealthLoading = false }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                let decoder = JSONDecoder()
+                let resp = try decoder.decode(GatewayModelHealthResponse.self, from: data)
+                self.modelHealthResponse = resp
+                self.persistModelHealth(resp)
+                if let job = resp.job {
+                    self.modelCheckStatus = job
+                    self.isModelCheckRunning = job.running
+                    if job.running {
+                        self.checkingAccountScopes = [job.scope]
+                        self.startPollingModelCheckStatus()
+                    } else {
+                        self.checkingAccountScopes.removeAll()
+                    }
+                }
+                // When health state refreshes, sync any configured agents (Hermes/Pi) so broken models are removed
+                await self.syncConfiguredAgentCatalogsIfNeeded()
+            }
+        } catch {
+            print("[GatewayStore] refreshModelHealth error: \(error)")
+        }
+    }
+
+    public func pollModelCheckStatus() async {
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        let localToken = GatewaySupervisor.shared.localToken
+        let url = base.appendingPathComponent("internal/model-check/status")
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 3
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                let decoder = JSONDecoder()
+                let status = try decoder.decode(GatewayModelCheckJobStatus.self, from: data)
+                self.modelCheckStatus = status
+                let wasRunning = self.isModelCheckRunning
+                self.isModelCheckRunning = status.running
+
+                if status.running {
+                    self.checkingAccountScopes = [status.scope]
+                } else {
+                    self.checkingAccountScopes.removeAll()
+                    if wasRunning {
+                        self.emitModelCheckFinishMessage(status)
+                        // 巡检刚结束，立即刷新全量模型健康状态
+                        await self.refreshModelHealth()
+                    }
+                }
+            }
+        } catch {
+            print("[GatewayStore] pollModelCheckStatus error: \(error)")
+        }
+    }
+
+    public func updateModelCheckJobStatus(from dict: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: dict),
+              let status = try? JSONDecoder().decode(GatewayModelCheckJobStatus.self, from: data) else {
+            return
+        }
+        self.modelCheckStatus = status
+        let wasRunning = self.isModelCheckRunning
+        self.isModelCheckRunning = status.running
+
+        if status.running {
+            self.checkingAccountScopes = [status.scope]
+            if modelCheckPollingTask == nil {
+                self.startPollingModelCheckStatus()
+            }
+        } else {
+            self.checkingAccountScopes.removeAll()
+            if wasRunning {
+                self.emitModelCheckFinishMessage(status)
+                Task { [weak self] in
+                    await self?.refreshModelHealth()
+                }
+            }
+        }
+    }
+
+    /// 巡检结束反馈：生成完成/取消提示，交由视图消费。
+    private func emitModelCheckFinishMessage(_ status: GatewayModelCheckJobStatus) {
+        let summary = status.lastSummary
+        if status.scope == "all" {
+            if status.done < status.total {
+                // 被取消
+                guard let summary else {
+                    self.modelCheckFinishMessage = "巡检已取消"
+                    self.modelCheckFinishSuccess = false
+                    self.modelCheckFinishToken = UUID()
+                    return
+                }
+                self.modelCheckFinishMessage = "巡检已取消（已完成 \(summary.total - summary.skipped - summary.available - summary.unavailable - summary.error)/\(summary.total)）"
+                self.modelCheckFinishSuccess = false
+            } else if let summary {
+                self.modelCheckFinishMessage = "巡检完成：可用 \(summary.available) · 不可用 \(summary.unavailable) · 异常 \(summary.error) · 跳过 \(summary.skipped)"
+                self.modelCheckFinishSuccess = summary.available > 0
+            } else {
+                self.modelCheckFinishMessage = "巡检完成"
+                self.modelCheckFinishSuccess = true
+            }
+        } else {
+            if status.done < status.total {
+                self.modelCheckFinishMessage = "该账号巡检已取消"
+                self.modelCheckFinishSuccess = false
+            } else if let summary {
+                self.modelCheckFinishMessage = "该账号巡检完成：可用 \(summary.available) · 不可用 \(summary.unavailable) · 异常 \(summary.error)"
+                self.modelCheckFinishSuccess = summary.available > 0
+            } else {
+                self.modelCheckFinishMessage = "该账号巡检完成"
+                self.modelCheckFinishSuccess = true
+            }
+        }
+        self.modelCheckFinishToken = UUID()
+    }
+
+    public func startPollingModelCheckStatus() {
+        modelCheckPollingTask?.cancel()
+        modelCheckPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pollModelCheckStatus()
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if let self, !self.isModelCheckRunning {
+                    break
+                }
+            }
+            self?.modelCheckPollingTask = nil
+        }
+    }
+
+    public func triggerModelCheck(
+        provider: String? = nil,
+        connectionId: String? = nil,
+        providers: [String]? = nil,
+        accountIds: [String]? = nil,
+        allAccounts: Bool? = nil
+    ) async -> (success: Bool, message: String) {
+        guard let base = GatewaySupervisor.shared.endpoint else {
+            return (false, "本地网关尚未就绪")
+        }
+
+        // 乐观置位：立即进入巡检中状态并开始轮询，让用户第一时间看到反馈
+        let optimisticScope: String
+        if let providers, !providers.isEmpty {
+            optimisticScope = "selective:\(providers.joined(separator: ","))"
+        } else if let provider, let connectionId {
+            optimisticScope = "\(provider):\(connectionId)"
+        } else {
+            optimisticScope = "all"
+        }
+        self.isModelCheckRunning = true
+        self.checkingAccountScopes = [optimisticScope]
+        self.startPollingModelCheckStatus()
+
+        let localToken = GatewaySupervisor.shared.localToken
+        let url = base.appendingPathComponent("internal/model-check")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var bodyDict: [String: Any] = [:]
+        if let providers {
+            bodyDict["providers"] = providers
+            if let accountIds { bodyDict["accountIds"] = accountIds }
+            if let allAccounts { bodyDict["allAccounts"] = allAccounts }
+        } else if let provider, let connectionId {
+            bodyDict["provider"] = provider
+            bodyDict["connectionId"] = connectionId
+        }
+
+        if !bodyDict.isEmpty {
+            req.httpBody = try? JSONSerialization.data(withJSONObject: bodyDict)
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 202 {
+                    await self.pollModelCheckStatus()
+                    return (true, "已启动模型巡检")
+                } else if http.statusCode == 409 {
+                    // 服务器已有任务运行：保留轮询（下次 poll 会同步真实 scope）
+                    await self.pollModelCheckStatus()
+                    return (true, "模型巡检任务已在运行")
+                } else {
+                    // 失败回滚乐观置位
+                    self.isModelCheckRunning = false
+                    self.checkingAccountScopes.removeAll()
+                    let errStr = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                    return (false, "触发失败: \(errStr)")
+                }
+            }
+            self.isModelCheckRunning = false
+            self.checkingAccountScopes.removeAll()
+            return (false, "未知网关响应")
+        } catch {
+            self.isModelCheckRunning = false
+            self.checkingAccountScopes.removeAll()
+            return (false, "请求失败: \(error.localizedDescription)")
+        }
+    }
+
+    public func cancelModelCheck() async -> (success: Bool, message: String) {
+        guard let base = GatewaySupervisor.shared.endpoint else {
+            return (false, "本地网关尚未就绪")
+        }
+        let localToken = GatewaySupervisor.shared.localToken
+        let url = base.appendingPathComponent("internal/model-check/cancel")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+
+        self.isCancellingModelCheck = true
+        defer { self.isCancellingModelCheck = false }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 200 {
+                    let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    let isAlreadyIdle = (dict?["alreadyIdle"] as? Bool) ?? false
+                    self.isModelCheckRunning = false
+                    self.checkingAccountScopes.removeAll()
+                    await self.pollModelCheckStatus()
+                    await self.refreshModelHealth()
+                    return (true, isAlreadyIdle ? "巡检未在运行或已结束" : "已取消巡检任务")
+                } else {
+                    let errStr = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                    // 若收到 400（无任务进行中），同样同步清理本地乐观状态
+                    if errStr.contains("no model check in progress") {
+                        self.isModelCheckRunning = false
+                        self.checkingAccountScopes.removeAll()
+                        await self.refreshModelHealth()
+                        return (true, "巡检未在运行或已结束")
+                    }
+                    return (false, "取消失败: \(errStr)")
+                }
+            }
+            return (false, "未知网关响应")
+        } catch {
+            self.isModelCheckRunning = false
+            self.checkingAccountScopes.removeAll()
+            return (false, "请求失败: \(error.localizedDescription)")
         }
     }
 
@@ -1785,6 +2200,14 @@ public final class GatewayStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    nonisolated public static func normalizedModelLookupKey(_ modelName: String) -> String {
+        let base = unscopedModelName(modelName).lowercased()
+        return base
+            .replacingOccurrences(of: "-tiered", with: "")
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "_", with: "-")
+    }
+
     nonisolated private static func hermesWireModelID(modelName: String, accountName: String) -> String {
         let baseModel = unscopedModelName(modelName)
         guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { return "" }
@@ -2475,9 +2898,16 @@ public final class GatewayStore {
 
         for group in activeGroups {
             let provider = Self.hermesProviderName(for: group.id)
+            let pid: String = {
+                if group.id.hasPrefix("google") { return "google" }
+                if group.id.hasPrefix("deepseek") { return "deepseek" }
+                if group.id.hasPrefix("opencode") { return "opencode" }
+                return "openai"
+            }()
             for model in group.models {
                 let baseModel = Self.unscopedModelName(model.modelName)
                 guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: true) else { continue }
                 let key = "\(provider):\(baseModel)"
                 if !seen.contains(key) {
                     seen.insert(key)
@@ -2501,6 +2931,12 @@ public final class GatewayStore {
     public func consolidatedModels(for sectionID: String) -> [GatewayExportedModel] {
         guard let section = providerSections.first(where: { $0.id == sectionID }) else { return [] }
         let provider = Self.providerName(for: sectionID)
+        let pid: String = {
+            if sectionID.hasPrefix("google") { return "google" }
+            if sectionID.hasPrefix("deepseek") { return "deepseek" }
+            if sectionID.hasPrefix("opencode") { return "opencode" }
+            return "openai"
+        }()
         var seen = Set<String>()
         var result: [GatewayExportedModel] = []
         let activeGroups = section.accountGroups.filter { $0.isProxyEnabled }
@@ -2509,6 +2945,7 @@ public final class GatewayStore {
             for model in group.models {
                 let baseModel = Self.unscopedModelName(model.modelName)
                 guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: true) else { continue }
                 if !seen.contains(baseModel) {
                     seen.insert(baseModel)
                     result.append(
@@ -2526,6 +2963,64 @@ public final class GatewayStore {
             }
         }
         return result
+    }
+
+    /// Determines whether a given model is healthy and exportable to Agent clients.
+    /// Excludes any model marked as unavailable or error in the latest health inspection.
+    public func isModelExportable(
+        baseModel: String,
+        providerId: String,
+        connectionID: ConnectionID?,
+        isConsolidated: Bool
+    ) -> Bool {
+        guard let health = modelHealthResponse, !health.accounts.isEmpty else {
+            return true
+        }
+
+        let cleanBase = Self.normalizedModelLookupKey(baseModel)
+
+        if isConsolidated {
+            let providerAccounts = health.accounts.filter { $0.provider.lowercased() == providerId.lowercased() }
+            if providerAccounts.isEmpty {
+                return true
+            }
+
+            var foundRecord = false
+            for acc in providerAccounts {
+                for item in acc.models {
+                    let itemBase = Self.normalizedModelLookupKey(item.id)
+                    if itemBase == cleanBase {
+                        foundRecord = true
+                        if item.isAvailable {
+                            return true
+                        }
+                    }
+                }
+            }
+
+            // If we found health records for this model across provider accounts and none was available, exclude it.
+            return !foundRecord
+        } else {
+            guard let connID = connectionID else {
+                return true
+            }
+            let connUUID = connID.rawValue.uuidString.lowercased()
+            let cleanConnUUID = connUUID.replacingOccurrences(of: "-", with: "")
+            guard let acc = health.accounts.first(where: {
+                let accID = $0.connectionId.lowercased()
+                return accID == connUUID || accID.replacingOccurrences(of: "-", with: "") == cleanConnUUID
+            }) else {
+                return true
+            }
+
+            if let item = acc.models.first(where: {
+                Self.normalizedModelLookupKey($0.id) == cleanBase
+            }) {
+                return item.isAvailable
+            }
+
+            return true
+        }
     }
 
     public var allExportedModels: [GatewayExportedModel] {
@@ -2546,6 +3041,7 @@ public final class GatewayStore {
                 for model in group.models {
                     let baseModel = Self.unscopedModelName(model.modelName)
                     guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                    guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: true) else { continue }
                     let key = "\(provider):\(baseModel)"
                     if !seenConsolidated.contains(key) {
                         seenConsolidated.insert(key)
@@ -2563,7 +3059,12 @@ public final class GatewayStore {
                     }
                 }
             } else {
-                result.append(contentsOf: group.models)
+                for model in group.models {
+                    let baseModel = Self.unscopedModelName(model.modelName)
+                    guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                    guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: false) else { continue }
+                    result.append(model)
+                }
             }
         }
         return result
@@ -2586,6 +3087,7 @@ public final class GatewayStore {
                 for model in group.models {
                     let baseModel = Self.unscopedModelName(model.modelName)
                     guard !baseModel.isEmpty, !baseModel.hasPrefix("(") else { continue }
+                    guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: true) else { continue }
                     let pickerID = Self.hermesPickerModelID(
                         provider: provider,
                         modelName: baseModel
@@ -2612,6 +3114,7 @@ public final class GatewayStore {
                     )
                     guard !wireID.isEmpty else { continue }
                     let baseModel = Self.unscopedModelName(model.modelName)
+                    guard isModelExportable(baseModel: baseModel, providerId: pid, connectionID: group.connectionID, isConsolidated: false) else { continue }
                     let pickerID = Self.hermesPickerModelID(
                         provider: provider,
                         modelName: baseModel,

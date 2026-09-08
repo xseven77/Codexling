@@ -34,6 +34,7 @@ static CODEX_CATALOG_CACHE: OnceLock<Mutex<HashMap<String, CodexCatalogEntry>>> 
 pub struct AccountDynamicState {
     pub cooldown_map: HashMap<String, Instant>,
     pub last_served_map: HashMap<String, Instant>,
+    pub sticky_accounts: HashMap<String, String>,
 }
 
 impl AccountDynamicState {
@@ -66,6 +67,25 @@ impl AccountDynamicState {
         let now = Instant::now();
         self.cooldown_map.values().filter(|&&exp| exp > now).count()
     }
+
+    pub fn sticky_account(&self, provider: &str) -> Option<&String> {
+        self.sticky_accounts.get(provider)
+    }
+
+    pub fn set_sticky_account(&mut self, provider: &str, connection_id: &str) {
+        self.sticky_accounts.insert(provider.to_string(), connection_id.to_string());
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_sticky_account(&mut self, provider: &str) {
+        self.sticky_accounts.remove(provider);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProxyCallResult {
+    Completed,
+    RetryableFailover(String),
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -87,6 +107,41 @@ pub struct GatewayRequestRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GatewayAutomationTask {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_automation_task_type")]
+    pub task_type: String,
+    #[serde(default = "default_automation_task_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default = "default_automation_task_all_accounts")]
+    pub all_accounts: bool,
+    #[serde(default)]
+    pub account_ids: Vec<String>,
+    #[serde(default)]
+    pub hours: Vec<u8>,
+    #[serde(default)]
+    pub last_run_at: Option<i64>,
+    #[serde(default)]
+    pub last_run_status: Option<String>,
+    #[serde(default)]
+    pub last_run_summary: Option<String>,
+}
+
+fn default_automation_task_type() -> String {
+    "modelHealthCheck".to_string()
+}
+fn default_automation_task_enabled() -> bool {
+    true
+}
+fn default_automation_task_all_accounts() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GatewaySettings {
     #[serde(rename = "$schemaVersion", default = "default_gateway_settings_schema_version")]
     pub schema_version: u32,
@@ -94,12 +149,22 @@ pub struct GatewaySettings {
     pub model_consolidation_enabled: bool,
     #[serde(default)]
     pub consolidated_providers: Vec<String>,
+    #[serde(default)]
+    pub provider_routing_modes: HashMap<String, String>,
+    #[serde(default)]
+    pub provider_pinned_accounts: HashMap<String, String>,
     #[serde(default = "default_gateway_settings_allow_failover")]
     pub allow_failover: bool,
     #[serde(default = "default_gateway_settings_cooldown_seconds")]
     pub cooldown_seconds: u64,
     #[serde(default = "default_gateway_settings_max_failover_retries")]
     pub max_failover_retries: usize,
+    #[serde(default)]
+    pub auto_check_on_startup_with_history: bool,
+    #[serde(default = "default_gateway_settings_health_check_interval")]
+    pub health_check_interval: String,
+    #[serde(default)]
+    pub automation_tasks: Vec<GatewayAutomationTask>,
 }
 
 fn default_gateway_settings_schema_version() -> u32 {
@@ -114,6 +179,9 @@ fn default_gateway_settings_cooldown_seconds() -> u64 {
 fn default_gateway_settings_max_failover_retries() -> usize {
     2
 }
+fn default_gateway_settings_health_check_interval() -> String {
+    "1h".to_string()
+}
 
 impl Default for GatewaySettings {
     fn default() -> Self {
@@ -121,9 +189,14 @@ impl Default for GatewaySettings {
             schema_version: 1,
             model_consolidation_enabled: false,
             consolidated_providers: Vec::new(),
+            provider_routing_modes: HashMap::new(),
+            provider_pinned_accounts: HashMap::new(),
             allow_failover: true,
             cooldown_seconds: 300,
             max_failover_retries: 2,
+            auto_check_on_startup_with_history: false,
+            health_check_interval: "1h".to_string(),
+            automation_tasks: Vec::new(),
         }
     }
 }
@@ -157,12 +230,130 @@ impl GatewaySettings {
         false
     }
 
+    pub fn routing_mode_for_provider(&self, provider: &str) -> &str {
+        let p = provider.trim().to_ascii_lowercase();
+        if let Some(mode) = self.provider_routing_modes.get(&p) {
+            return mode.as_str();
+        }
+        if p == "google" || p == "gemini" {
+            if let Some(mode) = self
+                .provider_routing_modes
+                .get("google")
+                .or_else(|| self.provider_routing_modes.get("gemini"))
+            {
+                return mode.as_str();
+            }
+        }
+        if p == "openai" || p == "codex" {
+            if let Some(mode) = self
+                .provider_routing_modes
+                .get("openai")
+                .or_else(|| self.provider_routing_modes.get("codex"))
+            {
+                return mode.as_str();
+            }
+        }
+        "smooth"
+    }
+
+    pub fn pinned_account_for_provider(&self, provider: &str) -> Option<&str> {
+        let p = provider.trim().to_ascii_lowercase();
+        if let Some(id) = self.provider_pinned_accounts.get(&p).filter(|s| !s.trim().is_empty()) {
+            return Some(id.as_str());
+        }
+        if p == "google" || p == "gemini" {
+            if let Some(id) = self
+                .provider_pinned_accounts
+                .get("google")
+                .or_else(|| self.provider_pinned_accounts.get("gemini"))
+                .filter(|s| !s.trim().is_empty())
+            {
+                return Some(id.as_str());
+            }
+        }
+        if p == "openai" || p == "codex" {
+            if let Some(id) = self
+                .provider_pinned_accounts
+                .get("openai")
+                .or_else(|| self.provider_pinned_accounts.get("codex"))
+                .filter(|s| !s.trim().is_empty())
+            {
+                return Some(id.as_str());
+            }
+        }
+        None
+    }
+
+    pub fn health_check_interval_seconds(&self) -> i64 {
+        match self.health_check_interval.trim().to_ascii_lowercase().as_str() {
+            "6h" => 6 * 3600,
+            "1d" | "24h" | "midnight" => 24 * 3600,
+            _ => 3600, // default 1h
+        }
+    }
+
+    /// Check if a daily check at midnight (00:00 local time) is due.
+    /// Returns true if local time has reached 00:00 of a calendar day that is later than
+    /// the calendar day of last_check_epoch, or if at least 24 hours have elapsed.
+    pub fn is_midnight_due(last_check_epoch: i64, now_epoch: i64) -> bool {
+        if now_epoch < last_check_epoch {
+            return false;
+        }
+        if now_epoch - last_check_epoch >= 86400 {
+            return true;
+        }
+        // Extract local calendar days (YYYY, MM, DD) for both timestamps
+        let (last_y, last_m, last_d) = Self::epoch_to_local_ymd(last_check_epoch);
+        let (now_y, now_m, now_d) = Self::epoch_to_local_ymd(now_epoch);
+        (now_y, now_m, now_d) > (last_y, last_m, last_d)
+    }
+
+    pub fn epoch_to_local_ymd_h(epoch: i64) -> (i32, i32, i32, u8) {
+        unsafe {
+            let t = epoch as libc::time_t;
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&t, &mut tm);
+            (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour as u8)
+        }
+    }
+
+    fn epoch_to_local_ymd(epoch: i64) -> (i32, i32, i32) {
+        let (y, m, d, _) = Self::epoch_to_local_ymd_h(epoch);
+        (y, m, d)
+    }
+
+    pub fn is_task_due(task: &GatewayAutomationTask, now_epoch: i64) -> bool {
+        if !task.enabled {
+            return false;
+        }
+        let (now_y, now_m, now_d, now_h) = Self::epoch_to_local_ymd_h(now_epoch);
+        if !task.hours.contains(&now_h) {
+            return false;
+        }
+        if let Some(last_epoch) = task.last_run_at {
+            let (last_y, last_m, last_d, last_h) = Self::epoch_to_local_ymd_h(last_epoch);
+            if (last_y, last_m, last_d, last_h) == (now_y, now_m, now_d, now_h) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn load_for_home(home: &str) -> Self {
         let path = format!("{home}/Library/Application Support/Codexling/gateway-settings.json");
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|content| serde_json::from_str::<GatewaySettings>(&content).ok())
             .unwrap_or_default()
+    }
+
+    pub fn save_for_home(&self, home: &str) -> std::io::Result<()> {
+        let dir = format!("{home}/Library/Application Support/Codexling");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = format!("{dir}/gateway-settings.json");
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        std::fs::write(&path, content)
     }
 }
 
@@ -200,16 +391,26 @@ mod tests {
         assert!(default_settings.allow_failover);
         assert_eq!(default_settings.cooldown_seconds, 300);
         assert_eq!(default_settings.max_failover_retries, 2);
+        assert_eq!(default_settings.health_check_interval, "1h");
 
         // 2. Custom settings when file exists
         fs::write(
             support.join("gateway-settings.json"),
             r#"{
-                "$schemaVersion": 1,
+                "$schemaVersion": 2,
                 "modelConsolidationEnabled": true,
+                "consolidatedProviders": ["google", "openai"],
+                "providerRoutingModes": {
+                    "google": "stickyHighQuota",
+                    "openai": "pinnedAccount"
+                },
+                "providerPinnedAccounts": {
+                    "openai": "acc-pinned-123"
+                },
                 "allowFailover": false,
                 "cooldownSeconds": 600,
-                "maxFailoverRetries": 4
+                "maxFailoverRetries": 4,
+                "healthCheckInterval": "6h"
             }"#,
         )
         .unwrap();
@@ -218,6 +419,73 @@ mod tests {
         assert!(!loaded.allow_failover);
         assert_eq!(loaded.cooldown_seconds, 600);
         assert_eq!(loaded.max_failover_retries, 4);
+        assert_eq!(loaded.health_check_interval, "6h");
+        assert_eq!(loaded.routing_mode_for_provider("google"), "stickyHighQuota");
+        assert_eq!(loaded.routing_mode_for_provider("openai"), "pinnedAccount");
+        assert_eq!(loaded.routing_mode_for_provider("deepseek"), "smooth"); // default fallback
+        assert_eq!(loaded.pinned_account_for_provider("openai"), Some("acc-pinned-123"));
+        assert_eq!(loaded.pinned_account_for_provider("google"), None);
+
+        // Test intervals
+        assert_eq!(loaded.health_check_interval_seconds(), 6 * 3600);
+        let mut daily = loaded.clone();
+        daily.health_check_interval = "midnight".to_string();
+        assert_eq!(daily.health_check_interval_seconds(), 24 * 3600);
+
+        // Test midnight due logic:
+        // Case 1: Same day earlier -> not due
+        // Use fixed epoch: 2026-09-08 10:00:00 (approx 1788861600)
+        // 2 hours later same day -> not due
+        let t0 = 1788861600;
+        assert!(!super::GatewaySettings::is_midnight_due(t0, t0 + 7200));
+        // Case 2: >= 24h later -> due
+        assert!(super::GatewaySettings::is_midnight_due(t0, t0 + 86400));
+        // Case 3: Next day past midnight (e.g. 15 hours later cross midnight) -> due
+        assert!(super::GatewaySettings::is_midnight_due(t0, t0 + 60000));
+    }
+
+    #[test]
+    fn test_gateway_automation_tasks_schedule_and_due() {
+        let task = super::GatewayAutomationTask {
+            id: "task-1".to_string(),
+            name: "Codex 定时巡检".to_string(),
+            task_type: "modelHealthCheck".to_string(),
+            enabled: true,
+            providers: vec!["openai".to_string()],
+            all_accounts: true,
+            account_ids: vec![],
+            hours: vec![8, 14, 21],
+            last_run_at: None,
+            last_run_status: None,
+            last_run_summary: None,
+        };
+
+        // Let's create an epoch at hour 8
+        // Using epoch_to_local_ymd_h to verify
+        let t_base = 1788861600_i64; // arbitrary epoch
+        let (_y, _m, _d, h) = super::GatewaySettings::epoch_to_local_ymd_h(t_base);
+        // Find epoch offset for target hour
+        let target_diff = (8_i32 - h as i32) * 3600;
+        let t_hour_8 = t_base + target_diff as i64;
+        let (_, _, _, h8) = super::GatewaySettings::epoch_to_local_ymd_h(t_hour_8);
+        assert_eq!(h8, 8);
+
+        // Task at hour 8 is due!
+        assert!(super::GatewaySettings::is_task_due(&task, t_hour_8));
+
+        // Task at hour 9 is NOT due
+        let t_hour_9 = t_hour_8 + 3600;
+        assert!(!super::GatewaySettings::is_task_due(&task, t_hour_9));
+
+        // If task already ran at hour 8, it shouldn't be due again in the same hour
+        let mut ran_task = task.clone();
+        ran_task.last_run_at = Some(t_hour_8 + 120); // ran 2 minutes into hour 8
+        assert!(!super::GatewaySettings::is_task_due(&ran_task, t_hour_8 + 300));
+
+        // If disabled, not due
+        let mut disabled_task = task.clone();
+        disabled_task.enabled = false;
+        assert!(!super::GatewaySettings::is_task_due(&disabled_task, t_hour_8));
     }
 
     #[test]
@@ -927,7 +1195,7 @@ mod tests {
         ];
 
         // healthy-acc must be picked even with lower score because cooling-acc is cooling down
-        let picked = GatewayServer::sort_and_pick_candidate(&mut candidates).unwrap();
+        let picked = GatewayServer::sort_and_pick_candidate("openai", "smooth", &mut candidates).unwrap();
         assert_eq!(picked.connection_id, "healthy-acc");
 
         // Test LRU rotation with equal scores
@@ -969,7 +1237,7 @@ mod tests {
         ];
 
         // acc-a has never been served, acc-b has never been served -> deterministic tie-break selects acc-a
-        let picked1 = GatewayServer::sort_and_pick_candidate(&mut candidates_lru).unwrap();
+        let picked1 = GatewayServer::sort_and_pick_candidate("openai", "smooth", &mut candidates_lru).unwrap();
         assert_eq!(picked1.connection_id, "acc-a");
 
         // Re-run candidates: now acc-a was served, acc-b was not served yet -> acc-b must be picked (LRU)
@@ -1009,8 +1277,138 @@ mod tests {
                 },
             ),
         ];
-        let picked2 = GatewayServer::sort_and_pick_candidate(&mut candidates_lru2).unwrap();
+        let picked2 = GatewayServer::sort_and_pick_candidate("openai", "smooth", &mut candidates_lru2).unwrap();
         assert_eq!(picked2.connection_id, "acc-b");
+    }
+
+    #[test]
+    fn test_sticky_high_quota_mode() {
+        let provider = "google-test-sticky";
+        let mut candidates = vec![
+            (
+                100,
+                "sticky-primary".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t1".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "sticky-primary".into(),
+                    codex_home: None,
+                    connection_id: "sticky-primary".into(),
+                    quota_score: 100,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                95,
+                "secondary-acc".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t2".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "secondary-acc".into(),
+                    codex_home: None,
+                    connection_id: "secondary-acc".into(),
+                    quota_score: 95,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+
+        // 1. First pick: highest quota candidate is picked and becomes sticky
+        let picked1 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates).unwrap();
+        assert_eq!(picked1.connection_id, "sticky-primary");
+
+        // 2. Second pick: even if LRU would favor secondary, sticky keeps sticky-primary
+        let mut candidates2 = vec![
+            (
+                90,
+                "sticky-primary".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t1".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "sticky-primary".into(),
+                    codex_home: None,
+                    connection_id: "sticky-primary".into(),
+                    quota_score: 90,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                95,
+                "secondary-acc".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t2".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "secondary-acc".into(),
+                    codex_home: None,
+                    connection_id: "secondary-acc".into(),
+                    quota_score: 95,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+        let picked2 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates2).unwrap();
+        assert_eq!(picked2.connection_id, "sticky-primary");
+
+        // 3. Failover: if sticky-primary enters cooldown (429), it switches to secondary-acc
+        AccountDynamicState::global()
+            .lock()
+            .unwrap()
+            .mark_cooldown("sticky-primary", std::time::Duration::from_secs(60));
+
+        let mut candidates3 = vec![
+            (
+                90,
+                "sticky-primary".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t1".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "sticky-primary".into(),
+                    codex_home: None,
+                    connection_id: "sticky-primary".into(),
+                    quota_score: 90,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+            (
+                95,
+                "secondary-acc".to_string(),
+                UpstreamEndpoint {
+                    url: "https://api.example.com".into(),
+                    auth_header: "Bearer t2".into(),
+                    extra_headers: Vec::new(),
+                    project: None,
+                    target_model: "gemini-2.5-pro".into(),
+                    provider_name: "Google Gemini".into(),
+                    _account_name: "secondary-acc".into(),
+                    codex_home: None,
+                    connection_id: "secondary-acc".into(),
+                    quota_score: 95,
+                    routing_mode: "consolidated".into(),
+                },
+            ),
+        ];
+        let picked3 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates3).unwrap();
+        assert_eq!(picked3.connection_id, "secondary-acc");
     }
 
     #[test]
@@ -1058,6 +1456,96 @@ mod tests {
         assert_eq!(ep.target_model, "deepseek-chat");
         assert_eq!(ep.routing_mode, "consolidated");
         assert_eq!(ep.connection_id, "ds-conn-1");
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn test_pinned_account_routing_and_strict_no_failover() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(support.join("deepseek_credentials")).unwrap();
+        fs::write(
+            support.join("connections-v1.json"),
+            r#"{
+                "codexAccounts": [],
+                "geminiConnections": [],
+                "deepSeekConnections": [
+                    {
+                        "id": {"rawValue": "ds-conn-1"},
+                        "label": "primary-ds",
+                        "credentialHandle": "ds-cred-1",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "availableModelIDs": ["deepseek-chat"]
+                    },
+                    {
+                        "id": {"rawValue": "ds-conn-2"},
+                        "label": "secondary-ds",
+                        "credentialHandle": "ds-cred-2",
+                        "isEnabled": true,
+                        "authenticationState": "connected",
+                        "availableModelIDs": ["deepseek-chat"]
+                    }
+                ],
+                "openCodeConnections": []
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            support.join("deepseek_credentials/ds-cred-1.key"),
+            "ds-key-1\n",
+        )
+        .unwrap();
+        fs::write(
+            support.join("deepseek_credentials/ds-cred-2.key"),
+            "ds-key-2\n",
+        )
+        .unwrap();
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{
+                "modelConsolidationEnabled": true,
+                "allowFailover": true,
+                "providerRoutingModes": {"deepseek": "pinnedAccount"},
+                "providerPinnedAccounts": {"deepseek": "ds-conn-1"}
+            }"#,
+        )
+        .unwrap();
+
+        let home_str = home.to_str().unwrap();
+
+        // 1. Initial resolution must pick the pinned account ds-conn-1 with routing_mode "pinned"
+        let ep = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "DeepSeek·deepseek-chat",
+        )
+        .unwrap();
+        assert_eq!(ep.connection_id, "ds-conn-1");
+        assert_eq!(ep.routing_mode, "pinned");
+
+        // 2. When pinned account is in exclusions (e.g. simulated 429), it must NEVER failover to ds-conn-2!
+        let res_excluded = GatewayServer::resolve_upstream_endpoint_for_home_with_exclusions(
+            home_str,
+            "DeepSeek·deepseek-chat",
+            &["ds-conn-1".to_string()],
+        );
+        assert!(res_excluded.is_err());
+        let err_str = res_excluded.unwrap_err();
+        assert!(err_str.contains("已停止请求，未执行多账号负载转移"));
+
+        // 3. When pinned account is in cooldown, it must also NEVER failover to ds-conn-2!
+        AccountDynamicState::global()
+            .lock()
+            .unwrap()
+            .mark_cooldown("ds-conn-1", std::time::Duration::from_secs(60));
+        let res_cooldown = GatewayServer::resolve_upstream_endpoint_for_home(
+            home_str,
+            "DeepSeek·deepseek-chat",
+        );
+        assert!(res_cooldown.is_err());
+        let err_cooldown_str = res_cooldown.unwrap_err();
+        assert!(err_cooldown_str.contains("已停止请求，未执行多账号负载转移"));
 
         fs::remove_dir_all(home).unwrap();
     }
@@ -1525,6 +2013,7 @@ mod tests {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct UpstreamEndpoint {
     pub url: String,
     pub auth_header: String,
@@ -1556,6 +2045,7 @@ pub struct GatewayServer {
     /// extension fields. Cache Gemini's required thought signatures by ID so
     /// a subsequent tool result can be replayed correctly.
     pub gemini_thought_signatures: Arc<Mutex<HashMap<String, String>>>,
+    pub model_health: Arc<crate::model_health::ModelHealthEngine>,
 }
 
 impl GatewayServer {
@@ -1582,7 +2072,95 @@ impl GatewayServer {
                 }),
             ),
             gemini_thought_signatures: Arc::new(Mutex::new(HashMap::new())),
+            model_health: Arc::new(crate::model_health::ModelHealthEngine::new_default()),
         }
+    }
+
+    pub fn new_with_health(
+        token: impl Into<String>,
+        model_health: Arc<crate::model_health::ModelHealthEngine>,
+    ) -> Self {
+        let route_table = RouteTable::new();
+        Self {
+            token: token.into(),
+            route_table,
+            active_requests: Arc::new(AtomicUsize::new(0)),
+            total_requests: Arc::new(AtomicUsize::new(0)),
+            total_input_tokens: Arc::new(AtomicUsize::new(0)),
+            total_output_tokens: Arc::new(AtomicUsize::new(0)),
+            total_tool_calls: Arc::new(AtomicUsize::new(0)),
+            is_running: Arc::new(AtomicBool::new(true)),
+            recent_requests: Arc::new(Mutex::new(VecDeque::new())),
+            telemetry_store: Arc::new(
+                TelemetryStore::new(TelemetryStore::default_db_path()).unwrap_or_else(|_| {
+                    TelemetryStore::new_in_memory()
+                        .expect("in-memory telemetry store failed to open")
+                }),
+            ),
+            gemini_thought_signatures: Arc::new(Mutex::new(HashMap::new())),
+            model_health,
+        }
+    }
+
+    pub fn handle_trigger_model_check(&self, body: &str) -> Vec<u8> {
+        let scope_req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+        let provider = scope_req
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let connection_id = scope_req
+            .get("connectionId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let (scope_desc, scope) = if let Some(providers_arr) = scope_req.get("providers").and_then(|v| v.as_array()) {
+            let providers = providers_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>();
+            let account_ids = scope_req
+                .get("accountIds")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let all_accounts = scope_req.get("allAccounts").and_then(|v| v.as_bool()).unwrap_or(true);
+            let desc = format!("selective:providers={}:accounts={}", providers.join(","), if all_accounts { "all".to_string() } else { account_ids.join(",") });
+            (desc, crate::model_health::CheckScope::Selective { providers, account_ids, all_accounts })
+        } else {
+            match (provider, connection_id) {
+                (Some(p), Some(cid)) if !p.is_empty() && !cid.is_empty() => (
+                    format!("{p}:{cid}"),
+                    crate::model_health::CheckScope::Account {
+                        provider: p,
+                        connection_id: cid,
+                    },
+                ),
+                _ => ("all".to_string(), crate::model_health::CheckScope::All),
+            }
+        };
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        let initial_targets = self.model_health.collect_targets(&home, &scope);
+        let initial_total = initial_targets.len();
+
+        if self.model_health.try_start_job(&scope_desc, initial_total).is_err() {
+            return Self::response(
+                "409 Conflict",
+                "application/json",
+                r#"{"error":"model check already in progress"}"#,
+            );
+        }
+
+        let engine = self.model_health.clone();
+        std::thread::spawn(move || {
+            engine.run_check(&home, scope);
+        });
+
+        Self::response(
+            "202 Accepted",
+            "application/json",
+            &format!(r#"{{"started":true,"scope":"{scope_desc}","total":{initial_total}}}"#),
+        )
     }
 
     fn response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
@@ -1594,6 +2172,8 @@ impl GatewayServer {
     }
 
     pub fn handle_client(&self, mut stream: TcpStream) -> std::io::Result<bool> {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
         let mut buffer = [0_u8; 65_536];
         let count = stream.read(&mut buffer)?;
         if count == 0 {
@@ -1657,6 +2237,15 @@ impl GatewayServer {
             .next()
             .unwrap_or(raw_path)
             .trim_end_matches('/');
+        let query_string = raw_path.split('?').nth(1).unwrap_or("");
+        let status_filter = query_string.split('&').find_map(|param| {
+            let mut kv = param.split('=');
+            if kv.next()? == "status" {
+                kv.next()
+            } else {
+                None
+            }
+        });
         let path = if clean_path.starts_with("/v1/v1/") {
             &clean_path[3..]
         } else {
@@ -1755,13 +2344,85 @@ impl GatewayServer {
                         "model_consolidation_enabled": settings.model_consolidation_enabled,
                         "consolidated_providers": settings.consolidated_providers,
                         "cooling_down_accounts_count": cooling_count,
+                        "model_health_job": self.model_health.job_status_payload(),
                     });
+                    Self::response("200 OK", "application/json", &payload.to_string())
+                }
+            }
+            ("GET", "/v1/models/all") | ("GET", "/models/all") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+                    let payload = self.model_health.models_all_payload(&home, status_filter);
+                    Self::response("200 OK", "application/json", &payload.to_string())
+                }
+            }
+            ("GET", "/internal/models/health") | ("GET", "/v1/models/health") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+                    let payload = self.model_health.models_health_diagnosis_payload(&home);
                     Self::response("200 OK", "application/json", &payload.to_string())
                 }
             }
             ("GET", "/v1/models") | ("GET", "/models") => {
                 let payload = Self::get_dynamic_models_payload();
-                Self::response("200 OK", "application/json", &payload.to_string())
+                let filtered = self.model_health.filter_models_payload(payload);
+                Self::response("200 OK", "application/json", &filtered.to_string())
+            }
+            ("POST", "/internal/model-check") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    self.handle_trigger_model_check(body)
+                }
+            }
+            ("POST", "/internal/model-check/cancel") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let cancelled = self.model_health.cancel_job();
+                    if cancelled {
+                        Self::response("200 OK", "application/json", r#"{"cancelled":true}"#)
+                    } else {
+                        // 如果后端当前本就未在运行巡检，视为幂等成功，返回已空闲
+                        Self::response(
+                            "200 OK",
+                            "application/json",
+                            r#"{"cancelled":false,"alreadyIdle":true,"message":"no model check in progress"}"#,
+                        )
+                    }
+                }
+            }
+            ("GET", "/internal/model-check/status") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let status = self.model_health.job_status_payload();
+                    Self::response("200 OK", "application/json", &status.to_string())
+                }
             }
             ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
                 self.active_requests.fetch_add(1, Ordering::SeqCst);
@@ -2273,7 +2934,7 @@ impl GatewayServer {
                 Ok(u) => {
                     let is_consolidated = u.routing_mode == "consolidated";
                     if let Some(codex_home) = u.codex_home.clone() {
-                        return self.proxy_codex_http(
+                        match self.proxy_codex_http(
                             &agent,
                             requested_model,
                             &u,
@@ -2285,11 +2946,28 @@ impl GatewayServer {
                             &time_str,
                             start_time,
                             stream,
-                        );
+                        )? {
+                            ProxyCallResult::Completed => return Ok(true),
+                            ProxyCallResult::RetryableFailover(err_msg) => {
+                                if is_consolidated && retry_count < max_retries {
+                                    if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                        state.mark_cooldown(
+                                            &u.connection_id,
+                                            std::time::Duration::from_secs(settings.cooldown_seconds),
+                                        );
+                                    }
+                                    exclusions.push(u.connection_id.clone());
+                                    retry_count += 1;
+                                    continue;
+                                }
+                                Self::write_gateway_error(stream, requested_model, is_stream, now_unix, &err_msg)?;
+                                return Ok(true);
+                            }
+                        }
                     }
 
                     if u.provider_name == "Google Gemini" {
-                        return self.proxy_gemini_oauth(
+                        match self.proxy_gemini_oauth(
                             &agent,
                             requested_model,
                             &u,
@@ -2300,7 +2978,24 @@ impl GatewayServer {
                             &time_str,
                             start_time,
                             stream,
-                        );
+                        )? {
+                            ProxyCallResult::Completed => return Ok(true),
+                            ProxyCallResult::RetryableFailover(err_msg) => {
+                                if is_consolidated && retry_count < max_retries {
+                                    if let Ok(mut state) = AccountDynamicState::global().lock() {
+                                        state.mark_cooldown(
+                                            &u.connection_id,
+                                            std::time::Duration::from_secs(settings.cooldown_seconds),
+                                        );
+                                    }
+                                    exclusions.push(u.connection_id.clone());
+                                    retry_count += 1;
+                                    continue;
+                                }
+                                Self::write_gateway_error(stream, requested_model, is_stream, now_unix, &err_msg)?;
+                                return Ok(true);
+                            }
+                        }
                     }
 
                     let mut payload = serde_json::json!({
@@ -2713,7 +3408,7 @@ impl GatewayServer {
         time_str: &str,
         start_time: std::time::Instant,
         stream: &mut TcpStream,
-    ) -> std::io::Result<bool> {
+    ) -> std::io::Result<ProxyCallResult> {
         let mut system_parts = Vec::new();
         let mut contents = Vec::new();
         let mut replayed_gemini_call_ids = std::collections::HashSet::new();
@@ -2810,13 +3505,14 @@ impl GatewayServer {
                     continue;
                 }
                 let Some(name) = Self::openai_tool_name_for_call(messages, call_id) else {
-                    return Self::write_gateway_error(
+                    Self::write_gateway_error(
                         stream,
                         requested_model,
                         is_stream,
                         now_unix,
                         "Gemini 工具结果缺少对应的工具名称。请求未回退到其他供应商。",
-                    );
+                    )?;
+                    return Ok(ProxyCallResult::Completed);
                 };
                 let response = Self::message_text(message.get("content"))
                     .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -2833,13 +3529,14 @@ impl GatewayServer {
             }
         }
         if contents.is_empty() {
-            return Self::write_gateway_error(
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
                 "请求中没有可发送给 Gemini 的文本内容。",
-            );
+            )?;
+            return Ok(ProxyCallResult::Completed);
         }
 
         let mut generation_request = serde_json::json!({"contents": contents});
@@ -2882,13 +3579,14 @@ impl GatewayServer {
             .as_deref()
             .filter(|value| !value.trim().is_empty());
         let Some(project) = project else {
-            return Self::write_gateway_error(
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
                 "Google OAuth 账号缺少 Cloud Code 项目，无法调用 Antigravity。",
-            );
+            )?;
+            return Ok(ProxyCallResult::Completed);
         };
         let payload = Self::cloud_code_generate_payload(
             project,
@@ -2909,26 +3607,34 @@ impl GatewayServer {
                             Self::curl_failure_message(&direct_output)
                         );
                         Self::log_gateway_error(&message);
-                        return Self::write_gateway_error(
+                        if upstream.routing_mode == "consolidated" {
+                            return Ok(ProxyCallResult::RetryableFailover(message));
+                        }
+                        Self::write_gateway_error(
                             stream,
                             requested_model,
                             is_stream,
                             now_unix,
                             &message,
-                        );
+                        )?;
+                        return Ok(ProxyCallResult::Completed);
                     }
                     Err(error) => {
                         let message = format!(
                             "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{error}）"
                         );
                         Self::log_gateway_error(&message);
-                        return Self::write_gateway_error(
+                        if upstream.routing_mode == "consolidated" {
+                            return Ok(ProxyCallResult::RetryableFailover(message));
+                        }
+                        Self::write_gateway_error(
                             stream,
                             requested_model,
                             is_stream,
                             now_unix,
                             &message,
-                        );
+                        )?;
+                        return Ok(ProxyCallResult::Completed);
                     }
                 }
             }
@@ -2940,39 +3646,52 @@ impl GatewayServer {
                         Self::curl_failure_message(&direct_output)
                     );
                     Self::log_gateway_error(&message);
-                    return Self::write_gateway_error(
+                    if upstream.routing_mode == "consolidated" {
+                        return Ok(ProxyCallResult::RetryableFailover(message));
+                    }
+                    Self::write_gateway_error(
                         stream,
                         requested_model,
                         is_stream,
                         now_unix,
                         &message,
-                    );
+                    )?;
+                    return Ok(ProxyCallResult::Completed);
                 }
                 Err(direct_error) => {
                     let message = format!(
                         "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{direct_error}）"
                     );
                     Self::log_gateway_error(&message);
-                    return Self::write_gateway_error(
+                    if upstream.routing_mode == "consolidated" {
+                        return Ok(ProxyCallResult::RetryableFailover(message));
+                    }
+                    Self::write_gateway_error(
                         stream,
                         requested_model,
                         is_stream,
                         now_unix,
                         &message,
-                    );
+                    )?;
+                    return Ok(ProxyCallResult::Completed);
                 }
             },
         };
         let body: serde_json::Value = match serde_json::from_slice(&output.stdout) {
             Ok(body) => body,
             Err(_) => {
-                return Self::write_gateway_error(
+                let err_msg = "Gemini OAuth 上游返回了无效响应。";
+                if upstream.routing_mode == "consolidated" {
+                    return Ok(ProxyCallResult::RetryableFailover(err_msg.to_string()));
+                }
+                Self::write_gateway_error(
                     stream,
                     requested_model,
                     is_stream,
                     now_unix,
-                    "Gemini OAuth 上游返回了无效响应。",
-                )
+                    err_msg,
+                )?;
+                return Ok(ProxyCallResult::Completed);
             }
         };
         if let Some(message) = body
@@ -2980,23 +3699,33 @@ impl GatewayServer {
             .and_then(|error| error.get("message"))
             .and_then(|value| value.as_str())
         {
-            return Self::write_gateway_error(
+            let formatted = format!("Gemini OAuth 请求失败：{message}");
+            if upstream.routing_mode == "consolidated" {
+                return Ok(ProxyCallResult::RetryableFailover(formatted));
+            }
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
-                &format!("Gemini OAuth 请求失败：{message}"),
-            );
+                &formatted,
+            )?;
+            return Ok(ProxyCallResult::Completed);
         }
         let message = self.cloud_code_response_message(&body);
         let Some(message) = message else {
-            return Self::write_gateway_error(
+            let err_msg = "Gemini OAuth 上游未返回文本或工具调用结果。";
+            if upstream.routing_mode == "consolidated" {
+                return Ok(ProxyCallResult::RetryableFailover(err_msg.to_string()));
+            }
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
-                "Gemini OAuth 上游未返回文本或工具调用结果。",
-            );
+                err_msg,
+            )?;
+            return Ok(ProxyCallResult::Completed);
         };
         let latency_ms = start_time.elapsed().as_millis() as u64;
         let answer_len = message
@@ -3100,10 +3829,10 @@ impl GatewayServer {
             estimated_cost: None,
             currency: None,
         });
-        Ok(true)
+        Ok(ProxyCallResult::Completed)
     }
 
-    fn cloud_code_generate_payload(
+    pub(crate) fn cloud_code_generate_payload(
         project: &str,
         model: &str,
         request: serde_json::Value,
@@ -3318,7 +4047,7 @@ impl GatewayServer {
     /// Sends the OAuth Cloud Code request through the inherited network route
     /// or, on retry, directly. It deliberately never places credentials in
     /// returned diagnostics.
-    fn run_gemini_cloud_code_request(
+    pub(crate) fn run_gemini_cloud_code_request(
         upstream: &UpstreamEndpoint,
         payload: &serde_json::Value,
         bypass_proxy: bool,
@@ -3599,20 +4328,21 @@ impl GatewayServer {
         time_str: &str,
         start_time: std::time::Instant,
         stream: &mut TcpStream,
-    ) -> std::io::Result<bool> {
+    ) -> std::io::Result<ProxyCallResult> {
         let target_model = &upstream.target_model;
         let account_name = &upstream._account_name;
 
         let access_token = match Self::codex_oauth_access_token(codex_home) {
             Ok(token) => token,
             Err(error) => {
-                return Self::write_gateway_error(
+                Self::write_gateway_error(
                     stream,
                     requested_model,
                     is_stream,
                     now_unix,
                     &error,
-                );
+                )?;
+                return Ok(ProxyCallResult::Completed);
             }
         };
 
@@ -3675,13 +4405,14 @@ impl GatewayServer {
         }
 
         if input.is_empty() && instructions.is_none() {
-            return Self::write_gateway_error(
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
                 "请求中没有可发送给 Codex 的文本内容。",
-            );
+            )?;
+            return Ok(ProxyCallResult::Completed);
         }
 
         let mut payload = serde_json::json!({
@@ -3766,13 +4497,18 @@ impl GatewayServer {
         let (mut child, stdout) = match execute_stream(&access_token) {
             Ok(pair) => pair,
             Err(e) => {
-                return Self::write_gateway_error(
+                let err_msg = format!("无法启动网络连接：{e}");
+                if upstream.routing_mode == "consolidated" {
+                    return Ok(ProxyCallResult::RetryableFailover(err_msg));
+                }
+                Self::write_gateway_error(
                     stream,
                     requested_model,
                     is_stream,
                     now_unix,
-                    &format!("无法启动网络连接：{e}"),
-                );
+                    &err_msg,
+                )?;
+                return Ok(ProxyCallResult::Completed);
             }
         };
 
@@ -3811,13 +4547,17 @@ impl GatewayServer {
             } else {
                 trimmed_first.to_string()
             };
-            return Self::write_gateway_error(
+            if upstream.routing_mode == "consolidated" {
+                return Ok(ProxyCallResult::RetryableFailover(err_msg));
+            }
+            Self::write_gateway_error(
                 stream,
                 requested_model,
                 is_stream,
                 now_unix,
                 &err_msg,
-            );
+            )?;
+            return Ok(ProxyCallResult::Completed);
         }
 
         let mut header_sent = false;
@@ -3986,10 +4726,10 @@ impl GatewayServer {
             estimated_cost: None,
             currency: None,
         });
-        Ok(true)
+        Ok(ProxyCallResult::Completed)
     }
 
-    fn codex_oauth_access_token(codex_home: &str) -> Result<String, String> {
+    pub(crate) fn codex_oauth_access_token(codex_home: &str) -> Result<String, String> {
         let home = std::path::Path::new(codex_home);
         let path = home.join("oauth_token.json");
         let raw = std::fs::read_to_string(&path)
@@ -4174,12 +4914,34 @@ impl GatewayServer {
         Self::resolve_upstream_endpoint_for_home_with_exclusions(home, model, &[])
     }
 
-    fn sort_and_pick_candidate(candidates: &mut Vec<(i64, String, UpstreamEndpoint)>) -> Option<UpstreamEndpoint> {
+    fn sort_and_pick_candidate(
+        provider: &str,
+        routing_mode: &str,
+        candidates: &mut Vec<(i64, String, UpstreamEndpoint)>,
+    ) -> Option<UpstreamEndpoint> {
         if candidates.is_empty() {
             return None;
         }
         let dynamic_state = AccountDynamicState::global();
         let state_guard = dynamic_state.lock().ok();
+
+        if routing_mode == "stickyHighQuota" {
+            if let Some(ref guard) = state_guard {
+                if let Some(sticky_id) = guard.sticky_account(provider) {
+                    if let Some(idx) = candidates.iter().position(|c| {
+                        c.1 == *sticky_id && !guard.is_cooling_down(&c.1)
+                    }) {
+                        drop(state_guard);
+                        let picked = candidates.remove(idx).2;
+                        if let Ok(mut s) = AccountDynamicState::global().lock() {
+                            s.record_served(&picked.connection_id);
+                            s.set_sticky_account(provider, &picked.connection_id);
+                        }
+                        return Some(picked);
+                    }
+                }
+            }
+        }
 
         candidates.sort_by(|a, b| {
             let a_cooling = state_guard.as_ref().map_or(false, |s| s.is_cooling_down(&a.1));
@@ -4188,9 +4950,13 @@ impl GatewayServer {
                 .cmp(&b_cooling)
                 .then_with(|| b.0.cmp(&a.0))
                 .then_with(|| {
-                    let a_last = state_guard.as_ref().and_then(|s| s.last_served(&a.1));
-                    let b_last = state_guard.as_ref().and_then(|s| s.last_served(&b.1));
-                    a_last.cmp(&b_last)
+                    if routing_mode == "smooth" {
+                        let a_last = state_guard.as_ref().and_then(|s| s.last_served(&a.1));
+                        let b_last = state_guard.as_ref().and_then(|s| s.last_served(&b.1));
+                        a_last.cmp(&b_last)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
                 })
                 .then_with(|| a.1.cmp(&b.1))
         });
@@ -4200,11 +4966,14 @@ impl GatewayServer {
         let picked = candidates.remove(0).2;
         if let Ok(mut s) = AccountDynamicState::global().lock() {
             s.record_served(&picked.connection_id);
+            if routing_mode == "stickyHighQuota" {
+                s.set_sticky_account(provider, &picked.connection_id);
+            }
         }
         Some(picked)
     }
 
-    fn resolve_upstream_endpoint_for_home_with_exclusions(
+    pub(crate) fn resolve_upstream_endpoint_for_home_with_exclusions(
         home: &str,
         model: &str,
         exclusions: &[String],
@@ -4577,6 +5346,13 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (Google · {short_id})");
 
+                            let prov_mode = settings.routing_mode_for_provider("google");
+                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                                settings.pinned_account_for_provider("google")
+                            } else {
+                                None
+                            };
+
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -4594,10 +5370,22 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if exclusions.contains(&id) {
-                                        false
+                                    if let Some(pinned_id) = pinned_target {
+                                        if !exclusions.contains(&pinned_id.to_string()) {
+                                            let is_cooling = AccountDynamicState::global()
+                                                .lock()
+                                                .ok()
+                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
+                                            if is_cooling {
+                                                false
+                                            } else {
+                                                id == pinned_id
+                                            }
+                                        } else {
+                                            false
+                                        }
                                     } else {
-                                        true
+                                        !exclusions.contains(&id)
                                     }
                                 }
                             };
@@ -4627,8 +5415,13 @@ impl GatewayServer {
 
                                         if let Some(target_model) = target_model {
                                             let score = Self::score_gemini_account(acc);
-                                            let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("google");
-                                            let routing_mode = if is_consolidated {
+                                            let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
+                                            let is_consolidated = account_filter.is_none()
+                                                && settings.is_provider_consolidated("google")
+                                                && !is_pinned_hit;
+                                            let routing_mode = if is_pinned_hit {
+                                                "pinned".to_string()
+                                            } else if is_consolidated {
                                                 "consolidated".to_string()
                                             } else {
                                                 "direct".to_string()
@@ -4665,10 +5458,18 @@ impl GatewayServer {
                             }
                         }
 
-                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                        let prov_mode = settings.routing_mode_for_provider("google");
+                        if let Some(picked) = Self::sort_and_pick_candidate("google", prov_mode, &mut candidates) {
                             return Ok(picked);
                         }
                     }
+                }
+            }
+            if let Some(pinned_id) = settings.pinned_account_for_provider("google") {
+                if account_filter.is_none() && settings.routing_mode_for_provider("google") == "pinnedAccount" {
+                    return Err(format!(
+                        "Google Gemini 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
+                    ));
                 }
             }
             let account = account_filter.unwrap_or("默认");
@@ -4720,6 +5521,13 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (OpenAI · {short_id})");
 
+                            let prov_mode = settings.routing_mode_for_provider("openai");
+                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                                settings.pinned_account_for_provider("openai")
+                            } else {
+                                None
+                            };
+
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -4737,10 +5545,22 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if exclusions.contains(&id) {
-                                        false
+                                    if let Some(pinned_id) = pinned_target {
+                                        if !exclusions.contains(&pinned_id.to_string()) {
+                                            let is_cooling = AccountDynamicState::global()
+                                                .lock()
+                                                .ok()
+                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
+                                            if is_cooling {
+                                                false
+                                            } else {
+                                                id == pinned_id
+                                            }
+                                        } else {
+                                            false
+                                        }
                                     } else {
-                                        true
+                                        !exclusions.contains(&id)
                                     }
                                 }
                             };
@@ -4764,8 +5584,13 @@ impl GatewayServer {
                                     continue;
                                 };
                                 let score = Self::score_codex_account(account);
-                                let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("openai");
-                                let routing_mode = if is_consolidated {
+                                let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
+                                let is_consolidated = account_filter.is_none()
+                                    && settings.is_provider_consolidated("openai")
+                                    && !is_pinned_hit;
+                                let routing_mode = if is_pinned_hit {
+                                    "pinned".to_string()
+                                } else if is_consolidated {
                                     "consolidated".to_string()
                                 } else {
                                     "direct".to_string()
@@ -4794,10 +5619,18 @@ impl GatewayServer {
                             }
                         }
 
-                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                        let prov_mode = settings.routing_mode_for_provider("openai");
+                        if let Some(picked) = Self::sort_and_pick_candidate("openai", prov_mode, &mut candidates) {
                             return Ok(picked);
                         }
                     }
+                }
+            }
+            if let Some(pinned_id) = settings.pinned_account_for_provider("openai") {
+                if account_filter.is_none() && settings.routing_mode_for_provider("openai") == "pinnedAccount" {
+                    return Err(format!(
+                        "OpenAI 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或会话失效）。已停止请求，未执行多账号负载转移。"
+                    ));
                 }
             }
             if let Some(codex_home) = found_session_home {
@@ -4846,6 +5679,13 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
 
+                            let prov_mode = settings.routing_mode_for_provider("deepseek");
+                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                                settings.pinned_account_for_provider("deepseek")
+                            } else {
+                                None
+                            };
+
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -4860,10 +5700,22 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if exclusions.contains(&id) {
-                                        false
+                                    if let Some(pinned_id) = pinned_target {
+                                        if !exclusions.contains(&pinned_id.to_string()) {
+                                            let is_cooling = AccountDynamicState::global()
+                                                .lock()
+                                                .ok()
+                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
+                                            if is_cooling {
+                                                false
+                                            } else {
+                                                id == pinned_id
+                                            }
+                                        } else {
+                                            false
+                                        }
                                     } else {
-                                        true
+                                        !exclusions.contains(&id)
                                     }
                                 }
                             };
@@ -4894,8 +5746,13 @@ impl GatewayServer {
 
                                     if let Some(key) = found_key {
                                         let score = Self::score_deepseek_account(account);
-                                        let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("deepseek");
-                                        let routing_mode = if is_consolidated {
+                                        let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
+                                        let is_consolidated = account_filter.is_none()
+                                            && settings.is_provider_consolidated("deepseek")
+                                            && !is_pinned_hit;
+                                        let routing_mode = if is_pinned_hit {
+                                            "pinned".to_string()
+                                        } else if is_consolidated {
                                             "consolidated".to_string()
                                         } else {
                                             "direct".to_string()
@@ -4926,10 +5783,18 @@ impl GatewayServer {
                             }
                         }
 
-                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                        let prov_mode = settings.routing_mode_for_provider("deepseek");
+                        if let Some(picked) = Self::sort_and_pick_candidate("deepseek", prov_mode, &mut candidates) {
                             return Ok(picked);
                         }
                     }
+                }
+            }
+            if let Some(pinned_id) = settings.pinned_account_for_provider("deepseek") {
+                if account_filter.is_none() && settings.routing_mode_for_provider("deepseek") == "pinnedAccount" {
+                    return Err(format!(
+                        "DeepSeek 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
+                    ));
                 }
             }
             if account_filter.is_some() {
@@ -4980,6 +5845,13 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (OpenCode · {short_id})");
 
+                            let prov_mode = settings.routing_mode_for_provider("opencode");
+                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                                settings.pinned_account_for_provider("opencode")
+                            } else {
+                                None
+                            };
+
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -4994,10 +5866,22 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if exclusions.contains(&id) {
-                                        false
+                                    if let Some(pinned_id) = pinned_target {
+                                        if !exclusions.contains(&pinned_id.to_string()) {
+                                            let is_cooling = AccountDynamicState::global()
+                                                .lock()
+                                                .ok()
+                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
+                                            if is_cooling {
+                                                false
+                                            } else {
+                                                id == pinned_id
+                                            }
+                                        } else {
+                                            false
+                                        }
                                     } else {
-                                        true
+                                        !exclusions.contains(&id)
                                     }
                                 }
                             };
@@ -5052,8 +5936,13 @@ impl GatewayServer {
                                             extra_headers.push(("x-opencode-session".to_string(), session_id));
                                         }
                                         let score = Self::score_opencode_account(account);
-                                        let is_consolidated = account_filter.is_none() && settings.is_provider_consolidated("opencode");
-                                        let routing_mode = if is_consolidated {
+                                        let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
+                                        let is_consolidated = account_filter.is_none()
+                                            && settings.is_provider_consolidated("opencode")
+                                            && !is_pinned_hit;
+                                        let routing_mode = if is_pinned_hit {
+                                            "pinned".to_string()
+                                        } else if is_consolidated {
                                             "consolidated".to_string()
                                         } else {
                                             "direct".to_string()
@@ -5084,10 +5973,18 @@ impl GatewayServer {
                             }
                         }
 
-                        if let Some(picked) = Self::sort_and_pick_candidate(&mut candidates) {
+                        let prov_mode = settings.routing_mode_for_provider("opencode");
+                        if let Some(picked) = Self::sort_and_pick_candidate("opencode", prov_mode, &mut candidates) {
                             return Ok(picked);
                         }
                     }
+                }
+            }
+            if let Some(pinned_id) = settings.pinned_account_for_provider("opencode") {
+                if account_filter.is_none() && settings.routing_mode_for_provider("opencode") == "pinnedAccount" {
+                    return Err(format!(
+                        "OpenCode 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
+                    ));
                 }
             }
             if account_filter.is_some() {
@@ -5302,7 +6199,7 @@ impl GatewayServer {
     /// Loads the user-owned Gemini OAuth session and refreshes it when a
     /// refresh token exists. A successful refresh is atomically persisted so
     /// the next routed request does not need to refresh again.
-    fn gemini_oauth_access_token(app_support: &str, handle: &str) -> Result<String, String> {
+    pub(crate) fn gemini_oauth_access_token(app_support: &str, handle: &str) -> Result<String, String> {
         if handle.trim().is_empty() {
             return Err("Google OAuth credential handle is missing".into());
         }
@@ -5617,7 +6514,7 @@ impl GatewayServer {
         })
     }
 
-    fn friendly_account_slug(
+    pub(crate) fn friendly_account_slug(
         display_name: Option<&str>,
         _email: Option<&str>,
         label: &str,
@@ -5669,7 +6566,7 @@ impl GatewayServer {
         (slug, clean_name)
     }
 
-    fn connection_id(acc: &serde_json::Value) -> String {
+    pub(crate) fn connection_id(acc: &serde_json::Value) -> String {
         if let Some(id_obj) = acc.get("id").and_then(|v| v.get("rawValue")).and_then(|s| s.as_str()) {
             id_obj.to_string()
         } else if let Some(id_str) = acc.get("id").and_then(|s| s.as_str()) {
@@ -5681,7 +6578,7 @@ impl GatewayServer {
         }
     }
 
-    fn connection_short_id(acc: &serde_json::Value) -> String {
+    pub(crate) fn connection_short_id(acc: &serde_json::Value) -> String {
         let raw = Self::connection_id(acc);
         let clean = raw.replace('-', "").to_lowercase();
         if clean.len() >= 8 {

@@ -20,3 +20,4 @@ provider-openai-compatible = { path = "../provider-openai-compatible" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+libc = "0.2.189"

@@ -37,6 +37,13 @@ public struct GatewayView: View {
                             settingsStore: settingsStore,
                             onToast: showToast
                         )
+                    case .automation:
+                        GatewayAutomationView(
+                            store: store,
+                            supervisor: supervisor,
+                            settingsStore: settingsStore,
+                            onToast: showToast
+                        )
                     case .agents:
                         GatewayAgentsView(
                             store: store,
