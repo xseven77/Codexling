@@ -754,12 +754,27 @@ struct GatewayProviderSectionCard: View {
             }
 
             if activeGroup.isProxyEnabled && isExpanded {
+                let currentMode = store.providerRoutingMode(for: section.id)
+                let pinnedId = store.providerPinnedAccountId(for: section.id)
+                let pinnedName: String? = {
+                    if let pinnedId = pinnedId,
+                       let group = section.accountGroups.first(where: {
+                           $0.connectionID?.rawValue.uuidString.caseInsensitiveCompare(pinnedId) == .orderedSame
+                       }) {
+                        return group.accountName
+                    }
+                    return nil
+                }()
+
                 GatewayAccountModelsDrawer(
                     quickConnectTip: isConsolidated
                         ? "已开启账号池聚合调度，所有可用账号将依据健康状态与额度自动均衡分配。在客户端中指定模型名称（包含供应商前缀）即可直接调用。"
                         : activeGroup.quickConnectTip,
                     models: displayModels,
                     healthModels: isConsolidated ? consolidatedHealthModelsDict : activeHealthModelsDict,
+                    isConsolidated: isConsolidated,
+                    routingMode: currentMode,
+                    pinnedAccountName: pinnedName,
                     isAddingModel: $isAddingModel,
                     customModelInput: $customModelInput,
                     copiedModelId: copiedModelId,
@@ -1511,7 +1526,6 @@ private struct GatewayProviderRoutingBar: View {
     private var tipIcon: String {
         switch currentMode {
         case .smooth: return "arrow.triangle.2.circlepath"
-        case .stickyHighQuota: return "bolt.shield.fill"
         case .pinnedAccount: return "pin.fill"
         }
     }
@@ -1520,10 +1534,8 @@ private struct GatewayProviderRoutingBar: View {
         switch currentMode {
         case .smooth:
             return "平滑过渡：多账号根据额度评分与使用时间 (LRU) 动态轮询，均衡消耗额度并降低 RPM 限频。"
-        case .stickyHighQuota:
-            return "固定高额度：粘滞在当前最高健康额度账号以最大化 KV Cache 命中率；仅在限流、额度耗尽或服务过载时切换。"
         case .pinnedAccount:
-            return "固定特定账号：统一模型请求固定路由至 [\(pinnedAccountName)]；若故障则依据全局容灾设置处置。"
+            return "固定特定账号：统一模型请求优先路由至 [\(pinnedAccountName)]；若额度耗尽或报错将自动切换并持久化下一健康账号。"
         }
     }
 }
@@ -1819,14 +1831,15 @@ private struct GatewayAccountModelsDrawer: View {
     let quickConnectTip: String
     let models: [GatewayExportedModel]
     var healthModels: [String: GatewayModelHealthItem] = [:]
+    var isConsolidated: Bool = false
+    var routingMode: ProviderRoutingMode = .smooth
+    var pinnedAccountName: String? = nil
     @Binding var isAddingModel: Bool
     @Binding var customModelInput: String
     let copiedModelId: String?
     let onAddCustomModel: (String) -> Void
     let onRemoveCustomModel: (String) -> Void
     let onCopyModel: (String, String) -> Void
-
-    @State private var drawerFilterMode: GatewayProviderSectionCard.HealthFilterMode = .all
 
     private func healthColor(for status: String) -> Color {
         switch status {
@@ -1865,18 +1878,8 @@ private struct GatewayAccountModelsDrawer: View {
     private var filteredModels: [GatewayExportedModel] {
         models.filter { model in
             let h = findHealth(for: model)
-            switch drawerFilterMode {
-            case .all:
-                return true
-            case .available:
-                return h?.status == "available"
-            case .problematic:
-                // 如果已检查且不可用/异常，或者存在健康条目但不是available
-                if let h = h {
-                    return h.status != "available"
-                }
-                return false
-            }
+            // 未巡检过（h == nil）或巡检判定为 available
+            return h == nil || h?.status == "available"
         }
     }
 
@@ -1903,20 +1906,9 @@ private struct GatewayAccountModelsDrawer: View {
             // Custom Model Input & Models Table
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .center) {
-                    Text("可访问模型全量清单 (\(filteredModels.count)/\(models.count))")
+                    Text("可访问可用模型清单 (\(filteredModels.count))")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.codexInk)
-
-                    // 是否可用筛选器
-                    Picker("", selection: $drawerFilterMode) {
-                        ForEach(GatewayProviderSectionCard.HealthFilterMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.mini)
-                    .frame(width: 210)
-                    .padding(.leading, 8)
 
                     Spacer()
 
@@ -1960,7 +1952,7 @@ private struct GatewayAccountModelsDrawer: View {
                         Image(systemName: "info.circle")
                             .font(.system(size: 11))
                             .foregroundStyle(Color.codexMuted)
-                        Text(drawerFilterMode == .problematic ? "太棒了！当前清单中未发现异常或不可用的模型。" : "当前筛选条件下暂无模型。")
+                        Text("当前暂无可用模型。")
                             .font(.system(size: 10.5))
                             .foregroundStyle(Color.codexMuted)
                     }
@@ -2011,7 +2003,17 @@ private struct GatewayAccountModelsDrawer: View {
                                 .help("点击上方“检查可用性”即可检测该模型")
                             }
 
-                            Text(model.capability)
+                            let displayCapability: String = {
+                                if isConsolidated {
+                                    if routingMode == .pinnedAccount, let pName = pinnedAccountName, !pName.isEmpty {
+                                        return "固定直通 \(pName)"
+                                    }
+                                    return "多账号均衡调度"
+                                }
+                                return model.capability
+                            }()
+
+                            Text(displayCapability)
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(Color.codexMuted)
                                 .frame(width: 140, alignment: .leading)

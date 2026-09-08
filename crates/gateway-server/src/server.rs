@@ -34,7 +34,6 @@ static CODEX_CATALOG_CACHE: OnceLock<Mutex<HashMap<String, CodexCatalogEntry>>> 
 pub struct AccountDynamicState {
     pub cooldown_map: HashMap<String, Instant>,
     pub last_served_map: HashMap<String, Instant>,
-    pub sticky_accounts: HashMap<String, String>,
 }
 
 impl AccountDynamicState {
@@ -66,19 +65,6 @@ impl AccountDynamicState {
     pub fn cooling_down_count(&self) -> usize {
         let now = Instant::now();
         self.cooldown_map.values().filter(|&&exp| exp > now).count()
-    }
-
-    pub fn sticky_account(&self, provider: &str) -> Option<&String> {
-        self.sticky_accounts.get(provider)
-    }
-
-    pub fn set_sticky_account(&mut self, provider: &str, connection_id: &str) {
-        self.sticky_accounts.insert(provider.to_string(), connection_id.to_string());
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_sticky_account(&mut self, provider: &str) {
-        self.sticky_accounts.remove(provider);
     }
 }
 
@@ -229,31 +215,31 @@ impl GatewaySettings {
         }
         false
     }
-
     pub fn routing_mode_for_provider(&self, provider: &str) -> &str {
         let p = provider.trim().to_ascii_lowercase();
-        if let Some(mode) = self.provider_routing_modes.get(&p) {
-            return mode.as_str();
-        }
-        if p == "google" || p == "gemini" {
-            if let Some(mode) = self
-                .provider_routing_modes
+        let raw_mode = if let Some(mode) = self.provider_routing_modes.get(&p) {
+            mode.as_str()
+        } else if p == "google" || p == "gemini" {
+            self.provider_routing_modes
                 .get("google")
                 .or_else(|| self.provider_routing_modes.get("gemini"))
-            {
-                return mode.as_str();
-            }
-        }
-        if p == "openai" || p == "codex" {
-            if let Some(mode) = self
-                .provider_routing_modes
+                .map(|s| s.as_str())
+                .unwrap_or("smooth")
+        } else if p == "openai" || p == "codex" {
+            self.provider_routing_modes
                 .get("openai")
                 .or_else(|| self.provider_routing_modes.get("codex"))
-            {
-                return mode.as_str();
-            }
+                .map(|s| s.as_str())
+                .unwrap_or("smooth")
+        } else {
+            "smooth"
+        };
+
+        if raw_mode == "stickyHighQuota" {
+            "smooth"
+        } else {
+            raw_mode
         }
-        "smooth"
     }
 
     pub fn pinned_account_for_provider(&self, provider: &str) -> Option<&str> {
@@ -355,6 +341,22 @@ impl GatewaySettings {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         std::fs::write(&path, content)
     }
+
+    pub fn persist_switched_pinned_account(home: &str, provider: &str, new_pinned_id: &str) {
+        let mut settings = Self::load_for_home(home);
+        let p = provider.trim().to_ascii_lowercase();
+        settings.provider_pinned_accounts.insert(p.clone(), new_pinned_id.to_string());
+        if p == "google" {
+            settings.provider_pinned_accounts.insert("gemini".to_string(), new_pinned_id.to_string());
+        } else if p == "gemini" {
+            settings.provider_pinned_accounts.insert("google".to_string(), new_pinned_id.to_string());
+        } else if p == "openai" {
+            settings.provider_pinned_accounts.insert("codex".to_string(), new_pinned_id.to_string());
+        } else if p == "codex" {
+            settings.provider_pinned_accounts.insert("openai".to_string(), new_pinned_id.to_string());
+        }
+        let _ = settings.save_for_home(home);
+    }
 }
 
 #[cfg(test)]
@@ -420,7 +422,7 @@ mod tests {
         assert_eq!(loaded.cooldown_seconds, 600);
         assert_eq!(loaded.max_failover_retries, 4);
         assert_eq!(loaded.health_check_interval, "6h");
-        assert_eq!(loaded.routing_mode_for_provider("google"), "stickyHighQuota");
+        assert_eq!(loaded.routing_mode_for_provider("google"), "smooth"); // stickyHighQuota falls back to smooth
         assert_eq!(loaded.routing_mode_for_provider("openai"), "pinnedAccount");
         assert_eq!(loaded.routing_mode_for_provider("deepseek"), "smooth"); // default fallback
         assert_eq!(loaded.pinned_account_for_provider("openai"), Some("acc-pinned-123"));
@@ -1282,12 +1284,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sticky_high_quota_mode() {
-        let provider = "google-test-sticky";
+    fn test_smooth_routing_mode_balance() {
+        let provider = "google-test-smooth";
         let mut candidates = vec![
             (
                 100,
-                "sticky-primary".to_string(),
+                "primary-acc".to_string(),
                 UpstreamEndpoint {
                     url: "https://api.example.com".into(),
                     auth_header: "Bearer t1".into(),
@@ -1295,9 +1297,9 @@ mod tests {
                     project: None,
                     target_model: "gemini-2.5-pro".into(),
                     provider_name: "Google Gemini".into(),
-                    _account_name: "sticky-primary".into(),
+                    _account_name: "primary-acc".into(),
                     codex_home: None,
-                    connection_id: "sticky-primary".into(),
+                    connection_id: "primary-acc".into(),
                     quota_score: 100,
                     routing_mode: "consolidated".into(),
                 },
@@ -1321,94 +1323,8 @@ mod tests {
             ),
         ];
 
-        // 1. First pick: highest quota candidate is picked and becomes sticky
-        let picked1 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates).unwrap();
-        assert_eq!(picked1.connection_id, "sticky-primary");
-
-        // 2. Second pick: even if LRU would favor secondary, sticky keeps sticky-primary
-        let mut candidates2 = vec![
-            (
-                90,
-                "sticky-primary".to_string(),
-                UpstreamEndpoint {
-                    url: "https://api.example.com".into(),
-                    auth_header: "Bearer t1".into(),
-                    extra_headers: Vec::new(),
-                    project: None,
-                    target_model: "gemini-2.5-pro".into(),
-                    provider_name: "Google Gemini".into(),
-                    _account_name: "sticky-primary".into(),
-                    codex_home: None,
-                    connection_id: "sticky-primary".into(),
-                    quota_score: 90,
-                    routing_mode: "consolidated".into(),
-                },
-            ),
-            (
-                95,
-                "secondary-acc".to_string(),
-                UpstreamEndpoint {
-                    url: "https://api.example.com".into(),
-                    auth_header: "Bearer t2".into(),
-                    extra_headers: Vec::new(),
-                    project: None,
-                    target_model: "gemini-2.5-pro".into(),
-                    provider_name: "Google Gemini".into(),
-                    _account_name: "secondary-acc".into(),
-                    codex_home: None,
-                    connection_id: "secondary-acc".into(),
-                    quota_score: 95,
-                    routing_mode: "consolidated".into(),
-                },
-            ),
-        ];
-        let picked2 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates2).unwrap();
-        assert_eq!(picked2.connection_id, "sticky-primary");
-
-        // 3. Failover: if sticky-primary enters cooldown (429), it switches to secondary-acc
-        AccountDynamicState::global()
-            .lock()
-            .unwrap()
-            .mark_cooldown("sticky-primary", std::time::Duration::from_secs(60));
-
-        let mut candidates3 = vec![
-            (
-                90,
-                "sticky-primary".to_string(),
-                UpstreamEndpoint {
-                    url: "https://api.example.com".into(),
-                    auth_header: "Bearer t1".into(),
-                    extra_headers: Vec::new(),
-                    project: None,
-                    target_model: "gemini-2.5-pro".into(),
-                    provider_name: "Google Gemini".into(),
-                    _account_name: "sticky-primary".into(),
-                    codex_home: None,
-                    connection_id: "sticky-primary".into(),
-                    quota_score: 90,
-                    routing_mode: "consolidated".into(),
-                },
-            ),
-            (
-                95,
-                "secondary-acc".to_string(),
-                UpstreamEndpoint {
-                    url: "https://api.example.com".into(),
-                    auth_header: "Bearer t2".into(),
-                    extra_headers: Vec::new(),
-                    project: None,
-                    target_model: "gemini-2.5-pro".into(),
-                    provider_name: "Google Gemini".into(),
-                    _account_name: "secondary-acc".into(),
-                    codex_home: None,
-                    connection_id: "secondary-acc".into(),
-                    quota_score: 95,
-                    routing_mode: "consolidated".into(),
-                },
-            ),
-        ];
-        let picked3 = GatewayServer::sort_and_pick_candidate(provider, "stickyHighQuota", &mut candidates3).unwrap();
-        assert_eq!(picked3.connection_id, "secondary-acc");
+        let picked1 = GatewayServer::sort_and_pick_candidate(provider, "smooth", &mut candidates).unwrap();
+        assert_eq!(picked1.connection_id, "primary-acc");
     }
 
     #[test]
@@ -1461,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_account_routing_and_strict_no_failover() {
+    fn test_pinned_account_auto_switch_and_persist_on_failure() {
         let home = temporary_home();
         let support = home.join("Library/Application Support/Codexling");
         fs::create_dir_all(support.join("deepseek_credentials")).unwrap();
@@ -1524,28 +1440,22 @@ mod tests {
         assert_eq!(ep.connection_id, "ds-conn-1");
         assert_eq!(ep.routing_mode, "pinned");
 
-        // 2. When pinned account is in exclusions (e.g. simulated 429), it must NEVER failover to ds-conn-2!
-        let res_excluded = GatewayServer::resolve_upstream_endpoint_for_home_with_exclusions(
+        // 2. When pinned account is in exclusions (e.g. 429), it must auto-switch to ds-conn-2 and persist!
+        let res_switched = GatewayServer::resolve_upstream_endpoint_for_home_with_exclusions(
             home_str,
             "DeepSeek·deepseek-chat",
             &["ds-conn-1".to_string()],
-        );
-        assert!(res_excluded.is_err());
-        let err_str = res_excluded.unwrap_err();
-        assert!(err_str.contains("已停止请求，未执行多账号负载转移"));
+        )
+        .unwrap();
+        assert_eq!(res_switched.connection_id, "ds-conn-2");
+        assert_eq!(res_switched.routing_mode, "pinned");
 
-        // 3. When pinned account is in cooldown, it must also NEVER failover to ds-conn-2!
-        AccountDynamicState::global()
-            .lock()
-            .unwrap()
-            .mark_cooldown("ds-conn-1", std::time::Duration::from_secs(60));
-        let res_cooldown = GatewayServer::resolve_upstream_endpoint_for_home(
-            home_str,
-            "DeepSeek·deepseek-chat",
+        // Check that settings on disk was updated to ds-conn-2!
+        let updated_settings = super::GatewaySettings::load_for_home(home_str);
+        assert_eq!(
+            updated_settings.pinned_account_for_provider("deepseek"),
+            Some("ds-conn-2")
         );
-        assert!(res_cooldown.is_err());
-        let err_cooldown_str = res_cooldown.unwrap_err();
-        assert!(err_cooldown_str.contains("已停止请求，未执行多账号负载转移"));
 
         fs::remove_dir_all(home).unwrap();
     }
@@ -2941,7 +2851,7 @@ impl GatewayServer {
         let upstream = loop {
             match Self::resolve_upstream_endpoint_with_exclusions(requested_model, &exclusions) {
                 Ok(u) => {
-                    let is_consolidated = u.routing_mode == "consolidated";
+                    let is_consolidated = u.routing_mode == "consolidated" || u.routing_mode == "pinned";
                     if let Some(codex_home) = u.codex_home.clone() {
                         match self.proxy_codex_http(
                             &agent,
@@ -4924,7 +4834,7 @@ impl GatewayServer {
     }
 
     fn sort_and_pick_candidate(
-        provider: &str,
+        _provider: &str,
         routing_mode: &str,
         candidates: &mut Vec<(i64, String, UpstreamEndpoint)>,
     ) -> Option<UpstreamEndpoint> {
@@ -4933,24 +4843,6 @@ impl GatewayServer {
         }
         let dynamic_state = AccountDynamicState::global();
         let state_guard = dynamic_state.lock().ok();
-
-        if routing_mode == "stickyHighQuota" {
-            if let Some(ref guard) = state_guard {
-                if let Some(sticky_id) = guard.sticky_account(provider) {
-                    if let Some(idx) = candidates.iter().position(|c| {
-                        c.1 == *sticky_id && !guard.is_cooling_down(&c.1)
-                    }) {
-                        drop(state_guard);
-                        let picked = candidates.remove(idx).2;
-                        if let Ok(mut s) = AccountDynamicState::global().lock() {
-                            s.record_served(&picked.connection_id);
-                            s.set_sticky_account(provider, &picked.connection_id);
-                        }
-                        return Some(picked);
-                    }
-                }
-            }
-        }
 
         candidates.sort_by(|a, b| {
             let a_cooling = state_guard.as_ref().map_or(false, |s| s.is_cooling_down(&a.1));
@@ -4975,9 +4867,6 @@ impl GatewayServer {
         let picked = candidates.remove(0).2;
         if let Ok(mut s) = AccountDynamicState::global().lock() {
             s.record_served(&picked.connection_id);
-            if routing_mode == "stickyHighQuota" {
-                s.set_sticky_account(provider, &picked.connection_id);
-            }
         }
         Some(picked)
     }
@@ -5323,6 +5212,12 @@ impl GatewayServer {
                     if let Some(accounts) =
                         registry.get("geminiConnections").and_then(|a| a.as_array())
                     {
+                        let prov_mode = settings.routing_mode_for_provider("google");
+                        let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                            settings.pinned_account_for_provider("google")
+                        } else {
+                            None
+                        };
                         let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for acc in accounts {
                             if !acc
@@ -5355,13 +5250,6 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (Google · {short_id})");
 
-                            let prov_mode = settings.routing_mode_for_provider("google");
-                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
-                                settings.pinned_account_for_provider("google")
-                            } else {
-                                None
-                            };
-
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -5379,23 +5267,7 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if let Some(pinned_id) = pinned_target {
-                                        if !exclusions.contains(&pinned_id.to_string()) {
-                                            let is_cooling = AccountDynamicState::global()
-                                                .lock()
-                                                .ok()
-                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
-                                            if is_cooling {
-                                                false
-                                            } else {
-                                                id == pinned_id
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        !exclusions.contains(&id)
-                                    }
+                                    !exclusions.contains(&id)
                                 }
                             };
 
@@ -5424,13 +5296,17 @@ impl GatewayServer {
 
                                         if let Some(target_model) = target_model {
                                             let score = Self::score_gemini_account(acc);
-                                            let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
-                                            let is_consolidated = account_filter.is_none()
-                                                && settings.is_provider_consolidated("google")
-                                                && !is_pinned_hit;
+                                            let is_cooling = AccountDynamicState::global()
+                                                .lock()
+                                                .ok()
+                                                .map_or(false, |s| s.is_cooling_down(&id));
+                                            let is_pinned_hit = prov_mode == "pinnedAccount"
+                                                && pinned_target.map_or(false, |pid| id == pid)
+                                                && !is_cooling;
+
                                             let routing_mode = if is_pinned_hit {
                                                 "pinned".to_string()
-                                            } else if is_consolidated {
+                                            } else if account_filter.is_none() && (settings.is_provider_consolidated("google") || prov_mode == "pinnedAccount") {
                                                 "consolidated".to_string()
                                             } else {
                                                 "direct".to_string()
@@ -5452,7 +5328,13 @@ impl GatewayServer {
                                                 quota_score: score,
                                                 routing_mode,
                                             };
-                                            if !is_consolidated {
+
+                                            if is_pinned_hit {
+                                                if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                    s.record_served(&endpoint.connection_id);
+                                                }
+                                                return Ok(endpoint);
+                                            } else if account_filter.is_some() || (!settings.is_provider_consolidated("google") && prov_mode != "pinnedAccount") {
                                                 if let Ok(mut s) = AccountDynamicState::global().lock() {
                                                     s.record_served(&endpoint.connection_id);
                                                 }
@@ -5468,17 +5350,16 @@ impl GatewayServer {
                         }
 
                         let prov_mode = settings.routing_mode_for_provider("google");
-                        if let Some(picked) = Self::sort_and_pick_candidate("google", prov_mode, &mut candidates) {
+                        if let Some(mut picked) = Self::sort_and_pick_candidate("google", prov_mode, &mut candidates) {
+                            if prov_mode == "pinnedAccount" {
+                                picked.routing_mode = "pinned".to_string();
+                                if pinned_target != Some(&picked.connection_id) {
+                                    GatewaySettings::persist_switched_pinned_account(home, "google", &picked.connection_id);
+                                }
+                            }
                             return Ok(picked);
                         }
                     }
-                }
-            }
-            if let Some(pinned_id) = settings.pinned_account_for_provider("google") {
-                if account_filter.is_none() && settings.routing_mode_for_provider("google") == "pinnedAccount" {
-                    return Err(format!(
-                        "Google Gemini 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
-                    ));
                 }
             }
             let account = account_filter.unwrap_or("默认");
@@ -5498,6 +5379,12 @@ impl GatewayServer {
                 if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(accounts) = registry.get("codexAccounts").and_then(|a| a.as_array())
                     {
+                        let prov_mode = settings.routing_mode_for_provider("openai");
+                        let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                            settings.pinned_account_for_provider("openai")
+                        } else {
+                            None
+                        };
                         let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
@@ -5530,13 +5417,6 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (OpenAI · {short_id})");
 
-                            let prov_mode = settings.routing_mode_for_provider("openai");
-                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
-                                settings.pinned_account_for_provider("openai")
-                            } else {
-                                None
-                            };
-
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -5554,23 +5434,7 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if let Some(pinned_id) = pinned_target {
-                                        if !exclusions.contains(&pinned_id.to_string()) {
-                                            let is_cooling = AccountDynamicState::global()
-                                                .lock()
-                                                .ok()
-                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
-                                            if is_cooling {
-                                                false
-                                            } else {
-                                                id == pinned_id
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        !exclusions.contains(&id)
-                                    }
+                                    !exclusions.contains(&id)
                                 }
                             };
                             if !matched {
@@ -5593,13 +5457,17 @@ impl GatewayServer {
                                     continue;
                                 };
                                 let score = Self::score_codex_account(account);
-                                let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
-                                let is_consolidated = account_filter.is_none()
-                                    && settings.is_provider_consolidated("openai")
-                                    && !is_pinned_hit;
+                                let is_cooling = AccountDynamicState::global()
+                                    .lock()
+                                    .ok()
+                                    .map_or(false, |s| s.is_cooling_down(&id));
+                                let is_pinned_hit = prov_mode == "pinnedAccount"
+                                    && pinned_target.map_or(false, |pid| id == pid)
+                                    && !is_cooling;
+
                                 let routing_mode = if is_pinned_hit {
                                     "pinned".to_string()
-                                } else if is_consolidated {
+                                } else if account_filter.is_none() && (settings.is_provider_consolidated("openai") || prov_mode == "pinnedAccount") {
                                     "consolidated".to_string()
                                 } else {
                                     "direct".to_string()
@@ -5617,7 +5485,12 @@ impl GatewayServer {
                                     quota_score: score,
                                     routing_mode,
                                 };
-                                if !is_consolidated {
+                                if is_pinned_hit {
+                                    if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                        s.record_served(&endpoint.connection_id);
+                                    }
+                                    return Ok(endpoint);
+                                } else if account_filter.is_some() || (!settings.is_provider_consolidated("openai") && prov_mode != "pinnedAccount") {
                                     if let Ok(mut s) = AccountDynamicState::global().lock() {
                                         s.record_served(&endpoint.connection_id);
                                     }
@@ -5629,17 +5502,16 @@ impl GatewayServer {
                         }
 
                         let prov_mode = settings.routing_mode_for_provider("openai");
-                        if let Some(picked) = Self::sort_and_pick_candidate("openai", prov_mode, &mut candidates) {
+                        if let Some(mut picked) = Self::sort_and_pick_candidate("openai", prov_mode, &mut candidates) {
+                            if prov_mode == "pinnedAccount" {
+                                picked.routing_mode = "pinned".to_string();
+                                if pinned_target != Some(&picked.connection_id) {
+                                    GatewaySettings::persist_switched_pinned_account(home, "openai", &picked.connection_id);
+                                }
+                            }
                             return Ok(picked);
                         }
                     }
-                }
-            }
-            if let Some(pinned_id) = settings.pinned_account_for_provider("openai") {
-                if account_filter.is_none() && settings.routing_mode_for_provider("openai") == "pinnedAccount" {
-                    return Err(format!(
-                        "OpenAI 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或会话失效）。已停止请求，未执行多账号负载转移。"
-                    ));
                 }
             }
             if let Some(codex_home) = found_session_home {
@@ -5668,6 +5540,12 @@ impl GatewayServer {
                         .get("deepSeekConnections")
                         .and_then(|a| a.as_array())
                     {
+                        let prov_mode = settings.routing_mode_for_provider("deepseek");
+                        let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                            settings.pinned_account_for_provider("deepseek")
+                        } else {
+                            None
+                        };
                         let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
@@ -5688,13 +5566,6 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (DeepSeek · {short_id})");
 
-                            let prov_mode = settings.routing_mode_for_provider("deepseek");
-                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
-                                settings.pinned_account_for_provider("deepseek")
-                            } else {
-                                None
-                            };
-
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -5709,23 +5580,7 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if let Some(pinned_id) = pinned_target {
-                                        if !exclusions.contains(&pinned_id.to_string()) {
-                                            let is_cooling = AccountDynamicState::global()
-                                                .lock()
-                                                .ok()
-                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
-                                            if is_cooling {
-                                                false
-                                            } else {
-                                                id == pinned_id
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        !exclusions.contains(&id)
-                                    }
+                                    !exclusions.contains(&id)
                                 }
                             };
                             if matched {
@@ -5755,13 +5610,17 @@ impl GatewayServer {
 
                                     if let Some(key) = found_key {
                                         let score = Self::score_deepseek_account(account);
-                                        let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
-                                        let is_consolidated = account_filter.is_none()
-                                            && settings.is_provider_consolidated("deepseek")
-                                            && !is_pinned_hit;
+                                        let is_cooling = AccountDynamicState::global()
+                                            .lock()
+                                            .ok()
+                                            .map_or(false, |s| s.is_cooling_down(&id));
+                                        let is_pinned_hit = prov_mode == "pinnedAccount"
+                                            && pinned_target.map_or(false, |pid| id == pid)
+                                            && !is_cooling;
+
                                         let routing_mode = if is_pinned_hit {
                                             "pinned".to_string()
-                                        } else if is_consolidated {
+                                        } else if account_filter.is_none() && (settings.is_provider_consolidated("deepseek") || prov_mode == "pinnedAccount") {
                                             "consolidated".to_string()
                                         } else {
                                             "direct".to_string()
@@ -5779,7 +5638,12 @@ impl GatewayServer {
                                             quota_score: score,
                                             routing_mode,
                                         };
-                                        if !is_consolidated {
+                                        if is_pinned_hit {
+                                            if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                s.record_served(&endpoint.connection_id);
+                                            }
+                                            return Ok(endpoint);
+                                        } else if account_filter.is_some() || (!settings.is_provider_consolidated("deepseek") && prov_mode != "pinnedAccount") {
                                             if let Ok(mut s) = AccountDynamicState::global().lock() {
                                                 s.record_served(&endpoint.connection_id);
                                             }
@@ -5793,17 +5657,16 @@ impl GatewayServer {
                         }
 
                         let prov_mode = settings.routing_mode_for_provider("deepseek");
-                        if let Some(picked) = Self::sort_and_pick_candidate("deepseek", prov_mode, &mut candidates) {
+                        if let Some(mut picked) = Self::sort_and_pick_candidate("deepseek", prov_mode, &mut candidates) {
+                            if prov_mode == "pinnedAccount" {
+                                picked.routing_mode = "pinned".to_string();
+                                if pinned_target != Some(&picked.connection_id) {
+                                    GatewaySettings::persist_switched_pinned_account(home, "deepseek", &picked.connection_id);
+                                }
+                            }
                             return Ok(picked);
                         }
                     }
-                }
-            }
-            if let Some(pinned_id) = settings.pinned_account_for_provider("deepseek") {
-                if account_filter.is_none() && settings.routing_mode_for_provider("deepseek") == "pinnedAccount" {
-                    return Err(format!(
-                        "DeepSeek 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
-                    ));
                 }
             }
             if account_filter.is_some() {
@@ -5834,6 +5697,12 @@ impl GatewayServer {
                         .get("openCodeConnections")
                         .and_then(|a| a.as_array())
                     {
+                        let prov_mode = settings.routing_mode_for_provider("opencode");
+                        let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
+                            settings.pinned_account_for_provider("opencode")
+                        } else {
+                            None
+                        };
                         let mut candidates: Vec<(i64, String, UpstreamEndpoint)> = Vec::new();
                         for account in accounts {
                             if !account
@@ -5854,13 +5723,6 @@ impl GatewayServer {
                             let id_slug = format!("{slug}-{short_id}");
                             let account_display = format!("{friendly_name} (OpenCode · {short_id})");
 
-                            let prov_mode = settings.routing_mode_for_provider("opencode");
-                            let pinned_target = if account_filter.is_none() && prov_mode == "pinnedAccount" {
-                                settings.pinned_account_for_provider("opencode")
-                            } else {
-                                None
-                            };
-
                             let matched = match account_filter {
                                 Some(filter) => {
                                     if let Some(ref sid) = filter_short_id {
@@ -5875,23 +5737,7 @@ impl GatewayServer {
                                     }
                                 }
                                 None => {
-                                    if let Some(pinned_id) = pinned_target {
-                                        if !exclusions.contains(&pinned_id.to_string()) {
-                                            let is_cooling = AccountDynamicState::global()
-                                                .lock()
-                                                .ok()
-                                                .map_or(false, |s| s.is_cooling_down(pinned_id));
-                                            if is_cooling {
-                                                false
-                                            } else {
-                                                id == pinned_id
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        !exclusions.contains(&id)
-                                    }
+                                    !exclusions.contains(&id)
                                 }
                             };
                             if matched {
@@ -5945,13 +5791,17 @@ impl GatewayServer {
                                             extra_headers.push(("x-opencode-session".to_string(), session_id));
                                         }
                                         let score = Self::score_opencode_account(account);
-                                        let is_pinned_hit = prov_mode == "pinnedAccount" && pinned_target.map_or(false, |pid| id == pid);
-                                        let is_consolidated = account_filter.is_none()
-                                            && settings.is_provider_consolidated("opencode")
-                                            && !is_pinned_hit;
+                                        let is_cooling = AccountDynamicState::global()
+                                            .lock()
+                                            .ok()
+                                            .map_or(false, |s| s.is_cooling_down(&id));
+                                        let is_pinned_hit = prov_mode == "pinnedAccount"
+                                            && pinned_target.map_or(false, |pid| id == pid)
+                                            && !is_cooling;
+
                                         let routing_mode = if is_pinned_hit {
                                             "pinned".to_string()
-                                        } else if is_consolidated {
+                                        } else if account_filter.is_none() && (settings.is_provider_consolidated("opencode") || prov_mode == "pinnedAccount") {
                                             "consolidated".to_string()
                                         } else {
                                             "direct".to_string()
@@ -5969,7 +5819,12 @@ impl GatewayServer {
                                             quota_score: score,
                                             routing_mode,
                                         };
-                                        if !is_consolidated {
+                                        if is_pinned_hit {
+                                            if let Ok(mut s) = AccountDynamicState::global().lock() {
+                                                s.record_served(&endpoint.connection_id);
+                                            }
+                                            return Ok(endpoint);
+                                        } else if account_filter.is_some() || (!settings.is_provider_consolidated("opencode") && prov_mode != "pinnedAccount") {
                                             if let Ok(mut s) = AccountDynamicState::global().lock() {
                                                 s.record_served(&endpoint.connection_id);
                                             }
@@ -5983,17 +5838,16 @@ impl GatewayServer {
                         }
 
                         let prov_mode = settings.routing_mode_for_provider("opencode");
-                        if let Some(picked) = Self::sort_and_pick_candidate("opencode", prov_mode, &mut candidates) {
+                        if let Some(mut picked) = Self::sort_and_pick_candidate("opencode", prov_mode, &mut candidates) {
+                            if prov_mode == "pinnedAccount" {
+                                picked.routing_mode = "pinned".to_string();
+                                if pinned_target != Some(&picked.connection_id) {
+                                    GatewaySettings::persist_switched_pinned_account(home, "opencode", &picked.connection_id);
+                                }
+                            }
                             return Ok(picked);
                         }
                     }
-                }
-            }
-            if let Some(pinned_id) = settings.pinned_account_for_provider("opencode") {
-                if account_filter.is_none() && settings.routing_mode_for_provider("opencode") == "pinnedAccount" {
-                    return Err(format!(
-                        "OpenCode 固定账号 [{pinned_id}] 当前不可用（可能已遭遇 429 限频、额度耗尽或凭证失效）。已停止请求，未执行多账号负载转移。"
-                    ));
                 }
             }
             if account_filter.is_some() {

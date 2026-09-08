@@ -403,7 +403,7 @@ final class GatewayTests: XCTestCase {
             autoCheckOnStartupWithHistory: true,
             healthCheckInterval: HealthCheckInterval.midnight.rawValue
         )
-        custom.setRoutingMode(for: "google", mode: ProviderRoutingMode.stickyHighQuota)
+        custom.setRoutingMode(for: "google", mode: ProviderRoutingMode.smooth)
         custom.setRoutingMode(for: "openai", mode: ProviderRoutingMode.pinnedAccount, pinnedAccountId: "pinned-uuid-1")
         try storage.save(custom)
 
@@ -417,7 +417,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(loaded, custom)
         XCTAssertTrue(loaded.autoCheckOnStartupWithHistory)
         XCTAssertEqual(loaded.healthCheckInterval, HealthCheckInterval.midnight.rawValue)
-        XCTAssertEqual(loaded.routingMode(for: "google"), ProviderRoutingMode.stickyHighQuota)
+        XCTAssertEqual(loaded.routingMode(for: "google"), ProviderRoutingMode.smooth)
         XCTAssertEqual(loaded.routingMode(for: "openai"), ProviderRoutingMode.pinnedAccount)
         XCTAssertEqual(loaded.pinnedAccountId(for: "openai"), "pinned-uuid-1")
         XCTAssertNil(loaded.pinnedAccountId(for: "google"))

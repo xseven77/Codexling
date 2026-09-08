@@ -2,7 +2,6 @@ import Foundation
 
 public enum ProviderRoutingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case smooth = "smooth"
-    case stickyHighQuota = "stickyHighQuota"
     case pinnedAccount = "pinnedAccount"
 
     public var id: String { rawValue }
@@ -10,7 +9,6 @@ public enum ProviderRoutingMode: String, Codable, CaseIterable, Identifiable, Se
     public var title: String {
         switch self {
         case .smooth: return "平滑过渡"
-        case .stickyHighQuota: return "固定高额度"
         case .pinnedAccount: return "固定特定账号"
         }
     }
@@ -18,15 +16,13 @@ public enum ProviderRoutingMode: String, Codable, CaseIterable, Identifiable, Se
     public var subtitle: String {
         switch self {
         case .smooth: return "多账号轮询均衡负载，各账号额度平滑消耗防并发限频"
-        case .stickyHighQuota: return "持续锁定最高额度账号，最大化 Prompt 缓存命中率"
-        case .pinnedAccount: return "流量强制直通所选的特定账号"
+        case .pinnedAccount: return "流量优先直通所选的特定账号；额度耗尽或异常时自动切换并持久化"
         }
     }
 
     public var iconName: String {
         switch self {
         case .smooth: return "arrow.triangle.swap"
-        case .stickyHighQuota: return "bolt.fill"
         case .pinnedAccount: return "pin.fill"
         }
     }
