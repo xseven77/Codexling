@@ -151,6 +151,8 @@ pub struct GatewaySettings {
     pub health_check_interval: String,
     #[serde(default)]
     pub automation_tasks: Vec<GatewayAutomationTask>,
+    #[serde(default)]
+    pub allow_lan_access: bool,
 }
 
 fn default_gateway_settings_schema_version() -> u32 {
@@ -183,6 +185,7 @@ impl Default for GatewaySettings {
             auto_check_on_startup_with_history: false,
             health_check_interval: "1h".to_string(),
             automation_tasks: Vec::new(),
+            allow_lan_access: false,
         }
     }
 }
@@ -394,6 +397,7 @@ mod tests {
         assert_eq!(default_settings.cooldown_seconds, 300);
         assert_eq!(default_settings.max_failover_retries, 2);
         assert_eq!(default_settings.health_check_interval, "1h");
+        assert!(!default_settings.allow_lan_access);
 
         // 2. Custom settings when file exists
         fs::write(
@@ -412,7 +416,8 @@ mod tests {
                 "allowFailover": false,
                 "cooldownSeconds": 600,
                 "maxFailoverRetries": 4,
-                "healthCheckInterval": "6h"
+                "healthCheckInterval": "6h",
+                "allowLanAccess": true
             }"#,
         )
         .unwrap();
@@ -422,6 +427,7 @@ mod tests {
         assert_eq!(loaded.cooldown_seconds, 600);
         assert_eq!(loaded.max_failover_retries, 4);
         assert_eq!(loaded.health_check_interval, "6h");
+        assert!(loaded.allow_lan_access);
         assert_eq!(loaded.routing_mode_for_provider("google"), "smooth"); // stickyHighQuota falls back to smooth
         assert_eq!(loaded.routing_mode_for_provider("openai"), "pinnedAccount");
         assert_eq!(loaded.routing_mode_for_provider("deepseek"), "smooth"); // default fallback
@@ -2371,6 +2377,11 @@ impl GatewayServer {
                 } else {
                     should_stop = true;
                     self.is_running.store(false, Ordering::Relaxed);
+                    if let Ok(addr) = stream.local_addr() {
+                        let _ = std::thread::spawn(move || {
+                            let _ = std::net::TcpStream::connect(addr);
+                        });
+                    }
                     Self::response("200 OK", "application/json", r#"{"stopping":true}"#)
                 }
             }

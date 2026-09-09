@@ -301,6 +301,13 @@ public final class GatewayStore {
     private let agentCatalogDefaults = UserDefaults.standard
     private let hermesCatalogFingerprintKey = "Codexling.hermesCatalogFingerprint"
     private let piCatalogFingerprintKey = "Codexling.piCatalogFingerprint"
+    @ObservationIgnored nonisolated(unsafe) private var agentStatusObserver: (any NSObjectProtocol)?
+
+    deinit {
+        if let observer = agentStatusObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     // ==========================================
     // 维度三：网关设置 (Gateway Settings)
@@ -317,6 +324,17 @@ public final class GatewayStore {
         set {
             guard gatewaySettings.autoCheckOnStartupWithHistory != newValue else { return }
             gatewaySettings.autoCheckOnStartupWithHistory = newValue
+        }
+    }
+
+    public var allowLanAccess: Bool {
+        get { gatewaySettings.allowLanAccess }
+        set {
+            guard gatewaySettings.allowLanAccess != newValue else { return }
+            gatewaySettings.allowLanAccess = newValue
+            if self === GatewayStore.shared {
+                GatewaySupervisor.shared.restart()
+            }
         }
     }
 
@@ -421,6 +439,7 @@ public final class GatewayStore {
     // a process synchronously and can block a single render several times.
     public private(set) var hermesAgentInstalled = false
     public private(set) var hermesAgentConfigured = false
+    public private(set) var hermesLanBypassConfigured = false
     public private(set) var piAgentInstalled = false
     public private(set) var piAgentConfigured = false
     public private(set) var isRefreshingAgentIntegrationStatus = false
@@ -676,6 +695,7 @@ public final class GatewayStore {
         self.piConfigurator = PiGatewayConfigurator()
         loadCustomModels()
         loadCachedModelHealth()
+        registerAgentStatusObserver()
         if modelHealthResponse != nil {
             Task { [weak self] in
                 await self?.syncConfiguredAgentCatalogsIfNeeded()
@@ -698,9 +718,23 @@ public final class GatewayStore {
         self.gatewaySettings = settingsStorage.load()
         loadCustomModels()
         loadCachedModelHealth()
+        registerAgentStatusObserver()
         if modelHealthResponse != nil {
             Task { [weak self] in
                 await self?.syncConfiguredAgentCatalogsIfNeeded()
+            }
+        }
+    }
+
+    private func registerAgentStatusObserver() {
+        agentStatusObserver = NotificationCenter.default.addObserver(
+            forName: .agentIntegrationStatusDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, (note.object as? AnyObject) !== self else { return }
+            Task { @MainActor [weak self] in
+                await self?.refreshAgentIntegrationStatus(notifyPeers: false)
             }
         }
     }
@@ -1973,6 +2007,22 @@ public final class GatewayStore {
     public var anthropicBaseURL: String {
         let portStr = String(GatewaySupervisor.shared.port)
         return "http://127.0.0.1:\(portStr)"
+    }
+
+    public var currentLANIPv4: String? {
+        GatewayNetworkInfo.currentLANIPv4()
+    }
+
+    public var lanOpenAIBaseURL: String? {
+        guard let ip = currentLANIPv4 else { return nil }
+        let portStr = String(GatewaySupervisor.shared.port)
+        return "http://\(ip):\(portStr)/v1"
+    }
+
+    public var lanAnthropicBaseURL: String? {
+        guard let ip = currentLANIPv4 else { return nil }
+        let portStr = String(GatewaySupervisor.shared.port)
+        return "http://\(ip):\(portStr)"
     }
 
     public var localToken: String {
@@ -3492,6 +3542,7 @@ public final class GatewayStore {
             agentCatalogDefaults.set(catalogFingerprint(models), forKey: hermesCatalogFingerprintKey)
             hermesAgentInstalled = true
             hermesAgentConfigured = true
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
             return (true, "Hermes 已接入 Codexling Gateway · 默认模型：\(defaultModel) · \(baseURL)")
         } catch {
             return (false, "配置 Hermes 失败：\(error.localizedDescription)")
@@ -3506,9 +3557,36 @@ public final class GatewayStore {
             }.value
             agentCatalogDefaults.removeObject(forKey: hermesCatalogFingerprintKey)
             hermesAgentConfigured = false
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
             return (true, "已成功从 Hermes 卸载 Codexling Gateway 配置")
         } catch {
             return (false, "卸载 Hermes 配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    public func configureHermesLanBypass() async -> (success: Bool, message: String) {
+        let configurator = hermesConfigurator
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.configureLanBypass()
+            }.value
+            hermesLanBypassConfigured = true
+            return (true, "已成功向 ~/.hermes/.env 写入局域网直连白名单")
+        } catch {
+            return (false, "配置白名单失败：\(error.localizedDescription)")
+        }
+    }
+
+    public func unconfigureHermesLanBypass() async -> (success: Bool, message: String) {
+        let configurator = hermesConfigurator
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.unconfigureLanBypass()
+            }.value
+            hermesLanBypassConfigured = false
+            return (true, "已成功从 ~/.hermes/.env 移除局域网直连白名单")
+        } catch {
+            return (false, "移除白名单失败：\(error.localizedDescription)")
         }
     }
 
@@ -3520,7 +3598,15 @@ public final class GatewayStore {
         piConfigurator.isConfigured
     }
 
-    public func refreshAgentIntegrationStatus() async {
+    public var hermesExecutablePath: String? {
+        hermesConfigurator.executableURL?.path
+    }
+
+    public var piExecutablePath: String? {
+        piConfigurator.executableURL?.path
+    }
+
+    public func refreshAgentIntegrationStatus(notifyPeers: Bool = true) async {
         guard !isRefreshingAgentIntegrationStatus else { return }
         isRefreshingAgentIntegrationStatus = true
         defer {
@@ -3534,14 +3620,19 @@ public final class GatewayStore {
             (
                 hermesInstalled: hermes.isHermesInstalled,
                 hermesConfigured: hermes.isConfigured,
+                hermesLanBypass: hermes.isLanBypassConfigured,
                 piInstalled: pi.isPiInstalled,
                 piConfigured: pi.isConfigured
             )
         }.value
         hermesAgentInstalled = status.hermesInstalled
         hermesAgentConfigured = status.hermesConfigured
+        hermesLanBypassConfigured = status.hermesLanBypass
         piAgentInstalled = status.piInstalled
         piAgentConfigured = status.piConfigured
+        if notifyPeers {
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
+        }
     }
 
     public func configurePiAgent(defaultModel requestedModel: String? = nil) async -> (success: Bool, message: String) {
@@ -3568,6 +3659,7 @@ public final class GatewayStore {
             agentCatalogDefaults.set(catalogFingerprint(models), forKey: piCatalogFingerprintKey)
             piAgentInstalled = true
             piAgentConfigured = true
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
             return (true, "Pi 已接入 Codexling Gateway · 默认模型：\(defaultModel) · \(baseURL)")
         } catch {
             return (false, "配置 Pi 失败：\(error.localizedDescription)")
@@ -3582,6 +3674,7 @@ public final class GatewayStore {
             }.value
             agentCatalogDefaults.removeObject(forKey: piCatalogFingerprintKey)
             piAgentConfigured = false
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
             return (true, "已成功从 Pi 卸载 Codexling Gateway 配置")
         } catch {
             return (false, "卸载 Pi 配置失败：\(error.localizedDescription)")

@@ -8,6 +8,7 @@ struct HermesCommandResult {
 
 protocol HermesCommandRunning: Sendable {
     var isAvailable: Bool { get }
+    var executableURL: URL? { get }
     func run(arguments: [String]) throws -> HermesCommandResult
 }
 
@@ -32,26 +33,29 @@ enum HermesGatewayConfigurationError: LocalizedError {
 }
 
 struct HermesCLICommandRunner: HermesCommandRunning {
-    let executableURL: URL?
+    let homeDirectory: URL
+    let environment: [String: String]
+    let allowShellFallback: Bool
+    private let fixedExecutableURL: URL?
 
     init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        allowShellFallback: Bool = true,
+        executableURL: URL? = nil
     ) {
-        var candidates: [URL] = [
-            homeDirectory.appendingPathComponent(".local/bin/hermes"),
-            homeDirectory.appendingPathComponent(".hermes/bin/hermes"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/hermes"),
-            URL(fileURLWithPath: "/usr/local/bin/hermes"),
-        ]
-        if let path = environment["PATH"] {
-            candidates.append(contentsOf: path.split(separator: ":").map {
-                URL(fileURLWithPath: String($0)).appendingPathComponent("hermes")
-            })
-        }
-        executableURL = candidates.first {
-            FileManager.default.isExecutableFile(atPath: $0.path)
-        }
+        self.homeDirectory = homeDirectory
+        self.environment = environment
+        self.allowShellFallback = allowShellFallback
+        self.fixedExecutableURL = executableURL
+    }
+
+    var executableURL: URL? {
+        if let fixedExecutableURL { return fixedExecutableURL }
+        return AgentHookManager(
+            homeDirectory: homeDirectory,
+            allowShellFallback: allowShellFallback
+        ).locateExecutable(for: .hermes)
     }
 
     var isAvailable: Bool { executableURL != nil }
@@ -67,6 +71,11 @@ struct HermesCLICommandRunner: HermesCommandRunning {
         process.arguments = arguments
         process.standardOutput = outputPipe
         process.standardError = errorPipe
+        var env = environment
+        if env["PATH"] == nil {
+            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        }
+        process.environment = env
         try process.run()
         process.waitUntilExit()
         return HermesCommandResult(
@@ -91,19 +100,89 @@ struct HermesGatewayConfigurator: Sendable {
         "providers.codexling.extra_headers.X-Agent-Name",
     ]
 
+    public static let lanBypassSnippet = """
+# 局域网内不走代理
+NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
+no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
+"""
+
     let runner: any HermesCommandRunning
     let configURL: URL
+    let envURL: URL
 
     init(
         runner: any HermesCommandRunning = HermesCLICommandRunner(),
         configURL: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".hermes/config.yaml")
+            .appendingPathComponent(".hermes/config.yaml"),
+        envURL: URL? = nil
     ) {
         self.runner = runner
         self.configURL = configURL
+        self.envURL = envURL ?? configURL.deletingLastPathComponent().appendingPathComponent(".env")
+    }
+
+    var isLanBypassConfigured: Bool {
+        guard let data = try? Data(contentsOf: envURL),
+              let content = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let lower = content.lowercased()
+        return lower.contains("no_proxy") && lower.contains("192.168.0.0/16")
+    }
+
+    func configureLanBypass() throws {
+        let parentDir = envURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parentDir.path) {
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+
+        var existingContent = ""
+        if FileManager.default.fileExists(atPath: envURL.path) {
+            existingContent = (try? String(contentsOf: envURL, encoding: .utf8)) ?? ""
+        }
+
+        if isLanBypassConfigured {
+            return
+        }
+
+        var newContent = existingContent
+        if !newContent.isEmpty && !newContent.hasSuffix("\n") {
+            newContent += "\n"
+        }
+        newContent += Self.lanBypassSnippet + "\n"
+
+        try newContent.write(to: envURL, atomically: true, encoding: .utf8)
+    }
+
+    func unconfigureLanBypass() throws {
+        guard FileManager.default.fileExists(atPath: envURL.path),
+              let content = try? String(contentsOf: envURL, encoding: .utf8) else {
+            return
+        }
+
+        let lines = content.components(separatedBy: .newlines)
+        let filteredLines = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "# 局域网内不走代理" { return false }
+            if (trimmed.hasPrefix("NO_PROXY=") || trimmed.hasPrefix("no_proxy=")) && trimmed.contains("192.168.0.0/16") {
+                return false
+            }
+            return true
+        }
+
+        var cleaned = filteredLines.joined(separator: "\n")
+        while cleaned.hasSuffix("\n\n") {
+            cleaned.removeLast()
+        }
+        if !cleaned.isEmpty && !cleaned.hasSuffix("\n") {
+            cleaned += "\n"
+        }
+
+        try cleaned.write(to: envURL, atomically: true, encoding: .utf8)
     }
 
     var isHermesInstalled: Bool { runner.isAvailable }
+    var executableURL: URL? { runner.executableURL }
 
     var isConfigured: Bool {
         guard runner.isAvailable else { return false }

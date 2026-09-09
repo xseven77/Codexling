@@ -2779,7 +2779,7 @@ struct AgentInstallGuideModal: View {
                 Button {
                     openURL(url)
                 } label: {
-                    Label("官方文档", systemImage: "arrow.up.right")
+                    Label("官网", systemImage: "arrow.up.right")
                         .font(.system(size: 11, weight: .medium))
                         .frame(height: 32)
                         .padding(.horizontal, 10)

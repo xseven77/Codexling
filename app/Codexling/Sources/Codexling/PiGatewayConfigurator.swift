@@ -8,6 +8,7 @@ struct PiCommandResult {
 
 protocol PiCommandRunning: Sendable {
     var isAvailable: Bool { get }
+    var executableURL: URL? { get }
     func run(arguments: [String], agentDirectory: URL) throws -> PiCommandResult
 }
 
@@ -35,36 +36,29 @@ enum PiGatewayConfigurationError: LocalizedError {
 }
 
 struct PiCLICommandRunner: PiCommandRunning {
-    let executableURL: URL?
+    let homeDirectory: URL
+    let environment: [String: String]
+    let allowShellFallback: Bool
+    private let fixedExecutableURL: URL?
 
     init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        allowShellFallback: Bool = true,
+        executableURL: URL? = nil
     ) {
-        var candidates: [URL] = [
-            homeDirectory.appendingPathComponent(".local/bin/pi"),
-            homeDirectory.appendingPathComponent(".bun/bin/pi"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/pi"),
-            URL(fileURLWithPath: "/usr/local/bin/pi"),
-        ]
-        let nvmVersions = homeDirectory.appendingPathComponent(".nvm/versions/node")
-        if let versions = try? FileManager.default.contentsOfDirectory(
-            at: nvmVersions,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) {
-            candidates.append(contentsOf: versions.sorted { $0.lastPathComponent > $1.lastPathComponent }.map {
-                $0.appendingPathComponent("bin/pi")
-            })
-        }
-        if let path = environment["PATH"] {
-            candidates.append(contentsOf: path.split(separator: ":").map {
-                URL(fileURLWithPath: String($0)).appendingPathComponent("pi")
-            })
-        }
-        executableURL = candidates.first {
-            FileManager.default.isExecutableFile(atPath: $0.path)
-        }
+        self.homeDirectory = homeDirectory
+        self.environment = environment
+        self.allowShellFallback = allowShellFallback
+        self.fixedExecutableURL = executableURL
+    }
+
+    var executableURL: URL? {
+        if let fixedExecutableURL { return fixedExecutableURL }
+        return AgentHookManager(
+            homeDirectory: homeDirectory,
+            allowShellFallback: allowShellFallback
+        ).locateExecutable(for: .pi)
     }
 
     var isAvailable: Bool { executableURL != nil }
@@ -108,6 +102,7 @@ struct PiGatewayConfigurator: Sendable {
     }
 
     var isPiInstalled: Bool { runner.isAvailable }
+    var executableURL: URL? { runner.executableURL }
 
     var isConfigured: Bool {
         guard runner.isAvailable else { return false }

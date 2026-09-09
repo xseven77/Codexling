@@ -141,26 +141,12 @@ enum AgentInstallGuideCatalog {
                     AgentInstallMethod(
                         title: "官方一键脚本安装 (推荐)",
                         kind: .command,
-                        command: "curl -fsSL https://hermes-agent.dev/install.sh | bash",
+                        command: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
                         urlString: nil,
                         note: "自动配置 hermes 命令行工具与运行环境。"
-                    ),
-                    AgentInstallMethod(
-                        title: "npm 全局安装 CLI",
-                        kind: .command,
-                        command: "npm install -g hermes-agent",
-                        urlString: nil,
-                        note: "通过 npm 包管理器安装 CLI 工具。"
-                    ),
-                    AgentInstallMethod(
-                        title: "启动 Electron 桌面应用",
-                        kind: .run,
-                        command: "hermes desktop",
-                        urlString: nil,
-                        note: "安装 CLI 后，执行 hermes desktop 即可启动桌面客户端。"
                     )
                 ],
-                documentationURLString: "https://hermes-agent.dev"
+                documentationURLString: "https://github.com/NousResearch/hermes-agent"
             )
 
         case .antigravity:
@@ -194,32 +180,18 @@ enum AgentInstallGuideCatalog {
                 agentID: .pi,
                 name: "Pi",
                 tagline: "极简、快速且可扩展的开源 AI Coding Agent",
-                summary: "Pi（@earendil-works/pi-coding-agent）是专为终端打造的高效开源编程智能体，内置 read、bash、edit、write 等工具。Codexling 实时解析本地 Session 日志，无侵入同步任务与活动状态。",
+                summary: "Pi 是专为终端打造的高效开源编程智能体，内置 read、bash、edit、write 等工具。Codexling 实时解析本地 Session 日志，无侵入同步任务与活动状态。",
                 integrationMechanism: "通过读取 ~/.pi/agent/sessions 下的会话 JSONL 实现无缝状态同步。",
                 methods: [
                     AgentInstallMethod(
-                        title: "npm 全局安装 (推荐)",
+                        title: "官方一键脚本安装 (推荐)",
                         kind: .command,
-                        command: "npm install -g @earendil-works/pi-coding-agent",
+                        command: "curl -fsSL https://pi.dev/install.sh | sh",
                         urlString: nil,
-                        note: "安装后将在终端提供 pi 命令行工具。"
-                    ),
-                    AgentInstallMethod(
-                        title: "pnpm 全局安装",
-                        kind: .command,
-                        command: "pnpm add -g @earendil-works/pi-coding-agent",
-                        urlString: nil,
-                        note: "使用 pnpm 包管理器全局安装。"
-                    ),
-                    AgentInstallMethod(
-                        title: "bun 全局安装",
-                        kind: .command,
-                        command: "bun add -g @earendil-works/pi-coding-agent",
-                        urlString: nil,
-                        note: "使用 bun 包管理器快速全局安装。"
+                        note: "自动下载并安装 pi 命令行工具与运行环境。"
                     )
                 ],
-                documentationURLString: "https://github.com/earendil-works/pi"
+                documentationURLString: "https://pi.dev/"
             )
 
         default:
@@ -359,7 +331,7 @@ struct AgentHookManager {
         return prefixes
     }
 
-    private func locateExecutable(for agentID: AgentID) -> URL? {
+    func locateExecutable(for agentID: AgentID) -> URL? {
         if agentID == .antigravity {
             let candidate = homeDirectory.appendingPathComponent(".gemini/antigravity/bin/agentapi")
             if fileManager.isExecutableFile(atPath: candidate.path) {

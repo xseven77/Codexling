@@ -9,8 +9,10 @@ pub use server::{GatewayServer, GatewaySettings};
 
 fn main() -> std::io::Result<()> {
     let mut port: u16 = 0;
+    let mut host = "127.0.0.1".to_string();
     let mut token = "codexling-local-token".to_string();
     let mut auto_check = false;
+    let mut host_explicitly_set = false;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -19,6 +21,10 @@ fn main() -> std::io::Result<()> {
             if let Ok(p) = args[i + 1].parse::<u16>() {
                 port = p;
             }
+            i += 2;
+        } else if args[i] == "--host" && i + 1 < args.len() {
+            host = args[i + 1].clone();
+            host_explicitly_set = true;
             i += 2;
         } else if args[i] == "--token" && i + 1 < args.len() {
             token = args[i + 1].clone();
@@ -31,13 +37,21 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    let bind_addr = format!("127.0.0.1:{port}");
+    if !host_explicitly_set {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+        let settings = GatewaySettings::load_for_home(&home);
+        if settings.allow_lan_access {
+            host = "0.0.0.0".to_string();
+        }
+    }
+
+    let bind_addr = format!("{host}:{port}");
     let listener = TcpListener::bind(&bind_addr)?;
     let actual_addr = listener.local_addr()?;
 
     // Emit ready handshake event on first line of stdout
     println!(
-        r#"{{"event":"ready","host":"127.0.0.1","port":{},"token":"{}"}}"#,
+        r#"{{"event":"ready","host":"{host}","port":{},"token":"{}"}}"#,
         actual_addr.port(),
         token
     );

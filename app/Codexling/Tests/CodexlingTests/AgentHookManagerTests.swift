@@ -239,8 +239,19 @@ final class AgentHookManagerTests: XCTestCase {
             XCTAssertFalse(guide.tagline.isEmpty, "Tagline should not be empty for \(id)")
             XCTAssertFalse(guide.summary.isEmpty, "Summary should not be empty for \(id)")
             XCTAssertFalse(guide.methods.isEmpty, "Methods should not be empty for \(id)")
-            XCTAssertNotNil(guide.documentationURLString, "Doc URL should exist for \(id)")
         }
+    }
+
+    func testHermesAndPiInstallGuideConfigurations() {
+        let hermesGuide = AgentInstallGuideCatalog.guide(for: .hermes)
+        XCTAssertEqual(hermesGuide.documentationURLString, "https://github.com/NousResearch/hermes-agent")
+        XCTAssertEqual(hermesGuide.methods.count, 1)
+        XCTAssertEqual(hermesGuide.methods.first?.command, "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
+
+        let piGuide = AgentInstallGuideCatalog.guide(for: .pi)
+        XCTAssertEqual(piGuide.documentationURLString, "https://pi.dev/")
+        XCTAssertEqual(piGuide.methods.count, 1)
+        XCTAssertEqual(piGuide.methods.first?.command, "curl -fsSL https://pi.dev/install.sh | sh")
     }
 
     func testAgentIntegrationStatusGuideAndInstalledProperties() {

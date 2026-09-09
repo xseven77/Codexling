@@ -11,6 +11,8 @@ struct GatewayConnectView: View {
     @State private var copiedEndpoint = false
     @State private var copiedKey = false
     @State private var copiedAllModels = false
+    @State private var copiedLanOpenAI = false
+    @State private var copiedLanAnthropic = false
     @State private var syncingConnectionIDs: Set<ConnectionID> = []
 
     var body: some View {
@@ -289,6 +291,126 @@ struct GatewayConnectView: View {
                         copiedKey = false
                     }
                 }
+            }
+
+            // 局域网访问开关与状态
+            HStack(spacing: 12) {
+                HStack(spacing: 4) {
+                    Image(systemName: "network")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                    Text("局域网接入")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted)
+                }
+
+                Divider()
+                    .frame(height: 12)
+                    .overlay(Color.codexLine.opacity(0.3))
+
+                Toggle(isOn: Binding(
+                    get: { store.allowLanAccess },
+                    set: { store.allowLanAccess = $0 }
+                )) {
+                    HStack(spacing: 4) {
+                        Image(systemName: store.allowLanAccess ? "wifi" : "wifi.slash")
+                            .font(.system(size: 10))
+                        Text("允许局域网设备接入 (绑定 0.0.0.0)")
+                            .font(.system(size: 11, weight: .regular))
+                    }
+                    .foregroundStyle(Color.codexInk)
+                }
+                .toggleStyle(.checkbox)
+                .help("开启后网关监听 0.0.0.0，同一局域网下的其他设备可通过局域网 IP 调用；关闭后仅允许本机 127.0.0.1 访问")
+
+                Spacer()
+
+                if store.allowLanAccess {
+                    if let ip = store.currentLANIPv4 {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 6, height: 6)
+                            Text("本机局域网 IP: \(ip)")
+                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.green)
+                        }
+                    } else {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 6, height: 6)
+                            Text("未检测到有效局域网 IP")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.orange)
+                        }
+                    }
+                } else {
+                    Text("默认仅允许本机访问，端口安全隔离")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.codexMuted)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.codexBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.8)
+            )
+
+            if store.allowLanAccess {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        // LAN OpenAI Base URL
+                        connectionTile(
+                            title: "局域网 OpenAI Base URL",
+                            value: store.lanOpenAIBaseURL ?? "http://<局域网IP>:\(supervisor.port)/v1",
+                            isCopied: copiedLanOpenAI
+                        ) {
+                            if let url = store.lanOpenAIBaseURL {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                                copiedLanOpenAI = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    copiedLanOpenAI = false
+                                }
+                            }
+                        }
+
+                        // LAN Anthropic Base URL
+                        connectionTile(
+                            title: "局域网 Anthropic Messages 端点",
+                            value: store.lanAnthropicBaseURL ?? "http://<局域网IP>:\(supervisor.port)",
+                            isCopied: copiedLanAnthropic
+                        ) {
+                            if let url = store.lanAnthropicBaseURL {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                                copiedLanAnthropic = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    copiedLanAnthropic = false
+                                }
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.codexMuted)
+                        Text("局域网设备接入时仍需携带上方「本地授权 API Key」以保证安全。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .padding(.top, 1)
+                }
+                .padding(10)
+                .background(Color.accentColor.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.2), lineWidth: 0.8)
+                )
             }
 
             // Minimal dynamic pass-through footer

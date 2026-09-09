@@ -55,11 +55,18 @@ final class MultiAgentSettingsStore {
     var onAccountCarouselPauseChanged: ((Bool) -> Void)?
     private var activeCodexOAuthService: CodexUsageService?
     private var activeGeminiOAuthService: (any GeminiOAuthServicing)?
+    @ObservationIgnored nonisolated(unsafe) private var agentStatusObserver: (any NSObjectProtocol)?
     var selectedConnectionKey: String {
         didSet {
             guard selectedConnectionKey != oldValue else { return }
             UserDefaults.standard.set(selectedConnectionKey, forKey: Self.selectedConnectionDefaultsKey)
             onSelectedConnectionChanged?()
+        }
+    }
+
+    deinit {
+        if let observer = agentStatusObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -103,6 +110,17 @@ final class MultiAgentSettingsStore {
         purgeLegacyGeminiCredentials()
         refresh()
         validateSelectedConnection()
+        agentStatusObserver = NotificationCenter.default.addObserver(
+            forName: .agentIntegrationStatusDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, (note.object as? AnyObject) !== self else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.integrations = self.hookManager.integrationStatuses()
+            }
+        }
         if startsAutomaticRefresh {
             Task { await refreshAllConnections() }
         }
@@ -110,6 +128,7 @@ final class MultiAgentSettingsStore {
 
     func refresh() {
         integrations = hookManager.integrationStatuses()
+        NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
     }
 
     func clearLastMessage() {

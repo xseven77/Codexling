@@ -110,7 +110,9 @@ public final class GatewaySupervisor {
             let errPipe = Pipe()
 
             proc.executableURL = executable
-            proc.arguments = ["--port", "58349", "--token", localToken, "--auto-check"]
+            let settings = GatewaySettingsStorage().load()
+            let bindHost = settings.allowLanAccess ? "0.0.0.0" : "127.0.0.1"
+            proc.arguments = ["--host", bindHost, "--port", "58349", "--token", localToken, "--auto-check"]
             var environment = ProcessInfo.processInfo.environment
             let geminiOAuth = GeminiOAuthConfiguration.load()
             if geminiOAuth.isConfigured {
@@ -162,7 +164,8 @@ public final class GatewaySupervisor {
             }
             self.port = port
             self.localToken = token
-            self.endpoint = URL(string: "http://\(host):\(port)")
+            let connectHost = (host == "0.0.0.0") ? "127.0.0.1" : host
+            self.endpoint = URL(string: "http://\(connectHost):\(port)")
             self.hasAttemptedStaleGatewayRecovery = false
             self.consecutiveHealthFailures = 0
 
@@ -182,7 +185,10 @@ public final class GatewaySupervisor {
             self.isRunning = true
             self.startTime = Date()
             self.statusText = "运行中"
-            self.statusDetail = "loopback 与 local token 已验证 · 端口隔离就绪"
+            let isLan = (host == "0.0.0.0") || settings.allowLanAccess
+            self.statusDetail = isLan
+                ? "局域网访问已开启 (0.0.0.0) · local token 鉴权保护中"
+                : "loopback 与 local token 已验证 · 端口隔离就绪"
             self.lastError = nil
             self.startUptimeTracker()
         } catch {
@@ -197,7 +203,10 @@ public final class GatewaySupervisor {
         self.port = 58349
         self.endpoint = URL(string: "http://127.0.0.1:58349")
         self.statusText = "运行中"
-        self.statusDetail = "本地 loopback 准备就绪 · 本地 Token 已保护"
+        let settings = GatewaySettingsStorage().load()
+        self.statusDetail = settings.allowLanAccess
+            ? "本地 loopback 准备就绪 · 局域网接入已就绪"
+            : "本地 loopback 准备就绪 · 本地 Token 已保护"
         self.startUptimeTracker()
     }
 
@@ -250,6 +259,10 @@ public final class GatewaySupervisor {
 
     public func restart() {
         stop()
+        if candidateExecutableURL() == nil {
+            start()
+            return
+        }
         // /shutdown is asynchronous for a Gateway owned by an earlier app
         // instance. Waiting briefly before binding prevents a port race that
         // used to keep Pi and Hermes on the stale helper binary.
@@ -422,7 +435,10 @@ public final class GatewaySupervisor {
                     self.isRunning = true
                     self.startTime = Date()
                     self.statusText = "运行中"
-                    self.statusDetail = "已连接现有本地 Gateway · loopback 与 local token 已验证"
+                    let settings = GatewaySettingsStorage().load()
+                    self.statusDetail = settings.allowLanAccess
+                        ? "已连接现有本地 Gateway · 局域网访问已开启 (0.0.0.0)"
+                        : "已连接现有本地 Gateway · loopback 与 local token 已验证"
                     self.lastError = nil
                     self.startUptimeTracker()
                 } else {

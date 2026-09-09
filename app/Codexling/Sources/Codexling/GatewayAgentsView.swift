@@ -5,6 +5,8 @@ import SwiftUI
 struct GatewayAgentsView: View {
     @Bindable var store: GatewayStore
     var supervisor: GatewaySupervisor = .shared
+    var settingsStore: MultiAgentSettingsStore? = nil
+    var onToast: GatewayToastHandler? = nil
 
     @State private var agentConfigMessage: String? = nil
     @State private var agentConfigSucceeded = true
@@ -13,6 +15,8 @@ struct GatewayAgentsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            headerBar
+
             if let msg = agentConfigMessage {
                 agentAlertBanner(msg: msg)
             }
@@ -42,6 +46,49 @@ struct GatewayAgentsView: View {
         .task {
             await store.refreshAgentIntegrationStatus()
         }
+    }
+
+    private var headerBar: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("本地 Agent 接入与快速检测")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+                Text("一键将 Codexling 作为模型 Provider 接入本地 Coding Agent。安装新 CLI 后可点击右侧重新检测即时全局同步。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+            }
+
+            Spacer()
+
+            Button {
+                guard !store.isRefreshingAgentIntegrationStatus else { return }
+                Task {
+                    await store.refreshAgentIntegrationStatus()
+                    settingsStore?.refresh()
+                    onToast?("已刷新本地 Agent 检测状态", "arrow.clockwise", true)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    if store.isRefreshingAgentIntegrationStatus {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    Text(store.isRefreshingAgentIntegrationStatus ? "正在检测…" : "重新检测")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.codexMuted.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(Color.codexInk)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.isRefreshingAgentIntegrationStatus)
+        }
+        .padding(.horizontal, 2)
     }
 
     private func agentAlertBanner(msg: String) -> some View {
@@ -76,6 +123,7 @@ private struct HermesAgentCardView: View {
     @Binding var unconfiguringAgent: GatewayAgentConnectTarget?
     @Binding var agentConfigMessage: String?
     @Binding var agentConfigSucceeded: Bool
+    @State private var isBypassOperating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -103,6 +151,19 @@ private struct HermesAgentCardView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.codexInk)
                 VStack(alignment: .leading, spacing: 4) {
+                    if let path = store.hermesExecutablePath {
+                        HStack {
+                            Text("CLI 路径:")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Color.codexMuted)
+                                .frame(width: 80, alignment: .leading)
+                            Text(path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     HStack {
                         Text("Provider:")
                             .font(.system(size: 10.5, design: .monospaced))
@@ -126,6 +187,103 @@ private struct HermesAgentCardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.codexBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            CodexDivider(.horizontal)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center) {
+                    HStack(spacing: 6) {
+                        Text("局域网直连白名单")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.codexInk)
+
+                        if store.hermesLanBypassConfigured {
+                            Text("已开启 NO_PROXY")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.green.opacity(0.12), in: Capsule())
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("未配置")
+                                .font(.system(size: 9.5))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.codexMuted.opacity(0.12), in: Capsule())
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+
+                    Spacer()
+
+                    if store.hermesLanBypassConfigured {
+                        Button {
+                            guard !isBypassOperating else { return }
+                            isBypassOperating = true
+                            Task {
+                                let res = await store.unconfigureHermesLanBypass()
+                                agentConfigSucceeded = res.success
+                                agentConfigMessage = res.message
+                                isBypassOperating = false
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isBypassOperating {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 9.5))
+                                }
+                                Text("一键删除白名单")
+                            }
+                            .font(.system(size: 10.5, weight: .medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .foregroundStyle(Color.red.opacity(0.9))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(Color.red.opacity(0.2), lineWidth: 0.8)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isBypassOperating)
+                    } else {
+                        Button {
+                            guard !isBypassOperating else { return }
+                            isBypassOperating = true
+                            Task {
+                                let res = await store.configureHermesLanBypass()
+                                agentConfigSucceeded = res.success
+                                agentConfigMessage = res.message
+                                isBypassOperating = false
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isBypassOperating {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "shield.checkered")
+                                        .font(.system(size: 9.5))
+                                }
+                                Text("一键配置直连白名单")
+                            }
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .foregroundStyle(Color.codexOnPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isBypassOperating)
+                    }
+                }
+
+                Text("自动写入 ~/.hermes/.env（NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8），防止 Clash 等网络代理拦截局域网访问导致超时。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineSpacing(2)
             }
         }
         .padding(14)
@@ -161,7 +319,7 @@ private struct HermesAgentCardView: View {
                 .background(Color.blue.opacity(0.12), in: Capsule())
                 .foregroundStyle(.blue)
         } else {
-            Text("未检测到 ~/.hermes")
+            Text("未检测到 CLI")
                 .font(.system(size: 9.5))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1.5)
@@ -276,6 +434,23 @@ private struct PiAgentCardView: View {
             CodexDivider(.horizontal)
 
             VStack(alignment: .leading, spacing: 6) {
+                if let path = store.piExecutablePath {
+                    HStack {
+                        Text("CLI 路径:")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                            .frame(width: 80, alignment: .leading)
+                        Text(path)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(Color.codexInk)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.codexBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
                 Text("模型注册: ~/.pi/agent/models.json · 默认模型: ~/.pi/agent/settings.json")
                     .font(.system(size: 10.5))
                     .foregroundStyle(Color.codexMuted)
@@ -314,7 +489,7 @@ private struct PiAgentCardView: View {
                 .background(Color.blue.opacity(0.12), in: Capsule())
                 .foregroundStyle(.blue)
         } else {
-            Text("未检测到 ~/.pi")
+            Text("未检测到 CLI")
                 .font(.system(size: 9.5))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1.5)

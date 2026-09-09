@@ -141,6 +141,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
     public var autoCheckOnStartupWithHistory: Bool
     public var healthCheckInterval: String
     public var automationTasks: [GatewayAutomationTask]
+    public var allowLanAccess: Bool
 
     public enum CodingKeys: String, CodingKey {
         case schemaVersion = "$schemaVersion"
@@ -154,6 +155,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         case autoCheckOnStartupWithHistory
         case healthCheckInterval
         case automationTasks
+        case allowLanAccess
     }
 
     public init(
@@ -167,7 +169,8 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         maxFailoverRetries: Int = 2,
         autoCheckOnStartupWithHistory: Bool = false,
         healthCheckInterval: String = HealthCheckInterval.oneHour.rawValue,
-        automationTasks: [GatewayAutomationTask] = []
+        automationTasks: [GatewayAutomationTask] = [],
+        allowLanAccess: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.modelConsolidationEnabled = modelConsolidationEnabled
@@ -180,6 +183,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         self.autoCheckOnStartupWithHistory = autoCheckOnStartupWithHistory
         self.healthCheckInterval = healthCheckInterval
         self.automationTasks = automationTasks
+        self.allowLanAccess = allowLanAccess
     }
 
     public init(from decoder: Decoder) throws {
@@ -195,6 +199,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         autoCheckOnStartupWithHistory = try container.decodeIfPresent(Bool.self, forKey: .autoCheckOnStartupWithHistory) ?? false
         healthCheckInterval = try container.decodeIfPresent(String.self, forKey: .healthCheckInterval) ?? HealthCheckInterval.oneHour.rawValue
         automationTasks = try container.decodeIfPresent([GatewayAutomationTask].self, forKey: .automationTasks) ?? []
+        allowLanAccess = try container.decodeIfPresent(Bool.self, forKey: .allowLanAccess) ?? false
     }
 
     public func isProviderConsolidated(_ providerID: String) -> Bool {

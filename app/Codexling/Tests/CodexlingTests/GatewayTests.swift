@@ -392,6 +392,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(defaultSettings.allowFailover)
         XCTAssertEqual(defaultSettings.cooldownSeconds, 300)
         XCTAssertEqual(defaultSettings.maxFailoverRetries, 2)
+        XCTAssertFalse(defaultSettings.allowLanAccess)
         XCTAssertEqual(defaultSettings.routingMode(for: "google"), .smooth)
 
         // Save customized settings
@@ -401,7 +402,8 @@ final class GatewayTests: XCTestCase {
             cooldownSeconds: 600,
             maxFailoverRetries: 3,
             autoCheckOnStartupWithHistory: true,
-            healthCheckInterval: HealthCheckInterval.midnight.rawValue
+            healthCheckInterval: HealthCheckInterval.midnight.rawValue,
+            allowLanAccess: true
         )
         custom.setRoutingMode(for: "google", mode: ProviderRoutingMode.smooth)
         custom.setRoutingMode(for: "openai", mode: ProviderRoutingMode.pinnedAccount, pinnedAccountId: "pinned-uuid-1")
@@ -417,10 +419,44 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(loaded, custom)
         XCTAssertTrue(loaded.autoCheckOnStartupWithHistory)
         XCTAssertEqual(loaded.healthCheckInterval, HealthCheckInterval.midnight.rawValue)
+        XCTAssertTrue(loaded.allowLanAccess)
         XCTAssertEqual(loaded.routingMode(for: "google"), ProviderRoutingMode.smooth)
         XCTAssertEqual(loaded.routingMode(for: "openai"), ProviderRoutingMode.pinnedAccount)
         XCTAssertEqual(loaded.pinnedAccountId(for: "openai"), "pinned-uuid-1")
         XCTAssertNil(loaded.pinnedAccountId(for: "google"))
+    }
+
+    func testGatewayStoreAllowLanAccessTogglePersists() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-lan-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        XCTAssertFalse(store.allowLanAccess)
+        store.allowLanAccess = true
+        XCTAssertTrue(store.allowLanAccess)
+
+        // Verify storage on disk was updated
+        let reloaded = storage.load()
+        XCTAssertTrue(reloaded.allowLanAccess)
+    }
+
+    func testGatewayNetworkInfoAndLanURLs() {
+        let ip = GatewayNetworkInfo.currentLANIPv4()
+        let store = GatewayStore.shared
+        if let ip {
+            XCTAssertFalse(ip.isEmpty)
+            XCTAssertFalse(ip.hasPrefix("127."))
+            XCTAssertEqual(store.lanOpenAIBaseURL, "http://\(ip):\(GatewaySupervisor.shared.port)/v1")
+            XCTAssertEqual(store.lanAnthropicBaseURL, "http://\(ip):\(GatewaySupervisor.shared.port)")
+        } else {
+            XCTAssertNil(store.lanOpenAIBaseURL)
+            XCTAssertNil(store.lanAnthropicBaseURL)
+        }
     }
 
     func testGatewayStoreModelConsolidationTogglePersists() throws {
@@ -538,7 +574,7 @@ final class GatewayTests: XCTestCase {
 
         let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
         let storage = GatewaySettingsStorage(fileURL: settingsURL)
-        var store = GatewayStore(settingsStorage: storage)
+        let store = GatewayStore(settingsStorage: storage)
 
         // Initially no providers are consolidated
         XCTAssertFalse(store.isProviderConsolidated("openai"))
@@ -743,10 +779,104 @@ final class GatewayTests: XCTestCase {
         let finalReload = storage.load()
         XCTAssertTrue(finalReload.automationTasks.isEmpty)
     }
+
+    func testDynamicHermesAndPiExecutableResolution() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dynamic-agent-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Initialize runner BEFORE binary exists
+        let runner = HermesCLICommandRunner(homeDirectory: tempDir, environment: [:], allowShellFallback: false)
+        XCTAssertNil(runner.executableURL)
+        XCTAssertFalse(runner.isAvailable)
+
+        let piRunner = PiCLICommandRunner(homeDirectory: tempDir, environment: [:], allowShellFallback: false)
+        XCTAssertNil(piRunner.executableURL)
+        XCTAssertFalse(piRunner.isAvailable)
+
+        // Simulate user installing hermes and pi CLI in ~/.local/bin
+        let localBin = tempDir.appendingPathComponent(".local/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+
+        let hermesBin = localBin.appendingPathComponent("hermes")
+        try "#!/bin/sh\necho 0.1.0\n".write(to: hermesBin, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hermesBin.path)
+
+        let piBin = localBin.appendingPathComponent("pi")
+        try "#!/bin/sh\necho 0.1.0\n".write(to: piBin, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: piBin.path)
+
+        // Runner should dynamically detect new executables without being recreated
+        XCTAssertEqual(runner.executableURL?.standardized.path, hermesBin.standardized.path)
+        XCTAssertTrue(runner.isAvailable)
+
+        XCTAssertEqual(piRunner.executableURL?.standardized.path, piBin.standardized.path)
+        XCTAssertTrue(piRunner.isAvailable)
+    }
+
+    func testAgentIntegrationStatusNotificationPostedAndReceived() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notification-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let expectation = expectation(description: "agentIntegrationStatusDidChange notification received")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .agentIntegrationStatusDidChange,
+            object: nil,
+            queue: .main
+        ) { _ in
+            expectation.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        await store.refreshAgentIntegrationStatus(notifyPeers: true)
+
+        await fulfillment(of: [expectation], timeout: 2.0)
+    }
+
+    func testHermesLanBypassConfigureAndUnconfigure() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hermes-bypass-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let configURL = tempDir.appendingPathComponent(".hermes/config.yaml")
+        let envURL = tempDir.appendingPathComponent(".hermes/.env")
+        let runner = TestHermesCommandRunner()
+        let configurator = HermesGatewayConfigurator(runner: runner, configURL: configURL, envURL: envURL)
+
+        XCTAssertFalse(configurator.isLanBypassConfigured)
+
+        // 1. Configure bypass
+        try configurator.configureLanBypass()
+        XCTAssertTrue(configurator.isLanBypassConfigured)
+        let writtenContent = try String(contentsOf: envURL, encoding: .utf8)
+        XCTAssertTrue(writtenContent.contains("# 局域网内不走代理"))
+        XCTAssertTrue(writtenContent.contains("NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8"))
+        XCTAssertTrue(writtenContent.contains("no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8"))
+
+        // Idempotent configure
+        try configurator.configureLanBypass()
+        XCTAssertTrue(configurator.isLanBypassConfigured)
+
+        // 2. Unconfigure bypass
+        try configurator.unconfigureLanBypass()
+        XCTAssertFalse(configurator.isLanBypassConfigured)
+        let unconfiguredContent = try String(contentsOf: envURL, encoding: .utf8)
+        XCTAssertFalse(unconfiguredContent.contains("NO_PROXY"))
+        XCTAssertFalse(unconfiguredContent.contains("192.168.0.0/16"))
+    }
 }
 
 private final class TestHermesCommandRunner: HermesCommandRunning, @unchecked Sendable {
     let isAvailable = true
+    var executableURL: URL? { URL(fileURLWithPath: "/usr/local/bin/hermes") }
     private let forcedReadback: [String: String]
     private(set) var values: [String: String] = [:]
     private(set) var commands: [[String]] = []
@@ -779,6 +909,7 @@ private final class TestHermesCommandRunner: HermesCommandRunning, @unchecked Se
 
 private final class TestPiCommandRunner: PiCommandRunning, @unchecked Sendable {
     let isAvailable = true
+    var executableURL: URL? { URL(fileURLWithPath: "/usr/local/bin/pi") }
     private let discoveredModel: String
     private(set) var commands: [[String]] = []
 
