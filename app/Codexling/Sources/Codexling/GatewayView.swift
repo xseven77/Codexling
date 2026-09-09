@@ -248,7 +248,8 @@ public struct GatewayView: View {
 
                         if (tab == .overview && (store.isTelemetryLoading || store.isSummaryLoading)) ||
                            (tab == .analytics && store.isAnalyticsLoading) ||
-                           (tab == .requests && (store.isRequestsLoading || store.isTelemetryLoading)) {
+                           (tab == .requests && (store.isRequestsLoading || store.isTelemetryLoading)) ||
+                           ((tab == .automation || tab == .connect) && store.isModelCheckRunning) {
                             ProgressView()
                                 .controlSize(.mini)
                         }
@@ -272,12 +273,19 @@ public struct GatewayView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(supervisor.isRunning ? Color.green : Color.red)
+                        .fill(supervisor.isRunning ? (store.isModelCheckRunning ? Color.blue : Color.green) : Color.red)
                         .frame(width: 7, height: 7)
-                    Text(supervisor.isRunning ? "网关运行中" : "网关已停止")
+                    Text(supervisor.isRunning ? (store.isModelCheckRunning ? "巡检执行中" : "网关运行中") : "网关已停止")
                         .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(supervisor.isRunning ? Color.green : Color.red)
+                        .foregroundStyle(supervisor.isRunning ? (store.isModelCheckRunning ? Color.blue : Color.green) : Color.red)
                         .lineLimit(1)
+
+                    if supervisor.isRunning && store.isModelCheckRunning {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.65)
+                    }
                 }
                 Text(verbatim: "端口: \(supervisor.port)")
                     .font(.system(size: 10, design: .monospaced))

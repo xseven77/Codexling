@@ -872,7 +872,7 @@ public final class GatewayStore {
         req.timeoutInterval = 3
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, _) = try await URLSession.loopbackDirect.data(for: req)
             let decoder = JSONDecoder()
             let summary = try decoder.decode(GatewayTelemetrySummary.self, from: data)
             self.telemetrySummary = summary
@@ -925,7 +925,7 @@ public final class GatewayStore {
         req.timeoutInterval = 3
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, _) = try await URLSession.loopbackDirect.data(for: req)
             let decoder = JSONDecoder()
             let resp = try decoder.decode(GatewayTimeseriesResponse.self, from: data)
             self.timeseriesBuckets = resp.buckets
@@ -949,7 +949,7 @@ public final class GatewayStore {
         req.timeoutInterval = 3
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, _) = try await URLSession.loopbackDirect.data(for: req)
             let decoder = JSONDecoder()
             let resp = try decoder.decode(GatewayBreakdownResponse.self, from: data)
             self.breakdownItems = resp.items
@@ -978,7 +978,7 @@ public final class GatewayStore {
         req.timeoutInterval = 3
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, _) = try await URLSession.loopbackDirect.data(for: req)
             let decoder = JSONDecoder()
             let resp = try decoder.decode(GatewayRequestsResponse.self, from: data)
             self.detailedRequestsList = resp.items
@@ -1048,7 +1048,7 @@ public final class GatewayStore {
         defer { isModelHealthLoading = false }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await URLSession.loopbackDirect.data(for: req)
             if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                 let decoder = JSONDecoder()
                 let resp = try decoder.decode(GatewayModelHealthResponse.self, from: data)
@@ -1081,7 +1081,7 @@ public final class GatewayStore {
         req.timeoutInterval = 3
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await URLSession.loopbackDirect.data(for: req)
             if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                 let decoder = JSONDecoder()
                 let status = try decoder.decode(GatewayModelCheckJobStatus.self, from: data)
@@ -1095,6 +1095,17 @@ public final class GatewayStore {
                     self.checkingAccountScopes.removeAll()
                     if wasRunning {
                         self.emitModelCheckFinishMessage(status)
+                        // 若有自动化任务之前被标记为 running，更新其最终运行状态
+                        for idx in self.gatewaySettings.automationTasks.indices {
+                            if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
+                                if let summary = status.lastSummary {
+                                    self.gatewaySettings.automationTasks[idx].lastRunStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
+                                    self.gatewaySettings.automationTasks[idx].lastRunSummary = "可用 \(summary.available) · 异常 \(summary.error)"
+                                } else {
+                                    self.gatewaySettings.automationTasks[idx].lastRunStatus = "success"
+                                }
+                            }
+                        }
                         // 巡检刚结束，立即刷新全量模型健康状态
                         await self.refreshModelHealth()
                     }
@@ -1123,6 +1134,17 @@ public final class GatewayStore {
             self.checkingAccountScopes.removeAll()
             if wasRunning {
                 self.emitModelCheckFinishMessage(status)
+                // 若有自动化任务之前被标记为 running，更新其最终运行状态
+                for idx in self.gatewaySettings.automationTasks.indices {
+                    if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
+                        if let summary = status.lastSummary {
+                            self.gatewaySettings.automationTasks[idx].lastRunStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
+                            self.gatewaySettings.automationTasks[idx].lastRunSummary = "可用 \(summary.available) · 异常 \(summary.error)"
+                        } else {
+                            self.gatewaySettings.automationTasks[idx].lastRunStatus = "success"
+                        }
+                    }
+                }
                 Task { [weak self] in
                     await self?.refreshModelHealth()
                 }
@@ -1236,7 +1258,7 @@ public final class GatewayStore {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await URLSession.loopbackDirect.data(for: req)
             if let http = response as? HTTPURLResponse {
                 if http.statusCode == 202 {
                     await self.pollModelCheckStatus()
@@ -1283,7 +1305,7 @@ public final class GatewayStore {
         defer { self.isCancellingModelCheck = false }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await URLSession.loopbackDirect.data(for: req)
             if let http = response as? HTTPURLResponse {
                 if http.statusCode == 200 {
                     let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -2267,7 +2289,16 @@ public final class GatewayStore {
     }
 
     nonisolated public static func normalizedModelLookupKey(_ modelName: String) -> String {
-        let base = unscopedModelName(modelName).lowercased()
+        var base = unscopedModelName(modelName).lowercased()
+        if let atIndex = base.firstIndex(of: "@") {
+            base = String(base[..<atIndex])
+        }
+        if let slashIndex = base.lastIndex(of: "/") {
+            base = String(base[base.index(after: slashIndex)...])
+        }
+        if base.hasSuffix("-wm") {
+            base = String(base.dropLast(3))
+        }
         return base
             .replacingOccurrences(of: "-tiered", with: "")
             .replacingOccurrences(of: " ", with: "-")
@@ -3698,6 +3729,67 @@ public final class GatewayStore {
            !piModels.isEmpty,
            agentCatalogDefaults.string(forKey: piCatalogFingerprintKey) != catalogFingerprint(piModels) {
             _ = await configurePiAgent()
+        }
+    }
+
+    /// Rotates the Gateway authentication token to a new cryptographically secure random value.
+    /// Hot-swaps the token on the running Gateway server (with a 60s grace period for in-flight requests),
+    /// persists to settings, and smoothly propagates the new key to configured agents (Hermes, Pi).
+    public func rotateAuthToken() async -> (success: Bool, message: String) {
+        let newToken = GatewaySettings.generateSecureToken()
+        let oldToken = localToken
+
+        // 1. Hot-rotate Gateway server token if running
+        let supervisor = GatewaySupervisor.shared
+        if supervisor.isRunning, let endpoint = supervisor.endpoint {
+            var req = URLRequest(url: endpoint.appendingPathComponent("internal/token/rotate"))
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(oldToken)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let payload = ["new_token": newToken]
+            if let body = try? JSONSerialization.data(withJSONObject: payload) {
+                req.httpBody = body
+                _ = try? await URLSession.loopbackDirect.data(for: req)
+            }
+        }
+
+        // 2. Persist to gateway settings and update supervisor
+        gatewaySettings.authToken = newToken
+        supervisor.updateLocalToken(newToken)
+
+        // 3. Smoothly update configured agents
+        var syncedAgents: [String] = []
+        var failedAgents: [String] = []
+
+        if hermesConfigurator.isConfigured {
+            do {
+                try hermesConfigurator.updateApiKey(newToken)
+                syncedAgents.append("Hermes")
+            } catch {
+                failedAgents.append("Hermes (\(error.localizedDescription))")
+            }
+        }
+
+        if piConfigurator.isConfigured {
+            do {
+                try piConfigurator.updateApiKey(newToken)
+                syncedAgents.append("Pi")
+            } catch {
+                failedAgents.append("Pi (\(error.localizedDescription))")
+            }
+        }
+
+        NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
+
+        if failedAgents.isEmpty {
+            if syncedAgents.isEmpty {
+                return (true, "Token 已更新为随机高强度码")
+            } else {
+                return (true, "Token 已更新 · 已平滑同步至 \(syncedAgents.joined(separator: "、"))")
+            }
+        } else {
+            let syncMsg = syncedAgents.isEmpty ? "" : "已同步 \(syncedAgents.joined(separator: "、"))，"
+            return (false, "Token 已更新但 \(syncMsg)部分 Agent 同步失败：\(failedAgents.joined(separator: "、"))")
         }
     }
 }

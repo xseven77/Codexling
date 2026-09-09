@@ -13,6 +13,7 @@ fn main() -> std::io::Result<()> {
     let mut token = "codexling-local-token".to_string();
     let mut auto_check = false;
     let mut host_explicitly_set = false;
+    let mut token_explicitly_set = false;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -28,6 +29,7 @@ fn main() -> std::io::Result<()> {
             i += 2;
         } else if args[i] == "--token" && i + 1 < args.len() {
             token = args[i + 1].clone();
+            token_explicitly_set = true;
             i += 2;
         } else if args[i] == "--auto-check" {
             auto_check = true;
@@ -37,11 +39,17 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    if !host_explicitly_set {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
-        let settings = GatewaySettings::load_for_home(&home);
-        if settings.allow_lan_access {
-            host = "0.0.0.0".to_string();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/qiizo".into());
+    let settings = GatewaySettings::load_for_home(&home);
+    if !host_explicitly_set && settings.allow_lan_access {
+        host = "0.0.0.0".to_string();
+    }
+    if !token_explicitly_set {
+        if let Some(ref auth_token) = settings.auth_token {
+            let trimmed = auth_token.trim();
+            if !trimmed.is_empty() {
+                token = trimmed.to_string();
+            }
         }
     }
 

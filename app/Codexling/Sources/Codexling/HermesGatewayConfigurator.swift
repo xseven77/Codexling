@@ -289,6 +289,15 @@ no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
         }
     }
 
+    func updateApiKey(_ newApiKey: String) throws {
+        guard runner.isAvailable else {
+            throw HermesGatewayConfigurationError.executableNotFound
+        }
+        guard isConfigured else { return }
+        try set("providers.codexling.api_key", to: newApiKey)
+        try verify("providers.codexling.api_key", equals: newApiKey)
+    }
+
     private func set(_ key: String, to value: String) throws {
         let result = try runner.run(arguments: ["config", "set", key, value])
         guard result.terminationStatus == 0 else {

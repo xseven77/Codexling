@@ -14,6 +14,8 @@ struct GatewayConnectView: View {
     @State private var copiedLanOpenAI = false
     @State private var copiedLanAnthropic = false
     @State private var syncingConnectionIDs: Set<ConnectionID> = []
+    @State private var isRotatingToken = false
+    @State private var showRotateTokenConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -62,6 +64,21 @@ struct GatewayConnectView: View {
             onToast(message, store.modelCheckFinishSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle", store.modelCheckFinishSuccess)
             store.modelCheckFinishMessage = nil
             store.modelCheckFinishToken = nil
+        }
+        .alert("确认重新生成 Gateway 访问 Token？", isPresented: $showRotateTokenConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("重新生成并同步", role: .destructive) {
+                isRotatingToken = true
+                Task {
+                    let result = await store.rotateAuthToken()
+                    await MainActor.run {
+                        isRotatingToken = false
+                        onToast(result.message, result.success ? "checkmark.circle.fill" : "exclamationmark.triangle", result.success)
+                    }
+                }
+            }
+        } message: {
+            Text("更新后将生成高强度随机复杂码，有效防止局域网滥用。已一键接入的本地 Agent（Hermes、Pi 等）将自动平滑同步更新新凭证。")
         }
     }
 
@@ -282,15 +299,22 @@ struct GatewayConnectView: View {
                 connectionTile(
                     title: "本地授权 API Key",
                     value: store.localToken,
-                    isCopied: copiedKey
-                ) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(store.localToken, forType: .string)
-                    copiedKey = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        copiedKey = false
-                    }
-                }
+                    isCopied: copiedKey,
+                    copyAction: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(store.localToken, forType: .string)
+                        copiedKey = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            copiedKey = false
+                        }
+                    },
+                    secondaryAction: {
+                        showRotateTokenConfirm = true
+                    },
+                    secondaryIcon: "arrow.triangle.2.circlepath",
+                    secondaryHelp: "重新生成高强度随机 Token 并自动同步已接入 Agent",
+                    isOperating: isRotatingToken
+                )
             }
 
             // 局域网访问开关与状态
@@ -433,7 +457,16 @@ struct GatewayConnectView: View {
         )
     }
 
-    private func connectionTile(title: String, value: String, isCopied: Bool, copyAction: @escaping () -> Void) -> some View {
+    private func connectionTile(
+        title: String,
+        value: String,
+        isCopied: Bool,
+        copyAction: @escaping () -> Void,
+        secondaryAction: (() -> Void)? = nil,
+        secondaryIcon: String? = nil,
+        secondaryHelp: String? = nil,
+        isOperating: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 9.5, weight: .medium))
@@ -446,8 +479,26 @@ struct GatewayConnectView: View {
                     .foregroundStyle(Color.codexInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(value)
 
                 Spacer(minLength: 2)
+
+                if let secondaryAction, let secondaryIcon {
+                    Button(action: secondaryAction) {
+                        if isOperating {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: secondaryIcon)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isOperating)
+                    .help(secondaryHelp ?? "")
+                }
 
                 Button(action: copyAction) {
                     Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
@@ -455,6 +506,7 @@ struct GatewayConnectView: View {
                         .foregroundStyle(isCopied ? Color.green : Color.codexMuted)
                 }
                 .buttonStyle(.plain)
+                .help("复制到剪贴板")
             }
         }
         .padding(8)
@@ -635,9 +687,12 @@ struct GatewayProviderSectionCard: View {
         for item in health.models {
             dict[item.id] = item
             let normKey = GatewayStore.normalizedModelLookupKey(item.id)
-            if dict[normKey] == nil {
-                dict[normKey] = item
-            }
+            dict[normKey] = item
+            let base = GatewayStore.unscopedModelName(item.id)
+            dict[base] = item
+            let stripped = GatewayStore.normalizeCodexModelID(base)
+            dict[stripped] = item
+            dict[GatewayStore.normalizedModelLookupKey(stripped)] = item
         }
         return dict
     }
@@ -685,7 +740,9 @@ struct GatewayProviderSectionCard: View {
             for item in acc.models {
                 let base = GatewayStore.unscopedModelName(item.id)
                 let norm = GatewayStore.normalizedModelLookupKey(item.id)
-                for key in [base, norm, item.id] {
+                let stripped = GatewayStore.normalizeCodexModelID(base)
+                let normStripped = GatewayStore.normalizedModelLookupKey(stripped)
+                for key in [base, norm, item.id, stripped, normStripped] {
                     if let existing = dict[key] {
                         // 若任一账号可用，则聚合判定为可用
                         if existing.status != "available" && item.status == "available" {
@@ -1990,7 +2047,20 @@ private struct GatewayAccountModelsDrawer: View {
         let lastPart = model.id.components(separatedBy: "/").last ?? ""
         let normLastPart = GatewayStore.normalizedModelLookupKey(lastPart)
 
-        let candidates = [base, normBase, model.modelName, normModelName, model.id, normId, lastPart, normLastPart]
+        let candidates = [
+            base,
+            normBase,
+            model.modelName,
+            normModelName,
+            model.id,
+            normId,
+            lastPart,
+            normLastPart,
+            "\(base)-wm",
+            "\(normBase)-wm",
+            "\(lastPart)-wm",
+            "\(normLastPart)-wm"
+        ]
         for candidate in candidates where !candidate.isEmpty {
             if let h = healthModels[candidate] { return h }
         }
@@ -2192,7 +2262,7 @@ private struct GatewayAccountModelsDrawer: View {
     }
 }
 
-private struct ModelCheckElapsedTimeView: View {
+struct ModelCheckElapsedTimeView: View {
     let startedAtEpoch: Int64
 
     var body: some View {

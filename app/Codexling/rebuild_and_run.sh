@@ -13,6 +13,7 @@ fi
 "${ROOT_DIR}/package_local.sh"
 
 pkill -x Codexling 2>/dev/null || true
+pkill -x CodexlingGateway 2>/dev/null || true
 sleep 0.5
 open "${APP_PATH}"
 sleep 0.6

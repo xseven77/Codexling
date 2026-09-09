@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        GatewaySupervisor.shared.stop()
         multiAgentSettingsStore.stopCodexAppServers()
         agentEventSocketService.stop()
         activityStore.stop()

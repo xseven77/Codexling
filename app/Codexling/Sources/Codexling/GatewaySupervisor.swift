@@ -2,6 +2,18 @@ import AppKit
 import Foundation
 import Observation
 
+extension URLSession {
+    /// A URLSession configured to bypass all system proxies (e.g. Clash, Surge)
+    /// for robust communication with local loopback endpoints like 127.0.0.1.
+    public static let loopbackDirect: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [:]
+        config.timeoutIntervalForRequest = 5
+        return URLSession(configuration: config)
+    }()
+}
+
+
 /// Supervisor managing the background Local LLM Gateway child process and health checks.
 /// Persists for the lifetime of the application, independent of the Gateway UI window.
 @MainActor
@@ -12,7 +24,12 @@ public final class GatewaySupervisor {
     public private(set) var isRunning: Bool = false
     public private(set) var endpoint: URL? = URL(string: "http://127.0.0.1:58349")
     public private(set) var port: Int = 58349
-    public private(set) var localToken: String = "codexling-local-token"
+    public private(set) var localToken: String
+
+    public func updateLocalToken(_ newToken: String) {
+        self.localToken = newToken
+    }
+
     public private(set) var activeRequests: Int = 0
     public private(set) var todayRequests: Int = 0
     public private(set) var statusText: String = "运行中"
@@ -35,9 +52,12 @@ public final class GatewaySupervisor {
     private var hasAttemptedStaleGatewayRecovery = false
     private var isRecoveryScheduled = false
     private var consecutiveHealthFailures = 0
+    private var staleRecoveryAttempts = 0
 
     public init() {
         self.isAutoStartEnabled = UserDefaults.standard.object(forKey: "codexling.gateway.autostart") as? Bool ?? true
+        let settings = GatewaySettingsStorage().load()
+        self.localToken = settings.authToken
         start()
     }
 
@@ -112,7 +132,9 @@ public final class GatewaySupervisor {
             proc.executableURL = executable
             let settings = GatewaySettingsStorage().load()
             let bindHost = settings.allowLanAccess ? "0.0.0.0" : "127.0.0.1"
-            proc.arguments = ["--host", bindHost, "--port", "58349", "--token", localToken, "--auto-check"]
+            let tokenToUse = localToken.isEmpty ? settings.authToken : localToken
+            self.localToken = tokenToUse
+            proc.arguments = ["--host", bindHost, "--port", "58349", "--token", tokenToUse, "--auto-check"]
             var environment = ProcessInfo.processInfo.environment
             let geminiOAuth = GeminiOAuthConfiguration.load()
             if geminiOAuth.isConfigured {
@@ -168,6 +190,7 @@ public final class GatewaySupervisor {
             self.endpoint = URL(string: "http://\(connectHost):\(port)")
             self.hasAttemptedStaleGatewayRecovery = false
             self.consecutiveHealthFailures = 0
+            self.staleRecoveryAttempts = 0
 
             Task { @MainActor in
                 await GatewayStore.shared.refreshModelHealth()
@@ -222,6 +245,7 @@ public final class GatewaySupervisor {
         // The helper may have been launched by an earlier app process, so request
         // shutdown even when this supervisor does not own a Process instance.
         requestGatewayShutdown()
+        requestGatewayShutdown(token: "codexling-local-token")
 
         if let proc = process, proc.isRunning {
             proc.terminate()
@@ -238,15 +262,16 @@ public final class GatewaySupervisor {
         self.activeRequests = 0
         self.uptimeText = "--:--:--"
         self.consecutiveHealthFailures = 0
+        self.staleRecoveryAttempts = 0
     }
 
-    private func requestGatewayShutdown() {
+    private func requestGatewayShutdown(token: String? = nil) {
         guard let endpoint else { return }
         var request = URLRequest(url: endpoint.appendingPathComponent("shutdown"))
         request.httpMethod = "POST"
-        request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token ?? localToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 1
-        URLSession.shared.dataTask(with: request).resume()
+        URLSession.loopbackDirect.dataTask(with: request).resume()
     }
 
     public func toggle() {
@@ -300,7 +325,7 @@ public final class GatewaySupervisor {
         var request = URLRequest(url: endpoint.appendingPathComponent("status"))
         request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 1
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        URLSession.loopbackDirect.dataTask(with: request) { [weak self] data, response, error in
             guard let self,
                   let data,
                   let response = response as? HTTPURLResponse,
@@ -424,7 +449,7 @@ public final class GatewaySupervisor {
         var request = URLRequest(url: endpoint.appendingPathComponent("status"))
         request.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 1
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+        URLSession.loopbackDirect.dataTask(with: request) { [weak self] data, response, _ in
             let isHealthy = data != nil
                 && (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } == true
             DispatchQueue.main.async {
@@ -432,6 +457,7 @@ public final class GatewaySupervisor {
                 if isHealthy {
                     self.hasAttemptedStaleGatewayRecovery = false
                     self.consecutiveHealthFailures = 0
+                    self.staleRecoveryAttempts = 0
                     self.isRunning = true
                     self.startTime = Date()
                     self.statusText = "运行中"
@@ -442,14 +468,33 @@ public final class GatewaySupervisor {
                     self.lastError = nil
                     self.startUptimeTracker()
                 } else {
-                    self.statusText = "正在恢复 Gateway"
-                    self.statusDetail = "Gateway 尚未取得本地端口；将在端口释放后自动重试。"
-                    self.lastError = "Gateway 未返回启动握手。正在自动恢复。"
-                    Self.appendGatewayDiagnostic(self.lastError ?? "Gateway 未返回启动握手。")
-                    self.scheduleGatewayRecovery()
+                    self.staleRecoveryAttempts += 1
+                    if self.staleRecoveryAttempts <= 2 {
+                        Self.appendGatewayDiagnostic("Gateway 端口占用且无法接管，尝试清理残留孤儿 Gateway 进程 (重试第 \(self.staleRecoveryAttempts) 次)")
+                        self.requestGatewayShutdown(token: self.localToken)
+                        self.requestGatewayShutdown(token: "codexling-local-token")
+                        self.terminateStaleGatewayProcesses()
+                        self.statusText = "正在恢复 Gateway"
+                        self.statusDetail = "正在释放端口并重新启动 Gateway..."
+                        self.lastError = "Gateway 端口占用，正在自动清理并恢复。"
+                        self.scheduleGatewayRecovery()
+                    } else {
+                        self.statusText = "端口冲突"
+                        self.statusDetail = "端口 \(self.port) 已被其他进程占用，请检查并释放端口。"
+                        self.lastError = "端口 \(self.port) 占用冲突，无法启动 Gateway。"
+                        Self.appendGatewayDiagnostic(self.lastError ?? "端口冲突")
+                    }
                 }
             }
         }.resume()
+    }
+
+    private func terminateStaleGatewayProcesses() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = ["-9", "-x", "CodexlingGateway"]
+        try? task.run()
+        task.waitUntilExit()
     }
 
     nonisolated private static func appendGatewayDiagnostic(_ message: String) {

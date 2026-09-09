@@ -142,6 +142,18 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
     public var healthCheckInterval: String
     public var automationTasks: [GatewayAutomationTask]
     public var allowLanAccess: Bool
+    public var authToken: String
+
+    public static func generateSecureToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status == errSecSuccess {
+            let hex = bytes.map { String(format: "%02x", $0) }.joined()
+            return "cdx_\(hex)"
+        }
+        let uuidHex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return "cdx_\(uuidHex)"
+    }
 
     public enum CodingKeys: String, CodingKey {
         case schemaVersion = "$schemaVersion"
@@ -156,6 +168,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         case healthCheckInterval
         case automationTasks
         case allowLanAccess
+        case authToken
     }
 
     public init(
@@ -170,7 +183,8 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         autoCheckOnStartupWithHistory: Bool = false,
         healthCheckInterval: String = HealthCheckInterval.oneHour.rawValue,
         automationTasks: [GatewayAutomationTask] = [],
-        allowLanAccess: Bool = false
+        allowLanAccess: Bool = false,
+        authToken: String = Self.generateSecureToken()
     ) {
         self.schemaVersion = schemaVersion
         self.modelConsolidationEnabled = modelConsolidationEnabled
@@ -184,6 +198,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         self.healthCheckInterval = healthCheckInterval
         self.automationTasks = automationTasks
         self.allowLanAccess = allowLanAccess
+        self.authToken = authToken
     }
 
     public init(from decoder: Decoder) throws {
@@ -200,6 +215,13 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         healthCheckInterval = try container.decodeIfPresent(String.self, forKey: .healthCheckInterval) ?? HealthCheckInterval.oneHour.rawValue
         automationTasks = try container.decodeIfPresent([GatewayAutomationTask].self, forKey: .automationTasks) ?? []
         allowLanAccess = try container.decodeIfPresent(Bool.self, forKey: .allowLanAccess) ?? false
+        let decodedToken = try container.decodeIfPresent(String.self, forKey: .authToken)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let decodedToken, !decodedToken.isEmpty, decodedToken != "codexling-local-token" {
+            self.authToken = decodedToken
+        } else {
+            self.authToken = Self.generateSecureToken()
+        }
     }
 
     public func isProviderConsolidated(_ providerID: String) -> Bool {
@@ -315,7 +337,13 @@ public struct GatewaySettingsStorage: @unchecked Sendable {
         let decoder = JSONDecoder()
         guard let data = try? Data(contentsOf: fileURL),
               let settings = try? decoder.decode(GatewaySettings.self, from: data) else {
-            return GatewaySettings()
+            let newSettings = GatewaySettings()
+            try? save(newSettings)
+            return newSettings
+        }
+        if let rawJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (rawJson["authToken"] as? String)?.isEmpty ?? true || (rawJson["authToken"] as? String) == "codexling-local-token" {
+            try? save(settings)
         }
         return settings
     }

@@ -719,6 +719,32 @@ final class GatewayTests: XCTestCase {
         XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.5", providerId: "opencode", connectionID: nil, isConsolidated: true))
         XCTAssertFalse(store.isModelExportable(baseModel: "Grok 4.6", providerId: "opencode", connectionID: nil, isConsolidated: true))
 
+        // Codex -wm normalization tests
+        XCTAssertEqual(GatewayStore.normalizedModelLookupKey("gpt-5.6-sol-wm"), "gpt-5.6-sol")
+        XCTAssertEqual(GatewayStore.normalizedModelLookupKey("openai/gpt-5.6-sol-wm@Seven-X-openai-037708e3"), "gpt-5.6-sol")
+        XCTAssertEqual(GatewayStore.normalizedModelLookupKey("OpenAI · gpt-5.6-sol"), "gpt-5.6-sol")
+
+        let codexHealthy = GatewayModelHealthItem(id: "gpt-5.6-sol-wm", scopedId: "openai/gpt-5.6-sol-wm@Seven-X-openai-037708e3", status: "available", reason: nil, latencyMs: 5500, checkedAt: 12345, retries: 0, exported: true)
+        let codexError = GatewayModelHealthItem(id: "gpt-5.6-terra-wm", scopedId: "openai/gpt-5.6-terra-wm@Seven-X-openai-037708e3", status: "error", reason: "SSE error", latencyMs: 3500, checkedAt: 12345, retries: 1, exported: false)
+        let codexAccountHealth = GatewayAccountHealth(
+            provider: "openai",
+            providerName: "OpenAI",
+            connectionId: "037708E3-A0EF-4B53-9D6C-A79BDA74ACFC",
+            slug: "Seven-X-openai-037708e3",
+            label: "Seven X",
+            checkedAt: 12345,
+            summary: GatewayModelHealthSummary(total: 2, available: 1, unavailable: 0, error: 1),
+            models: [codexHealthy, codexError]
+        )
+        store.modelHealthResponse = GatewayModelHealthResponse(
+            lastFullCheckAt: 12345,
+            summary: GatewayModelHealthSummary(total: 5, available: 2, unavailable: 1, error: 2),
+            accounts: [accountHealth, codexAccountHealth],
+            job: nil
+        )
+        XCTAssertTrue(store.isModelExportable(baseModel: "gpt-5.6-sol", providerId: "openai", connectionID: nil, isConsolidated: true))
+        XCTAssertFalse(store.isModelExportable(baseModel: "gpt-5.6-terra", providerId: "openai", connectionID: nil, isConsolidated: true))
+
         // Persistence test: persist and reload
         let resp = store.modelHealthResponse!
         store.persistModelHealth(resp)
@@ -871,6 +897,99 @@ final class GatewayTests: XCTestCase {
         let unconfiguredContent = try String(contentsOf: envURL, encoding: .utf8)
         XCTAssertFalse(unconfiguredContent.contains("NO_PROXY"))
         XCTAssertFalse(unconfiguredContent.contains("192.168.0.0/16"))
+    }
+
+    func testGatewaySettingsSecureTokenGenerationAndMigration() throws {
+        // 1. Generation format
+        let token1 = GatewaySettings.generateSecureToken()
+        let token2 = GatewaySettings.generateSecureToken()
+        XCTAssertTrue(token1.hasPrefix("cdx_"))
+        XCTAssertEqual(token1.count, 36)
+        XCTAssertNotEqual(token1, token2)
+
+        // 2. Migration from legacy codexling-local-token
+        let legacyJSON = Data(#"{"$schemaVersion": 2, "authToken": "codexling-local-token"}"#.utf8)
+        let decoded = try JSONDecoder().decode(GatewaySettings.self, from: legacyJSON)
+        XCTAssertTrue(decoded.authToken.hasPrefix("cdx_"))
+        XCTAssertNotEqual(decoded.authToken, "codexling-local-token")
+
+        // 3. Preservation of existing cdx_ token
+        let existingJSON = Data(#"{"$schemaVersion": 2, "authToken": "cdx_custom_valid_1234567890abcdef"}"#.utf8)
+        let preserved = try JSONDecoder().decode(GatewaySettings.self, from: existingJSON)
+        XCTAssertEqual(preserved.authToken, "cdx_custom_valid_1234567890abcdef")
+    }
+
+    func testHermesUpdateApiKey() throws {
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hermes-key-\(UUID().uuidString).yaml")
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let runner = TestHermesCommandRunner()
+        let configurator = HermesGatewayConfigurator(runner: runner, configURL: configURL)
+
+        // Configure first
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_initial_token",
+            models: ["deepseek-chat"],
+            defaultModel: "deepseek-chat"
+        )
+        XCTAssertTrue(configurator.isConfigured)
+
+        // Now update API key
+        try configurator.updateApiKey("cdx_new_token_999")
+        XCTAssertEqual(runner.values["providers.codexling.api_key"], "cdx_new_token_999")
+        XCTAssertEqual(runner.values["model.default"], "deepseek-chat") // preserved
+    }
+
+    func testPiUpdateApiKey() throws {
+        let agentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pi-key-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: agentDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: agentDirectory) }
+
+        let runner = TestPiCommandRunner(discoveredModel: "deepseek-chat")
+        let configurator = PiGatewayConfigurator(runner: runner, agentDirectory: agentDirectory)
+
+        // Configure first
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_initial_pi_token",
+            models: ["deepseek-chat"],
+            defaultModel: "deepseek-chat"
+        )
+        XCTAssertTrue(configurator.isConfigured)
+
+        // Now update API key
+        try configurator.updateApiKey("cdx_new_pi_token_888")
+
+        let modelsURL = agentDirectory.appendingPathComponent("models.json")
+        let modelsRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: modelsURL)) as? [String: Any]
+        )
+        let providers = try XCTUnwrap(modelsRoot["providers"] as? [String: Any])
+        let codexling = try XCTUnwrap(providers["codexling"] as? [String: Any])
+        XCTAssertEqual(codexling["apiKey"] as? String, "cdx_new_pi_token_888")
+    }
+
+    func testGatewayStoreRotateAuthToken() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-rotate-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let initialToken = store.localToken
+        XCTAssertTrue(initialToken.hasPrefix("cdx_"))
+
+        let result = await store.rotateAuthToken()
+        XCTAssertTrue(result.success)
+        XCTAssertNotEqual(store.localToken, initialToken)
+        XCTAssertTrue(store.localToken.hasPrefix("cdx_"))
+        XCTAssertEqual(GatewaySupervisor.shared.localToken, store.localToken)
     }
 }
 

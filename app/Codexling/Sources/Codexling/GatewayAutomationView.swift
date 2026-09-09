@@ -33,6 +33,9 @@ public struct GatewayAutomationView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // 全量/单账号巡检实时横幅
+            modelCheckActiveBanner
+
             // 顶栏操作区与启动配置条
             headerBar
 
@@ -40,6 +43,13 @@ public struct GatewayAutomationView: View {
                 emptyStateView
             } else {
                 tasksListView
+            }
+        }
+        .task {
+            await store.refreshModelHealth()
+            await store.pollModelCheckStatus()
+            if store.isModelCheckRunning {
+                store.startPollingModelCheckStatus()
             }
         }
         .sheet(isPresented: $isCreatingTask) {
@@ -60,6 +70,80 @@ public struct GatewayAutomationView: View {
                     store.updateAutomationTask(updated)
                     toast("已更新自动化任务: \(updated.name)")
                 }
+            )
+        }
+    }
+
+    // MARK: - 巡检实时横幅
+    @ViewBuilder
+    private var modelCheckActiveBanner: some View {
+        if store.isModelCheckRunning {
+            let status = store.modelCheckStatus
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(status?.scope == "all" ? "正在执行全量模型健康巡检" : "正在执行账号模型健康巡检")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.codexInk)
+
+                        if let status, status.total > 0 {
+                            Text("(\(status.done)/\(status.total))")
+                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.accentColor)
+                        } else {
+                            Text("正在启动巡检...")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+
+                    if let status, !status.current.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("当前正在探测: \(status.current)")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                            Text("· 最多等待 8s")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted.opacity(0.8))
+                        }
+                    }
+                }
+
+                Spacer()
+
+                if let startedAt = status?.startedAt, startedAt > 0 {
+                    ModelCheckElapsedTimeView(startedAtEpoch: startedAt)
+                }
+
+                Button {
+                    Task {
+                        let res = await store.cancelModelCheck()
+                        toast(res.message, systemImage: res.success ? "stop.circle" : "exclamationmark.triangle", isSuccess: res.success)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "xmark.circle.fill")
+                        Text(store.isCancellingModelCheck ? "正在取消..." : "取消巡检")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.codexLine.opacity(0.2), in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundStyle(Color.codexInk)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isCancellingModelCheck)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 1)
             )
         }
     }
@@ -322,7 +406,8 @@ public struct GatewayAutomationView: View {
     }
 
     private func taskCard(_ task: GatewayAutomationTask) -> some View {
-        let isRunning = runningTaskIDs.contains(task.id) || (store.isModelCheckRunning && task.lastRunStatus == "running")
+        let isThisTaskRunning = runningTaskIDs.contains(task.id) || (store.isModelCheckRunning && task.lastRunStatus == "running")
+        let isAnyRunning = store.isModelCheckRunning || !runningTaskIDs.isEmpty
 
         return VStack(alignment: .leading, spacing: 12) {
             // 卡片头部
@@ -362,8 +447,8 @@ public struct GatewayAutomationView: View {
 
                 Spacer()
 
-                // 执行状态标签
-                statusBadge(task: task, isRunning: isRunning)
+                // 执行状态标签：如果当前正在全量巡检或此任务在运行，明确显示运行中
+                statusBadge(task: task, isRunning: isThisTaskRunning || (store.isModelCheckRunning && task.enabled && task.lastRunStatus == "running"))
             }
 
             Divider()
@@ -489,24 +574,30 @@ public struct GatewayAutomationView: View {
                     }
                 } label: {
                     HStack(spacing: 4) {
-                        if isRunning {
+                        if isThisTaskRunning {
                             ProgressView()
                                 .controlSize(.mini)
                                 .scaleEffect(0.7)
+                            Text("探测进行中...")
                         } else {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 9))
+                            Text("立即运行一次")
                         }
-                        Text(isRunning ? "探测进行中..." : "立即运行一次")
-                            .font(.system(size: 11, weight: .medium))
                     }
+                    .font(.system(size: 11, weight: .medium))
                     .padding(.horizontal, 10)
                     .frame(height: 24)
-                    .background(Color.codexPrimary.opacity(isRunning ? 0.05 : 0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .foregroundStyle(Color.codexPrimary)
+                    .background(Color.codexLine.opacity(isAnyRunning ? 0.08 : 0.15), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(isAnyRunning ? Color.codexMuted.opacity(0.5) : Color.codexInk)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+                    )
                 }
                 .buttonStyle(.plain)
-                .disabled(isRunning)
+                .disabled(isAnyRunning)
+                .help(isAnyRunning ? "已有巡检或自动化任务正在运行中" : "立即触发该自动化任务运行一次")
 
                 Spacer()
 

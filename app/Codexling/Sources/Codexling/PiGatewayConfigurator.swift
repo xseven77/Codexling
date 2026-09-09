@@ -231,6 +231,24 @@ struct PiGatewayConfigurator: Sendable {
         }
     }
 
+    func updateApiKey(_ newApiKey: String) throws {
+        guard runner.isAvailable else {
+            throw PiGatewayConfigurationError.executableNotFound
+        }
+        guard isConfigured else { return }
+        let modelsURL = agentDirectory.appendingPathComponent("models.json")
+        guard FileManager.default.fileExists(atPath: modelsURL.path) else { return }
+        var modelsRoot = try loadJSONObject(at: modelsURL)
+        guard var providers = modelsRoot["providers"] as? [String: Any],
+              var codexling = providers["codexling"] as? [String: Any] else {
+            return
+        }
+        codexling["apiKey"] = newApiKey
+        providers["codexling"] = codexling
+        modelsRoot["providers"] = providers
+        try writeJSONObject(modelsRoot, to: modelsURL)
+    }
+
     private func loadJSONObject(at url: URL) throws -> [String: Any] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
         let data = try Data(contentsOf: url)

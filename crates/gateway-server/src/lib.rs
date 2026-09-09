@@ -185,4 +185,54 @@ mod tests {
         send_request(port, &shutdown_req);
         handle.join().unwrap();
     }
+
+    #[test]
+    fn test_server_token_rotation_and_grace_period() {
+        let (port, token, handle) = spawn_test_server();
+
+        // 1. Initial token works
+        let req1 = format!("GET /status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let resp1 = send_request(port, &req1);
+        assert!(resp1.contains("200 OK"));
+
+        // 2. Rotate token without auth -> 401
+        let rotate_body = "{\"new_token\":\"new-secret-999\"}";
+        let unauth_rotate = format!(
+            "POST /internal/token/rotate HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+            rotate_body.len(),
+            rotate_body
+        );
+        let unauth_resp = send_request(port, &unauth_rotate);
+        assert!(unauth_resp.contains("401 Unauthorized"));
+
+        // 3. Rotate token with current auth -> 200 OK
+        let rotate_req = format!(
+            "POST /internal/token/rotate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{}",
+            rotate_body.len(),
+            rotate_body
+        );
+        let rotate_resp = send_request(port, &rotate_req);
+        assert!(rotate_resp.contains("200 OK"));
+        assert!(rotate_resp.contains("\"rotated\":true"));
+
+        // 4. New token works immediately
+        let req_new = "GET /status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer new-secret-999\r\n\r\n";
+        let resp_new = send_request(port, req_new);
+        assert!(resp_new.contains("200 OK"));
+
+        // 5. Old token works during grace period
+        let req_old = format!("GET /status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let resp_old = send_request(port, &req_old);
+        assert!(resp_old.contains("200 OK"));
+
+        // 6. Unknown token is rejected
+        let req_bad = "GET /status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer completely-bogus\r\n\r\n";
+        let resp_bad = send_request(port, req_bad);
+        assert!(resp_bad.contains("401 Unauthorized"));
+
+        // Shutdown using new token
+        let shutdown_req = "POST /shutdown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer new-secret-999\r\n\r\n";
+        send_request(port, shutdown_req);
+        handle.join().unwrap();
+    }
 }

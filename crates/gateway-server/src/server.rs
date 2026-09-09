@@ -17,7 +17,7 @@ use protocol_openai_responses::{
 };
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// A short-lived in-memory cache of the codex CLI's servable-model catalog,
@@ -153,6 +153,8 @@ pub struct GatewaySettings {
     pub automation_tasks: Vec<GatewayAutomationTask>,
     #[serde(default)]
     pub allow_lan_access: bool,
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 fn default_gateway_settings_schema_version() -> u32 {
@@ -186,6 +188,7 @@ impl Default for GatewaySettings {
             health_check_interval: "1h".to_string(),
             automation_tasks: Vec::new(),
             allow_lan_access: false,
+            auth_token: None,
         }
     }
 }
@@ -368,6 +371,7 @@ mod tests {
     use gateway_ir::ModelSelector;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     static NEXT_TEMP_HOME: AtomicUsize = AtomicUsize::new(0);
 
@@ -398,6 +402,7 @@ mod tests {
         assert_eq!(default_settings.max_failover_retries, 2);
         assert_eq!(default_settings.health_check_interval, "1h");
         assert!(!default_settings.allow_lan_access);
+        assert_eq!(default_settings.auth_token, None);
 
         // 2. Custom settings when file exists
         fs::write(
@@ -417,7 +422,8 @@ mod tests {
                 "cooldownSeconds": 600,
                 "maxFailoverRetries": 4,
                 "healthCheckInterval": "6h",
-                "allowLanAccess": true
+                "allowLanAccess": true,
+                "authToken": "cdx_custom_token_12345"
             }"#,
         )
         .unwrap();
@@ -428,6 +434,7 @@ mod tests {
         assert_eq!(loaded.max_failover_retries, 4);
         assert_eq!(loaded.health_check_interval, "6h");
         assert!(loaded.allow_lan_access);
+        assert_eq!(loaded.auth_token, Some("cdx_custom_token_12345".to_string()));
         assert_eq!(loaded.routing_mode_for_provider("google"), "smooth"); // stickyHighQuota falls back to smooth
         assert_eq!(loaded.routing_mode_for_provider("openai"), "pinnedAccount");
         assert_eq!(loaded.routing_mode_for_provider("deepseek"), "smooth"); // default fallback
@@ -450,6 +457,22 @@ mod tests {
         assert!(super::GatewaySettings::is_midnight_due(t0, t0 + 86400));
         // Case 3: Next day past midnight (e.g. 15 hours later cross midnight) -> due
         assert!(super::GatewaySettings::is_midnight_due(t0, t0 + 60000));
+    }
+
+    #[test]
+    fn test_token_manager_rotation_and_grace_period_expiry() {
+        let mut mgr = super::TokenManager::new_with_grace("initial-token", Duration::from_millis(50));
+        assert!(mgr.is_valid("initial-token"));
+        assert!(!mgr.is_valid("wrong-token"));
+
+        mgr.rotate("new-rotated-token");
+        assert_eq!(mgr.current_token(), "new-rotated-token");
+        assert!(mgr.is_valid("new-rotated-token"));
+        assert!(mgr.is_valid("initial-token")); // within grace period
+
+        std::thread::sleep(Duration::from_millis(70));
+        assert!(mgr.is_valid("new-rotated-token"));
+        assert!(!mgr.is_valid("initial-token")); // expired
     }
 
     #[test]
@@ -1946,9 +1969,56 @@ pub struct UpstreamEndpoint {
     pub routing_mode: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TokenManager {
+    current: String,
+    previous: Option<(String, Instant)>,
+    grace_period: Duration,
+}
+
+impl TokenManager {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self {
+            current: token.into(),
+            previous: None,
+            grace_period: Duration::from_secs(60),
+        }
+    }
+
+    pub fn new_with_grace(token: impl Into<String>, grace_period: Duration) -> Self {
+        Self {
+            current: token.into(),
+            previous: None,
+            grace_period,
+        }
+    }
+
+    pub fn current_token(&self) -> String {
+        self.current.clone()
+    }
+
+    pub fn rotate(&mut self, new_token: impl Into<String>) {
+        let old = std::mem::replace(&mut self.current, new_token.into());
+        self.previous = Some((old, Instant::now()));
+    }
+
+    pub fn is_valid(&self, candidate: &str) -> bool {
+        let trimmed = candidate.trim();
+        if trimmed == self.current {
+            return true;
+        }
+        if let Some((ref prev, timestamp)) = self.previous {
+            if trimmed == prev && timestamp.elapsed() <= self.grace_period {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[derive(Clone)]
 pub struct GatewayServer {
-    pub token: String,
+    pub token_manager: Arc<RwLock<TokenManager>>,
     pub route_table: RouteTable,
     pub active_requests: Arc<AtomicUsize>,
     pub total_requests: Arc<AtomicUsize>,
@@ -1973,7 +2043,7 @@ impl GatewayServer {
         let route_table = RouteTable::new();
 
         Self {
-            token: token.into(),
+            token_manager: Arc::new(RwLock::new(TokenManager::new(token))),
             route_table,
             active_requests: Arc::new(AtomicUsize::new(0)),
             total_requests: Arc::new(AtomicUsize::new(0)),
@@ -1993,13 +2063,13 @@ impl GatewayServer {
         }
     }
 
-    pub fn new_with_health(
-        token: impl Into<String>,
+    pub fn new_with_token_manager(
+        token_manager: TokenManager,
         model_health: Arc<crate::model_health::ModelHealthEngine>,
     ) -> Self {
         let route_table = RouteTable::new();
         Self {
-            token: token.into(),
+            token_manager: Arc::new(RwLock::new(token_manager)),
             route_table,
             active_requests: Arc::new(AtomicUsize::new(0)),
             total_requests: Arc::new(AtomicUsize::new(0)),
@@ -2017,6 +2087,72 @@ impl GatewayServer {
             gemini_thought_signatures: Arc::new(Mutex::new(HashMap::new())),
             model_health,
         }
+    }
+
+    pub fn new_with_health(
+        token: impl Into<String>,
+        model_health: Arc<crate::model_health::ModelHealthEngine>,
+    ) -> Self {
+        let route_table = RouteTable::new();
+        Self {
+            token_manager: Arc::new(RwLock::new(TokenManager::new(token))),
+            route_table,
+            active_requests: Arc::new(AtomicUsize::new(0)),
+            total_requests: Arc::new(AtomicUsize::new(0)),
+            total_input_tokens: Arc::new(AtomicUsize::new(0)),
+            total_output_tokens: Arc::new(AtomicUsize::new(0)),
+            total_tool_calls: Arc::new(AtomicUsize::new(0)),
+            is_running: Arc::new(AtomicBool::new(true)),
+            recent_requests: Arc::new(Mutex::new(VecDeque::new())),
+            telemetry_store: Arc::new(
+                TelemetryStore::new(TelemetryStore::default_db_path()).unwrap_or_else(|_| {
+                    TelemetryStore::new_in_memory()
+                        .expect("in-memory telemetry store failed to open")
+                }),
+            ),
+            gemini_thought_signatures: Arc::new(Mutex::new(HashMap::new())),
+            model_health,
+        }
+    }
+
+    pub fn current_token(&self) -> String {
+        self.token_manager.read().unwrap().current_token()
+    }
+
+    pub fn rotate_token(&self, new_token: impl Into<String>) {
+        self.token_manager.write().unwrap().rotate(new_token);
+    }
+
+    pub fn is_authorized(&self, request: &str) -> bool {
+        let token_mgr = self.token_manager.read().unwrap();
+        request.lines().any(|l| {
+            let trimmed = l.trim();
+            if let Some(val) = trimmed.strip_prefix("Authorization:") {
+                let v = val.trim();
+                if let Some(bearer) = v.strip_prefix("Bearer ") {
+                    token_mgr.is_valid(bearer)
+                } else if let Some(bearer) = v.strip_prefix("bearer ") {
+                    token_mgr.is_valid(bearer)
+                } else {
+                    token_mgr.is_valid(v)
+                }
+            } else if let Some(val) = trimmed.strip_prefix("authorization:") {
+                let v = val.trim();
+                if let Some(bearer) = v.strip_prefix("Bearer ") {
+                    token_mgr.is_valid(bearer)
+                } else if let Some(bearer) = v.strip_prefix("bearer ") {
+                    token_mgr.is_valid(bearer)
+                } else {
+                    token_mgr.is_valid(v)
+                }
+            } else if let Some(val) = trimmed.strip_prefix("api-key:") {
+                token_mgr.is_valid(val)
+            } else if let Some(val) = trimmed.strip_prefix("x-api-key:") {
+                token_mgr.is_valid(val)
+            } else {
+                false
+            }
+        })
     }
 
     pub fn handle_trigger_model_check(&self, body: &str) -> Vec<u8> {
@@ -2177,34 +2313,7 @@ impl GatewayServer {
             clean_path
         };
 
-        let authorized = request.lines().any(|l| {
-            let trimmed = l.trim();
-            if let Some(val) = trimmed.strip_prefix("Authorization:") {
-                let v = val.trim();
-                if let Some(bearer) = v.strip_prefix("Bearer ") {
-                    bearer.trim() == self.token
-                } else if let Some(bearer) = v.strip_prefix("bearer ") {
-                    bearer.trim() == self.token
-                } else {
-                    v == self.token
-                }
-            } else if let Some(val) = trimmed.strip_prefix("authorization:") {
-                let v = val.trim();
-                if let Some(bearer) = v.strip_prefix("Bearer ") {
-                    bearer.trim() == self.token
-                } else if let Some(bearer) = v.strip_prefix("bearer ") {
-                    bearer.trim() == self.token
-                } else {
-                    v == self.token
-                }
-            } else if let Some(val) = trimmed.strip_prefix("api-key:") {
-                val.trim() == self.token
-            } else if let Some(val) = trimmed.strip_prefix("x-api-key:") {
-                val.trim() == self.token
-            } else {
-                false
-            }
-        });
+        let authorized = self.is_authorized(&request);
 
         // Find JSON body if any
         let body = if let Some((hdr_idx, sep_len)) = header_end {
@@ -2366,6 +2475,49 @@ impl GatewayServer {
                 let resp = self.process_anthropic_messages(body);
                 self.active_requests.fetch_sub(1, Ordering::SeqCst);
                 resp
+            }
+            ("POST", "/internal/token/rotate") => {
+                if !authorized {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let req_json: Result<serde_json::Value, _> = serde_json::from_str(body);
+                    match req_json {
+                        Ok(val) => {
+                            if let Some(new_token) = val.get("new_token").and_then(|t| t.as_str()) {
+                                let trimmed = new_token.trim();
+                                if trimmed.is_empty() {
+                                    Self::response(
+                                        "400 Bad Request",
+                                        "application/json",
+                                        r#"{"error":"new_token cannot be empty"}"#,
+                                    )
+                                } else {
+                                    self.rotate_token(trimmed);
+                                    Self::response(
+                                        "200 OK",
+                                        "application/json",
+                                        r#"{"rotated":true}"#,
+                                    )
+                                }
+                            } else {
+                                Self::response(
+                                    "400 Bad Request",
+                                    "application/json",
+                                    r#"{"error":"missing 'new_token' in request body"}"#,
+                                )
+                            }
+                        }
+                        Err(_) => Self::response(
+                            "400 Bad Request",
+                            "application/json",
+                            r#"{"error":"invalid JSON"}"#,
+                        ),
+                    }
+                }
             }
             ("POST", "/shutdown") => {
                 if !authorized {
