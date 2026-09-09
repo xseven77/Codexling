@@ -70,6 +70,8 @@ public struct GatewayView: View {
                             store: store,
                             supervisor: supervisor
                         )
+                    case .logs:
+                        GatewayLogsView()
                     }
                 }
                 .padding(.horizontal, 20)

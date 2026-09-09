@@ -11,6 +11,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
     case analytics = "用量分析"
     case requests = "实时请求"
     case doctor = "Gateway Doctor"
+    case logs = "运行日志"
 
     public var id: String { rawValue }
 
@@ -23,6 +24,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
         case .analytics: "chart.xyaxis.line"
         case .requests: "waveform.path.ecg"
         case .doctor: "stethoscope"
+        case .logs: "doc.text.magnifyingglass"
         }
     }
 
@@ -35,6 +37,7 @@ public enum GatewayNavTab: String, CaseIterable, Identifiable {
         case .analytics: "Token 年度用量热力分布、模型消耗趋势与工具调用统计"
         case .requests: "经本地网关反代的实时请求与流式明细"
         case .doctor: "环回端口、鉴权与上游桥接诊断"
+        case .logs: "聚合网关守护与上游错误日志 · 实时追踪与级别/来源筛选"
         }
     }
 }
@@ -285,6 +288,8 @@ public final class GatewayStore {
                     Task { await refreshAnalyticsData() }
                 } else if selectedTab == .requests {
                     Task { await refreshRequestsList() }
+                } else if selectedTab == .logs {
+                    GatewayLogStore.shared.loadIfNeeded()
                 }
             }
         }
@@ -852,7 +857,7 @@ public final class GatewayStore {
             await refreshAnalyticsData()
         case .requests:
             await refreshRequestsList()
-        case .connect, .agents, .doctor, .automation:
+        case .connect, .agents, .doctor, .automation, .logs:
             break
         }
     }
