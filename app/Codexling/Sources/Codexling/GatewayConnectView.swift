@@ -546,7 +546,7 @@ struct GatewayConnectView: View {
                     .font(.system(size: 11.5, weight: .semibold))
                     .padding(.horizontal, 12)
                     .frame(height: 28)
-                    .background(supervisor.isRunning ? Color.red.opacity(0.88) : Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .background(supervisor.isRunning ? Color.red.opacity(0.88) : Color.accentColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .foregroundStyle(Color.white)
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 6))

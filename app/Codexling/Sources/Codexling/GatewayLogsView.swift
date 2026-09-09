@@ -185,7 +185,7 @@ struct GatewayLogsView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(
-                            isSelected ? Color.white : Color.clear,
+                            isSelected ? Color.codexCard : Color.clear,
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
                         .shadow(color: isSelected ? Color.black.opacity(0.06) : Color.clear, radius: 2, x: 0, y: 1)
@@ -220,7 +220,7 @@ struct GatewayLogsView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 5)
                             .background(
-                                isSelected ? Color.white : Color.clear,
+                                isSelected ? Color.codexCard : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                             )
                             .shadow(color: isSelected ? Color.black.opacity(0.06) : Color.clear, radius: 2, x: 0, y: 1)
@@ -262,7 +262,7 @@ struct GatewayLogsView: View {
             }
             .padding(.horizontal, 8)
             .frame(height: 26)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .shadow(color: Color.black.opacity(0.03), radius: 1.5, x: 0, y: 0.5)
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)

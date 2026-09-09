@@ -531,14 +531,22 @@ public final class GatewayStore {
         set { selectedHeatmapYear = newValue }
     }
     public private(set) var modelTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
+    public private(set) var providerTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
+    public private(set) var accountTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
     public private(set) var agentTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
     public private(set) var toolCallsTimeseriesPoints: [GatewayModelTimeseriesPoint] = []
     public private(set) var analyticsTokenComposition: GatewayTokenComposition = .zero
     public private(set) var analyticsModelRankings: [GatewayModelRankingItem] = []
+    public private(set) var analyticsProviderRankings: [GatewayProviderRankingItem] = []
+    public private(set) var analyticsAccountRankings: [GatewayAccountRankingItem] = []
+    public private(set) var availableAnalyticsProviders: [String] = []
     public private(set) var analyticsLatencyRankings: [GatewayLatencyRankingItem] = []
     public private(set) var analyticsClientRankings: [GatewayClientRankingItem] = []
     public private(set) var isAnalyticsLoading: Bool = false
-    public var analyticsGrouping: String = "model" // "model" or "surface"
+    public var analyticsGrouping: String = "model" // "model", "provider", "account", "surface"
+    public var analyticsMetricMode: GatewayAnalyticsMetricMode = .tokens // 默认 Tokens 为纵坐标，支持切换为轮次
+    public var analyticsRankingDimension: GatewayAnalyticsRankingDimension = .model
+    public var selectedAnalyticsProviderFilter: String? = nil
     public var analyticsDaysRange: Int = 7 // 7, 30, or 90
 
     // 模型健康巡检状态
@@ -1346,10 +1354,15 @@ public final class GatewayStore {
         let summary: GatewayHeatmapSummary
         let availableYears: [Int]
         let modelPoints: [GatewayModelTimeseriesPoint]
+        let providerPoints: [GatewayModelTimeseriesPoint]
+        let accountPoints: [GatewayModelTimeseriesPoint]
         let agentPoints: [GatewayModelTimeseriesPoint]
         let toolPoints: [GatewayModelTimeseriesPoint]
         let tokenComposition: GatewayTokenComposition
         let modelRankings: [GatewayModelRankingItem]
+        let providerRankings: [GatewayProviderRankingItem]
+        let accountRankings: [GatewayAccountRankingItem]
+        let availableProviders: [String]
         let latencyRankings: [GatewayLatencyRankingItem]
         let clientRankings: [GatewayClientRankingItem]
 
@@ -1359,10 +1372,15 @@ public final class GatewayStore {
                 summary: .zero,
                 availableYears: [currentYear],
                 modelPoints: [],
+                providerPoints: [],
+                accountPoints: [],
                 agentPoints: [],
                 toolPoints: [],
                 tokenComposition: .zero,
                 modelRankings: [],
+                providerRankings: [],
+                accountRankings: [],
+                availableProviders: [],
                 latencyRankings: [],
                 clientRankings: []
             )
@@ -1386,6 +1404,7 @@ public final class GatewayStore {
         let currentYear = calendar.component(.year, from: today)
         let targetYearMode = self.selectedHeatmapYear
         let daysRange = self.analyticsDaysRange
+        let providerFilter = self.selectedAnalyticsProviderFilter
 
         let result = await Task.detached(priority: .userInitiated) { () -> GatewayAnalyticsResult in
             var db: OpaquePointer?
@@ -1408,6 +1427,20 @@ public final class GatewayStore {
             }
             sqlite3_finalize(yearStmt)
             let yearsList = yearSet.sorted(by: >)
+
+            // 0b. 查询历史记录中出现过的所有供应商 (Provider)
+            var provSet: Set<String> = []
+            let provListSql = "SELECT DISTINCT provider FROM request_events WHERE provider IS NOT NULL AND provider != '' ORDER BY provider ASC;"
+            var provListStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, provListSql, -1, &provListStmt, nil) == SQLITE_OK {
+                while sqlite3_step(provListStmt) == SQLITE_ROW {
+                    if let pChars = sqlite3_column_text(provListStmt, 0) {
+                        provSet.insert(String(cString: pChars))
+                    }
+                }
+            }
+            sqlite3_finalize(provListStmt)
+            let availableProviders = provSet.sorted()
 
             // 1. 每日 Token 统计 (按自然日)
             var dailyTokenMap: [String: (tokens: Int64, requests: Int64)] = [:]
@@ -1665,26 +1698,42 @@ public final class GatewayStore {
             let hourDf = DateFormatter()
             hourDf.dateFormat = "M/d HH:mm"
 
-            // 2.1 时序走势 (按模型)
+            // 2.1 时序走势 (按模型): 将用量达到阈值 (>= 10,000 Tokens) 的主力模型单独列出，
+            // 极低用量的模型自动折叠合并为 'other-models'，大幅减少图表图例和渲染几何点，消除卡顿
             var rawModelData: [Int64: [String: (count: Int, tokens: Int64)]] = [:]
             var allModelGroups = Set<String>()
+
+            // 统计周期内 Token 总量 >= 10,000 的模型为显著模型
+            let modelThresholdTokens: Int64 = 10_000
+            var significantModels = Set<String>()
+            let sigSql = """
+            SELECT COALESCE(NULLIF(target_model, ''), '未知模型') as m, SUM(total_tokens) as total_toks
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY m
+            HAVING total_toks >= ?;
+            """
+            var sigStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sigSql, -1, &sigStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(sigStmt, 1, startMs)
+                sqlite3_bind_int64(sigStmt, 2, modelThresholdTokens)
+                while sqlite3_step(sigStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(sigStmt, 0) {
+                        significantModels.insert(String(cString: cName))
+                    }
+                }
+            }
+            sqlite3_finalize(sigStmt)
 
             let modelSql = """
             SELECT
                 ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
-                CASE
-                    WHEN target_model LIKE 'gemini-3.8%' THEN 'gemini-3.8-flash'
-                    WHEN target_model LIKE 'gemini-3.7%' THEN 'gemini-3.7-flash'
-                    WHEN target_model LIKE 'deepseek%' THEN 'deepseek-v4'
-                    WHEN target_model LIKE 'glm%' THEN 'glm-5.3'
-                    WHEN target_model LIKE 'claude%' THEN 'claude-opus-4.6'
-                    ELSE 'other-models'
-                END as model_group,
+                COALESCE(NULLIF(target_model, ''), '未知模型') as raw_model,
                 COUNT(*) as cnt,
                 COALESCE(SUM(total_tokens), 0) as toks
             FROM request_events
             WHERE timestamp >= ?
-            GROUP BY slot, model_group
+            GROUP BY slot, raw_model
             ORDER BY slot ASC;
             """
             var modelStmt: OpaquePointer?
@@ -1693,14 +1742,16 @@ public final class GatewayStore {
                 while sqlite3_step(modelStmt) == SQLITE_ROW {
                     let slotSec = sqlite3_column_int64(modelStmt, 0)
                     if let grpChars = sqlite3_column_text(modelStmt, 1) {
-                        let grpName = String(cString: grpChars)
+                        let rawName = String(cString: grpChars)
+                        let grpName = significantModels.contains(rawName) ? rawName : "other-models"
                         let count = Int(sqlite3_column_int(modelStmt, 2))
                         let tokens = sqlite3_column_int64(modelStmt, 3)
                         allModelGroups.insert(grpName)
                         if rawModelData[slotSec] == nil {
                             rawModelData[slotSec] = [:]
                         }
-                        rawModelData[slotSec]?[grpName] = (count, tokens)
+                        let existing = rawModelData[slotSec]?[grpName] ?? (0, 0)
+                        rawModelData[slotSec]?[grpName] = (existing.count + count, existing.tokens + tokens)
                     }
                 }
             }
@@ -1774,6 +1825,133 @@ public final class GatewayStore {
                         let label = hourDf.string(from: slotDate)
                         let data = rawAgentData[slot]?[grp] ?? (0, 0)
                         agentPoints.append(GatewayModelTimeseriesPoint(
+                            date: slotDate,
+                            dateLabel: label,
+                            groupKey: grp,
+                            count: data.count,
+                            tokens: data.tokens
+                        ))
+                    }
+                }
+            }
+
+            // 2.2b 时序走势 (按供应商 Provider)
+            var rawProviderData: [Int64: [String: (count: Int, tokens: Int64)]] = [:]
+            var allProviderGroups = Set<String>()
+
+            let providerSql = """
+            SELECT
+                ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                CASE
+                    WHEN provider IS NULL OR provider = '' THEN '未知供应商'
+                    ELSE provider
+                END as prov_group,
+                COUNT(*) as cnt,
+                COALESCE(SUM(total_tokens), 0) as toks
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY slot, prov_group
+            ORDER BY slot ASC;
+            """
+            var providerStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, providerSql, -1, &providerStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(providerStmt, 1, startMs)
+                while sqlite3_step(providerStmt) == SQLITE_ROW {
+                    let slotSec = sqlite3_column_int64(providerStmt, 0)
+                    if let grpChars = sqlite3_column_text(providerStmt, 1) {
+                        let grpName = String(cString: grpChars)
+                        let count = Int(sqlite3_column_int(providerStmt, 2))
+                        let tokens = sqlite3_column_int64(providerStmt, 3)
+                        allProviderGroups.insert(grpName)
+                        if rawProviderData[slotSec] == nil {
+                            rawProviderData[slotSec] = [:]
+                        }
+                        rawProviderData[slotSec]?[grpName] = (count, tokens)
+                    }
+                }
+            }
+            sqlite3_finalize(providerStmt)
+
+            var providerPoints: [GatewayModelTimeseriesPoint] = []
+            let sortedProviderGroups = allProviderGroups.sorted()
+            if !sortedProviderGroups.isEmpty {
+                for grp in sortedProviderGroups {
+                    for slot in allSlots {
+                        let slotDate = Date(timeIntervalSince1970: TimeInterval(slot))
+                        let label = hourDf.string(from: slotDate)
+                        let data = rawProviderData[slot]?[grp] ?? (0, 0)
+                        providerPoints.append(GatewayModelTimeseriesPoint(
+                            date: slotDate,
+                            dateLabel: label,
+                            groupKey: grp,
+                            count: data.count,
+                            tokens: data.tokens
+                        ))
+                    }
+                }
+            }
+
+            // 2.2c 时序走势 (按账号 Account，若选择供应商则聚焦该供应商下的账号)
+            var rawAccountData: [Int64: [String: (count: Int, tokens: Int64)]] = [:]
+            var allAccountGroups = Set<String>()
+
+            let accountSql: String
+            if let filter = providerFilter, !filter.isEmpty, filter != "全部" {
+                accountSql = """
+                SELECT
+                    ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                    account as acc_group,
+                    COUNT(*) as cnt,
+                    COALESCE(SUM(total_tokens), 0) as toks
+                FROM request_events
+                WHERE timestamp >= ? AND provider = ?
+                GROUP BY slot, acc_group
+                ORDER BY slot ASC;
+                """
+            } else {
+                accountSql = """
+                SELECT
+                    ((timestamp / 1000) / \(slotInterval)) * \(slotInterval) as slot,
+                    account as acc_group,
+                    COUNT(*) as cnt,
+                    COALESCE(SUM(total_tokens), 0) as toks
+                FROM request_events
+                WHERE timestamp >= ?
+                GROUP BY slot, acc_group
+                ORDER BY slot ASC;
+                """
+            }
+            var accountStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, accountSql, -1, &accountStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(accountStmt, 1, startMs)
+                if let filter = providerFilter, !filter.isEmpty, filter != "全部" {
+                    sqlite3_bind_text(accountStmt, 2, (filter as NSString).utf8String, -1, nil)
+                }
+                while sqlite3_step(accountStmt) == SQLITE_ROW {
+                    let slotSec = sqlite3_column_int64(accountStmt, 0)
+                    if let grpChars = sqlite3_column_text(accountStmt, 1) {
+                        let grpName = String(cString: grpChars)
+                        let count = Int(sqlite3_column_int(accountStmt, 2))
+                        let tokens = sqlite3_column_int64(accountStmt, 3)
+                        allAccountGroups.insert(grpName)
+                        if rawAccountData[slotSec] == nil {
+                            rawAccountData[slotSec] = [:]
+                        }
+                        rawAccountData[slotSec]?[grpName] = (count, tokens)
+                    }
+                }
+            }
+            sqlite3_finalize(accountStmt)
+
+            var accountPoints: [GatewayModelTimeseriesPoint] = []
+            let sortedAccountGroups = allAccountGroups.sorted()
+            if !sortedAccountGroups.isEmpty {
+                for grp in sortedAccountGroups {
+                    for slot in allSlots {
+                        let slotDate = Date(timeIntervalSince1970: TimeInterval(slot))
+                        let label = hourDf.string(from: slotDate)
+                        let data = rawAccountData[slot]?[grp] ?? (0, 0)
+                        accountPoints.append(GatewayModelTimeseriesPoint(
                             date: slotDate,
                             dateLabel: label,
                             groupKey: grp,
@@ -1874,11 +2052,7 @@ public final class GatewayStore {
             let topModelSql = """
             SELECT
                 CASE
-                    WHEN target_model LIKE 'gemini-3.8%' THEN 'gemini-3.8-flash'
-                    WHEN target_model LIKE 'gemini-3.7%' THEN 'gemini-3.7-flash'
-                    WHEN target_model LIKE 'deepseek%' THEN 'deepseek-v4'
-                    WHEN target_model LIKE 'glm%' THEN 'glm-5.3'
-                    WHEN target_model LIKE 'claude%' THEN 'claude-opus-4.6'
+                    WHEN target_model IS NULL OR target_model = '' THEN '未知模型'
                     ELSE target_model
                 END as model_name,
                 COALESCE(SUM(total_tokens), 0) as toks,
@@ -1887,7 +2061,7 @@ public final class GatewayStore {
             WHERE timestamp >= ?
             GROUP BY model_name
             ORDER BY toks DESC
-            LIMIT 5;
+            LIMIT 10;
             """
             var topModelStmt: OpaquePointer?
             var rawModelRankings: [(name: String, tokens: Int64, turns: Int)] = []
@@ -1910,6 +2084,114 @@ public final class GatewayStore {
                 let pct = totalRankedTokens > 0 ? (Double(item.tokens) / Double(totalRankedTokens)) * 100.0 : 0
                 modelRankings.append(GatewayModelRankingItem(
                     name: item.name,
+                    tokens: item.tokens,
+                    turns: item.turns,
+                    percentage: pct
+                ))
+            }
+
+            // 2.5b Top 供应商用量排行
+            var providerRankings: [GatewayProviderRankingItem] = []
+            let topProvSql = """
+            SELECT
+                CASE
+                    WHEN provider IS NULL OR provider = '' THEN '未知供应商'
+                    ELSE provider
+                END as prov_name,
+                COALESCE(SUM(total_tokens), 0) as toks,
+                COUNT(*) as cnt,
+                COUNT(DISTINCT account) as acc_cnt
+            FROM request_events
+            WHERE timestamp >= ?
+            GROUP BY prov_name
+            ORDER BY toks DESC;
+            """
+            var topProvStmt: OpaquePointer?
+            var rawProvRankings: [(name: String, tokens: Int64, turns: Int, accCount: Int)] = []
+            var totalProvTokens: Int64 = 0
+            if sqlite3_prepare_v2(db, topProvSql, -1, &topProvStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(topProvStmt, 1, startMs)
+                while sqlite3_step(topProvStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(topProvStmt, 0) {
+                        let name = String(cString: cName)
+                        let toks = sqlite3_column_int64(topProvStmt, 1)
+                        let cnt = Int(sqlite3_column_int(topProvStmt, 2))
+                        let accCnt = Int(sqlite3_column_int(topProvStmt, 3))
+                        rawProvRankings.append((name, toks, cnt, accCnt))
+                        totalProvTokens += toks
+                    }
+                }
+            }
+            sqlite3_finalize(topProvStmt)
+
+            for item in rawProvRankings {
+                let pct = totalProvTokens > 0 ? (Double(item.tokens) / Double(totalProvTokens)) * 100.0 : 0
+                providerRankings.append(GatewayProviderRankingItem(
+                    name: item.name,
+                    tokens: item.tokens,
+                    turns: item.turns,
+                    percentage: pct,
+                    accountsCount: item.accCount
+                ))
+            }
+
+            // 2.5c Top 账号用量排行 (支持按供应商筛选下钻与同供应商不同账号对比)
+            var accountRankings: [GatewayAccountRankingItem] = []
+            let topAccountSql: String
+            if let filter = providerFilter, !filter.isEmpty, filter != "全部" {
+                topAccountSql = """
+                SELECT
+                    account,
+                    provider,
+                    COALESCE(SUM(total_tokens), 0) as toks,
+                    COUNT(*) as cnt
+                FROM request_events
+                WHERE timestamp >= ? AND provider = ?
+                GROUP BY account, provider
+                ORDER BY toks DESC
+                LIMIT 10;
+                """
+            } else {
+                topAccountSql = """
+                SELECT
+                    account,
+                    provider,
+                    COALESCE(SUM(total_tokens), 0) as toks,
+                    COUNT(*) as cnt
+                FROM request_events
+                WHERE timestamp >= ?
+                GROUP BY account, provider
+                ORDER BY toks DESC
+                LIMIT 10;
+                """
+            }
+            var topAccountStmt: OpaquePointer?
+            var rawAccountRankings: [(name: String, provider: String, tokens: Int64, turns: Int)] = []
+            var totalAccountTokens: Int64 = 0
+            if sqlite3_prepare_v2(db, topAccountSql, -1, &topAccountStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(topAccountStmt, 1, startMs)
+                if let filter = providerFilter, !filter.isEmpty, filter != "全部" {
+                    sqlite3_bind_text(topAccountStmt, 2, (filter as NSString).utf8String, -1, nil)
+                }
+                while sqlite3_step(topAccountStmt) == SQLITE_ROW {
+                    if let cName = sqlite3_column_text(topAccountStmt, 0),
+                       let pName = sqlite3_column_text(topAccountStmt, 1) {
+                        let name = String(cString: cName)
+                        let prov = String(cString: pName)
+                        let toks = sqlite3_column_int64(topAccountStmt, 2)
+                        let cnt = Int(sqlite3_column_int(topAccountStmt, 3))
+                        rawAccountRankings.append((name, prov, toks, cnt))
+                        totalAccountTokens += toks
+                    }
+                }
+            }
+            sqlite3_finalize(topAccountStmt)
+
+            for item in rawAccountRankings {
+                let pct = totalAccountTokens > 0 ? (Double(item.tokens) / Double(totalAccountTokens)) * 100.0 : 0
+                accountRankings.append(GatewayAccountRankingItem(
+                    name: item.name,
+                    provider: item.provider,
                     tokens: item.tokens,
                     turns: item.turns,
                     percentage: pct
@@ -2002,10 +2284,15 @@ public final class GatewayStore {
                 summary: summary,
                 availableYears: yearsList,
                 modelPoints: modelPoints,
+                providerPoints: providerPoints,
+                accountPoints: accountPoints,
                 agentPoints: agentPoints,
                 toolPoints: toolPoints,
                 tokenComposition: tokenComposition,
                 modelRankings: modelRankings,
+                providerRankings: providerRankings,
+                accountRankings: accountRankings,
+                availableProviders: availableProviders,
                 latencyRankings: latencyRankings,
                 clientRankings: clientRankings
             )
@@ -2015,10 +2302,15 @@ public final class GatewayStore {
         self.heatmapSummary = result.summary
         self.availableAnalyticsYears = result.availableYears
         self.modelTimeseriesPoints = result.modelPoints
+        self.providerTimeseriesPoints = result.providerPoints
+        self.accountTimeseriesPoints = result.accountPoints
         self.agentTimeseriesPoints = result.agentPoints
         self.toolCallsTimeseriesPoints = result.toolPoints
         self.analyticsTokenComposition = result.tokenComposition
         self.analyticsModelRankings = result.modelRankings
+        self.analyticsProviderRankings = result.providerRankings
+        self.analyticsAccountRankings = result.accountRankings
+        self.availableAnalyticsProviders = result.availableProviders
         self.analyticsLatencyRankings = result.latencyRankings
         self.analyticsClientRankings = result.clientRankings
     }

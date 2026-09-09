@@ -3689,7 +3689,7 @@ impl GatewayServer {
                             Self::curl_failure_message(&direct_output)
                         );
                         Self::log_gateway_error(&message);
-                        if upstream.routing_mode == "consolidated" {
+                        if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                             return Ok(ProxyCallResult::RetryableFailover(message));
                         }
                         Self::write_gateway_error(
@@ -3706,7 +3706,7 @@ impl GatewayServer {
                             "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{error}）"
                         );
                         Self::log_gateway_error(&message);
-                        if upstream.routing_mode == "consolidated" {
+                        if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                             return Ok(ProxyCallResult::RetryableFailover(message));
                         }
                         Self::write_gateway_error(
@@ -3728,7 +3728,7 @@ impl GatewayServer {
                         Self::curl_failure_message(&direct_output)
                     );
                     Self::log_gateway_error(&message);
-                    if upstream.routing_mode == "consolidated" {
+                    if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                         return Ok(ProxyCallResult::RetryableFailover(message));
                     }
                     Self::write_gateway_error(
@@ -3745,7 +3745,7 @@ impl GatewayServer {
                         "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{direct_error}）"
                     );
                     Self::log_gateway_error(&message);
-                    if upstream.routing_mode == "consolidated" {
+                    if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                         return Ok(ProxyCallResult::RetryableFailover(message));
                     }
                     Self::write_gateway_error(
@@ -3763,7 +3763,7 @@ impl GatewayServer {
             Ok(body) => body,
             Err(_) => {
                 let err_msg = "Gemini OAuth 上游返回了无效响应。";
-                if upstream.routing_mode == "consolidated" {
+                if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                     return Ok(ProxyCallResult::RetryableFailover(err_msg.to_string()));
                 }
                 Self::write_gateway_error(
@@ -3782,7 +3782,7 @@ impl GatewayServer {
             .and_then(|value| value.as_str())
         {
             let formatted = format!("Gemini OAuth 请求失败：{message}");
-            if upstream.routing_mode == "consolidated" {
+            if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                 return Ok(ProxyCallResult::RetryableFailover(formatted));
             }
             Self::write_gateway_error(
@@ -3797,7 +3797,7 @@ impl GatewayServer {
         let message = self.cloud_code_response_message(&body);
         let Some(message) = message else {
             let err_msg = "Gemini OAuth 上游未返回文本或工具调用结果。";
-            if upstream.routing_mode == "consolidated" {
+            if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                 return Ok(ProxyCallResult::RetryableFailover(err_msg.to_string()));
             }
             Self::write_gateway_error(
@@ -4580,7 +4580,7 @@ impl GatewayServer {
             Ok(pair) => pair,
             Err(e) => {
                 let err_msg = format!("无法启动网络连接：{e}");
-                if upstream.routing_mode == "consolidated" {
+                if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                     return Ok(ProxyCallResult::RetryableFailover(err_msg));
                 }
                 Self::write_gateway_error(
@@ -4629,7 +4629,7 @@ impl GatewayServer {
             } else {
                 trimmed_first.to_string()
             };
-            if upstream.routing_mode == "consolidated" {
+            if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
                 return Ok(ProxyCallResult::RetryableFailover(err_msg));
             }
             Self::write_gateway_error(

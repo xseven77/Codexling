@@ -193,7 +193,7 @@ public struct GatewayAutomationView: View {
                 .padding(.horizontal, 12)
                 .frame(height: 28)
                 .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .foregroundStyle(Color.white)
+                .foregroundStyle(Color.codexOnPrimary)
             }
             .buttonStyle(.plain)
         }
@@ -1030,7 +1030,7 @@ public struct AutomationTaskEditorSheet: View {
                 } label: {
                     Text(originalTask == nil ? "立即创建" : "保存修改")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(Color.codexOnPrimary)
                         .padding(.horizontal, 16)
                         .frame(height: 28)
                         .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -1138,7 +1138,18 @@ public struct AutomationTaskEditorSheet: View {
 
 // MARK: - 自适应内容长度自动换行流式布局 (FlowLayout)
 struct FlowLayout: Layout {
-    var spacing: CGFloat = 8
+    var horizontalSpacing: CGFloat
+    var verticalSpacing: CGFloat
+
+    init(spacing: CGFloat = 8) {
+        self.horizontalSpacing = spacing
+        self.verticalSpacing = spacing
+    }
+
+    init(horizontal: CGFloat, vertical: CGFloat) {
+        self.horizontalSpacing = horizontal
+        self.verticalSpacing = vertical
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
@@ -1150,11 +1161,11 @@ struct FlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if currentRowWidth + size.width > maxWidth, currentRowWidth > 0 {
                 // 换行
-                totalHeight += currentRowHeight + spacing
-                currentRowWidth = size.width + spacing
+                totalHeight += currentRowHeight + verticalSpacing
+                currentRowWidth = size.width + horizontalSpacing
                 currentRowHeight = size.height
             } else {
-                currentRowWidth += size.width + spacing
+                currentRowWidth += size.width + horizontalSpacing
                 currentRowHeight = max(currentRowHeight, size.height)
             }
         }
@@ -1173,12 +1184,12 @@ struct FlowLayout: Layout {
             if x + size.width > bounds.maxX, x > bounds.minX {
                 // 自动折行到下一行
                 x = bounds.minX
-                y += currentRowHeight + spacing
+                y += currentRowHeight + verticalSpacing
                 currentRowHeight = 0
             }
 
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
+            x += size.width + horizontalSpacing
             currentRowHeight = max(currentRowHeight, size.height)
         }
     }

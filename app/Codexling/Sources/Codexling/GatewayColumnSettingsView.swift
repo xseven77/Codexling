@@ -143,10 +143,10 @@ public struct GatewayColumnSettingsSheet: View {
                 } label: {
                     Text("完成")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(Color.codexOnPrimary)
                         .padding(.horizontal, 16)
                         .frame(height: 28)
-                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(CodexPressableStyle(cornerRadius: 6))
                 .keyboardShortcut(.defaultAction)

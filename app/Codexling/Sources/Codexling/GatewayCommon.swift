@@ -155,7 +155,7 @@ struct GatewayCustomDateRangePickerBar: View {
                 .padding(.horizontal, 10)
                 .frame(height: 26)
                 .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.codexOnPrimary)
             }
             .buttonStyle(CodexPressableStyle(cornerRadius: 6))
 

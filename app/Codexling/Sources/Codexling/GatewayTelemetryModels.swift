@@ -567,4 +567,80 @@ public struct GatewayClientRankingItem: Identifiable, Sendable {
     }
 }
 
+public enum GatewayAnalyticsGrouping: String, CaseIterable, Identifiable, Sendable {
+    case model = "model"
+    case provider = "provider"
+    case account = "account"
+    case surface = "surface"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .model: return "By model"
+        case .provider: return "By provider"
+        case .account: return "By account"
+        case .surface: return "By surface"
+        }
+    }
+
+    public var chartHeroTitle: String {
+        switch self {
+        case .model: return "模型交互轮次"
+        case .provider: return "供应商调用轮次"
+        case .account: return "账号调用轮次"
+        case .surface: return "客户端会话轮次"
+        }
+    }
+}
+
+public enum GatewayAnalyticsMetricMode: String, CaseIterable, Identifiable, Sendable {
+    case tokens = "Tokens"
+    case turns = "轮次"
+
+    public var id: String { rawValue }
+}
+
+public enum GatewayAnalyticsRankingDimension: String, CaseIterable, Identifiable, Sendable {
+    case model = "模型"
+    case provider = "供应商"
+    case account = "账号"
+
+    public var id: String { rawValue }
+}
+
+public struct GatewayProviderRankingItem: Identifiable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let tokens: Int64
+    public let turns: Int
+    public let percentage: Double
+    public let accountsCount: Int
+
+    public init(name: String, tokens: Int64, turns: Int, percentage: Double, accountsCount: Int) {
+        self.name = name
+        self.tokens = tokens
+        self.turns = turns
+        self.percentage = percentage
+        self.accountsCount = accountsCount
+    }
+}
+
+public struct GatewayAccountRankingItem: Identifiable, Sendable {
+    public var id: String { "\(provider)-\(name)" }
+    public let name: String
+    public let provider: String
+    public let tokens: Int64
+    public let turns: Int
+    public let percentage: Double
+
+    public init(name: String, provider: String, tokens: Int64, turns: Int, percentage: Double) {
+        self.name = name
+        self.provider = provider
+        self.tokens = tokens
+        self.turns = turns
+        self.percentage = percentage
+    }
+}
+
 

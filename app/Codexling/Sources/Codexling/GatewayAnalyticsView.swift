@@ -294,10 +294,17 @@ struct GatewayAnalyticsView: View {
         }
     }
 
-    // MARK: - 3. 轮次与用量趋势分析 (参考图2/3顶层看板与波形图)
+    // MARK: - 3. 轮次与用量趋势分析 (支持按模型、供应商、账号、客户端多维度透视)
     private var turnsStackedChartSectionView: some View {
-        let isSurface = store.analyticsGrouping == "surface"
-        let allPoints = isSurface ? store.agentTimeseriesPoints : store.modelTimeseriesPoints
+        let currentGrouping = store.analyticsGrouping
+        let allPoints: [GatewayModelTimeseriesPoint] = {
+            switch currentGrouping {
+            case "provider": return store.providerTimeseriesPoints
+            case "account": return store.accountTimeseriesPoints
+            case "surface": return store.agentTimeseriesPoints
+            default: return store.modelTimeseriesPoints
+            }
+        }()
         let uniqueGroups = Array(Set(allPoints.map { $0.groupKey })).sorted()
         let activePoints = allPoints
             .filter { !hiddenAnalyticsGroups.contains($0.groupKey) }
@@ -312,11 +319,25 @@ struct GatewayAnalyticsView: View {
         let totalTokens = activePoints.reduce(Int64(0)) { $0 + $1.tokens }
         let selectedSlotDate: Date? = hoveredSlotDate
 
+        let isTokensMetric = store.analyticsMetricMode == .tokens
+        let heroTitle: String = {
+            switch currentGrouping {
+            case "provider": return isTokensMetric ? "供应商 Token 用量" : "供应商调用轮次"
+            case "account":
+                if let p = store.selectedAnalyticsProviderFilter, !p.isEmpty, p != "全部" {
+                    return isTokensMetric ? "\(p) 账号 Token 用量" : "\(p) 账号调用轮次"
+                }
+                return isTokensMetric ? "账号 Token 用量" : "账号调用轮次"
+            case "surface": return isTokensMetric ? "客户端 Token 用量" : "客户端会话轮次"
+            default: return isTokensMetric ? "模型 Token 用量" : "模型交互轮次"
+            }
+        }()
+
         return VStack(alignment: .leading, spacing: 14) {
-            // 顶栏: 类似图 2/3 的 Hero Title 与指标
+            // 顶栏: Hero Title 与指标 + 多维度控制胶囊
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isSurface ? "客户端会话轮次" : "模型交互轮次")
+                    Text(heroTitle)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.codexMuted)
 
@@ -327,56 +348,66 @@ struct GatewayAnalyticsView: View {
                         let hTurns = hoverMatching.reduce(0) { sum, pt in sum + pt.count }
                         let hToks = hoverMatching.reduce(0) { sum, pt in sum + pt.tokens }
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(hTurns)")
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color.accentColor)
+                            if isTokensMetric {
+                                Text("\(GatewayStore.formatTokens(Int(hToks)))")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.accentColor)
 
-                            Text("· \(GatewayStore.formatTokens(Int(hToks))) Tokens (选定时段)")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.codexMuted)
+                                Text("· \(hTurns) 轮次 (选定时段)")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.codexMuted)
+                            } else {
+                                Text("\(hTurns)")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.accentColor)
+
+                                Text("· \(GatewayStore.formatTokens(Int(hToks))) Tokens (选定时段)")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.codexMuted)
+                            }
                         }
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(totalTurns)")
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color.codexInk)
+                            if isTokensMetric {
+                                Text("\(GatewayStore.formatTokens(Int(totalTokens)))")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
 
-                            Text("· \(GatewayStore.formatTokens(Int(totalTokens))) Tokens")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.codexMuted)
+                                Text("· \(totalTurns) 轮次")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.codexMuted)
+                            } else {
+                                Text("\(totalTurns)")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
+
+                                Text("· \(GatewayStore.formatTokens(Int(totalTokens))) Tokens")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.codexMuted)
+                            }
                         }
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 12)
 
-                // 控制栏: 胶囊切换 (By model | By surface) + 时间跨度 (7天 | 30天 | 90天)
-                HStack(spacing: 10) {
-                    // Grouping Pill
-                    HStack(spacing: 2) {
-                        groupingPillButton(title: "By model", key: "model")
-                        groupingPillButton(title: "By surface", key: "surface")
+                // 控制栏: 固定分两行排布
+                // 第一行: Tokens / 轮次 模式切换 + 时间跨度 (7天 | 30天 | 90天)
+                // 第二行: 全部供应商下拉筛选 + By 系列多维切换 (By model | By provider | By account | By surface)
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 8) {
+                        metricModePill
+                        daysRangePill
                     }
-                    .padding(2)
-                    .background(Color.codexMist.opacity(0.6), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
-                    )
+                    .fixedSize(horizontal: true, vertical: false)
 
-                    // Days Pill
-                    HStack(spacing: 2) {
-                        daysPillButton(days: 7)
-                        daysPillButton(days: 30)
-                        daysPillButton(days: 90)
+                    HStack(spacing: 8) {
+                        providerFilterMenu
+                        groupingPill
                     }
-                    .padding(2)
-                    .background(Color.codexMist.opacity(0.6), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
-                    )
+                    .fixedSize(horizontal: true, vertical: false)
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             if activePoints.isEmpty {
@@ -408,40 +439,157 @@ struct GatewayAnalyticsView: View {
                     .id("turns_chart_\(hiddenAnalyticsGroups.count)")
                     .frame(height: 200)
 
-                // 交互式可点击图例栏 (单行圆点排布，支持点击过滤与切换)
-                HStack(spacing: 8) {
+                // 交互式可点击图例栏 (自适应内容宽度，允许图例换行，图例项内单行不折行)
+                AnalyticsLegendFlowLayout(horizontalSpacing: 14, verticalSpacing: 8, alignment: .leading) {
                     ForEach(uniqueGroups, id: \.self) { grp in
                         legendItemButton(grp: grp, uniqueGroups: uniqueGroups)
                     }
 
                     if !hiddenAnalyticsGroups.isEmpty {
-                        Spacer()
                         Button {
                             withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                                 hiddenAnalyticsGroups.removeAll()
                             }
                         } label: {
-                            Text("重置图例")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 8.5))
+                                Text("重置图例")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                         }
                         .buttonStyle(.plain)
-                    } else {
-                        Spacer()
+                        .fixedSize()
+                        .help("恢复展示所有被隐藏的图例分类")
                     }
                 }
-                .padding(.top, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
             }
         }
         .padding(16)
-        .background(Color.codexCard.opacity(0.85))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.codexCard.opacity(0.85))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.8)
         )
     }
 
+
+    // MARK: - 3.1 趋势控制栏子组件
+    private var metricModePill: some View {
+        HStack(spacing: 2) {
+            ForEach(GatewayAnalyticsMetricMode.allCases) { mode in
+                let isSelected = store.analyticsMetricMode == mode
+                Button {
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
+                        store.analyticsMetricMode = mode
+                    }
+                } label: {
+                    Text(mode.rawValue)
+                        .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
+                        .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+            }
+        }
+        .padding(2)
+        .background(Color.codexMist.opacity(0.6), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+        )
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var providerFilterMenu: some View {
+        if !store.availableAnalyticsProviders.isEmpty {
+            Menu {
+                Button("全部供应商") {
+                    store.selectedAnalyticsProviderFilter = nil
+                    Task { await store.refreshAnalyticsData() }
+                }
+                Divider()
+                ForEach(store.availableAnalyticsProviders, id: \.self) { prov in
+                    Button(prov) {
+                        store.selectedAnalyticsProviderFilter = prov
+                        Task { await store.refreshAnalyticsData() }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 10))
+                    Text(store.selectedAnalyticsProviderFilter ?? "全部供应商")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 7.5))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    store.selectedAnalyticsProviderFilter != nil ? Color.accentColor.opacity(0.12) : Color.codexMist.opacity(0.6),
+                    in: Capsule()
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(store.selectedAnalyticsProviderFilter != nil ? Color.accentColor.opacity(0.4) : Color.codexLine.opacity(0.35), lineWidth: 0.6)
+                )
+                .foregroundStyle(store.selectedAnalyticsProviderFilter != nil ? Color.accentColor : Color.codexInk)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("筛选指定供应商，查看同供应商名下的账号或模型表现")
+        }
+    }
+
+    private var groupingPill: some View {
+        HStack(spacing: 2) {
+            groupingPillButton(title: "By model", key: "model")
+            groupingPillButton(title: "By provider", key: "provider")
+            groupingPillButton(title: "By account", key: "account")
+            groupingPillButton(title: "By surface", key: "surface")
+        }
+        .padding(2)
+        .background(Color.codexMist.opacity(0.6), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+        )
+        .fixedSize()
+    }
+
+    private var daysRangePill: some View {
+        HStack(spacing: 2) {
+            daysPillButton(days: 7)
+            daysPillButton(days: 30)
+            daysPillButton(days: 90)
+        }
+        .padding(2)
+        .background(Color.codexMist.opacity(0.6), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+        )
+        .fixedSize()
+    }
 
     private func findClosestSlotDate(to targetDate: Date, in slotDates: [Date]) -> Date? {
         guard !slotDates.isEmpty else { return nil }
@@ -489,6 +637,7 @@ struct GatewayAnalyticsView: View {
                 .fill(Color.codexLine.opacity(0.25))
                 .frame(height: 0.6)
 
+            let isTokensMetric = store.analyticsMetricMode == .tokens
             let activeItems = matching.filter { $0.count > 0 || $0.tokens > 0 }
             if activeItems.isEmpty {
                 Text("无活动记录")
@@ -496,19 +645,27 @@ struct GatewayAnalyticsView: View {
                     .foregroundStyle(Color.codexMuted)
             } else {
                 ForEach(activeItems, id: \.groupKey) { item in
+                    let isOther = item.groupKey == "other-models"
                     HStack(spacing: 5) {
                         Circle()
                             .fill(colorForCategory(item.groupKey))
                             .frame(width: 5.5, height: 5.5)
-                        Text(item.groupKey)
+                        Text(isOther ? "other-models" : item.groupKey)
                             .font(.system(size: 9.5))
                             .foregroundStyle(Color.codexInk.opacity(0.88))
                             .lineLimit(1)
                         Spacer(minLength: 6)
-                        Text("\(item.count) 轮")
-                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.codexInk)
+                        if isTokensMetric {
+                            Text(GatewayStore.formatTokens(item.tokens))
+                                .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                        } else {
+                            Text("\(item.count) 轮")
+                                .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                        }
                     }
+                    .help(isOther ? "包含周期内用量小于 10,000 Tokens 的低频模型集合" : item.groupKey)
                 }
             }
         }
@@ -527,10 +684,12 @@ struct GatewayAnalyticsView: View {
 
     @ViewBuilder
     private func turnsStackedChartView(activePoints: [GatewayModelTimeseriesPoint], slotDates: [Date]) -> some View {
+        let isTokens = store.analyticsMetricMode == .tokens
+
         Chart(activePoints) { (pt: GatewayModelTimeseriesPoint) in
             AreaMark(
                 x: .value("Date", pt.date),
-                y: .value("Turns", pt.count),
+                y: .value(isTokens ? "Tokens" : "Turns", isTokens ? pt.tokens : Int64(pt.count)),
                 series: .value("Group", pt.groupKey),
                 stacking: .standard
             )
@@ -549,10 +708,22 @@ struct GatewayAnalyticsView: View {
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
                     .foregroundStyle(Color.codexLine.opacity(0.25))
                 AxisValueLabel {
-                    if let intVal = value.as(Int.self) {
-                        Text("\(intVal)")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.codexMuted.opacity(0.8))
+                    if isTokens {
+                        if let intVal = value.as(Int64.self) {
+                            Text(GatewayStore.formatTokens(intVal))
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.codexMuted.opacity(0.8))
+                        } else if let intVal = value.as(Int.self) {
+                            Text(GatewayStore.formatTokens(Int64(intVal)))
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.codexMuted.opacity(0.8))
+                        }
+                    } else {
+                        if let intVal = value.as(Int.self) {
+                            Text("\(intVal)")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.codexMuted.opacity(0.8))
+                        }
                     }
                 }
             }
@@ -633,7 +804,6 @@ struct GatewayAnalyticsView: View {
 // MARK: - 4. 模型消耗与 Token 构成透视 (左卡片)
     private var modelAndTokenCompositionSectionView: some View {
         let comp = store.analyticsTokenComposition
-        let models = store.analyticsModelRankings
 
         return VStack(alignment: .leading, spacing: 14) {
             // 头部指标
@@ -716,58 +886,54 @@ struct GatewayAnalyticsView: View {
                 .fill(Color.codexLine.opacity(0.25))
                 .frame(height: 0.6)
 
-            // 2. Top 模型用量排行
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Top 模型消耗排行")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Color.codexMuted)
-
-                if models.isEmpty {
-                    Text("暂无模型记录")
-                        .font(.system(size: 10))
+            // 2. 多维用量结构排行 (支持按模型、供应商、账号)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(rankingSectionTitle)
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(Color.codexMuted)
-                        .padding(.vertical, 8)
-                } else {
-                    let maxToks = max(1, models.first?.tokens ?? 1)
-                    ForEach(models) { item in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(colorForCategory(item.name))
-                                .frame(width: 6, height: 6)
-                            Text(item.name)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.codexInk)
-                                .frame(width: 95, alignment: .leading)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                        .lineLimit(1)
+                        .layoutPriority(1)
 
-                            // 进度条
-                            GeometryReader { g in
-                                let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxToks))
-                                ZStack(alignment: .leading) {
-                                    Capsule().fill(Color.codexMist.opacity(0.4))
-                                    Capsule().fill(colorForCategory(item.name).opacity(0.85))
-                                        .frame(width: barW)
+                    Spacer(minLength: 12)
+
+                    // 排行维度选择器
+                    HStack(spacing: 2) {
+                        ForEach(GatewayAnalyticsRankingDimension.allCases) { dim in
+                            let isSelected = store.analyticsRankingDimension == dim
+                            Button {
+                                withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
+                                    store.analyticsRankingDimension = dim
                                 }
-                            }
-                            .frame(height: 6)
-
-                            // 数值与百分比
-                            HStack(spacing: 4) {
-                                Spacer(minLength: 0)
-                                Text(GatewayStore.formatTokens(item.tokens))
-                                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(Color.codexInk)
-                                    .lineLimit(1)
-                                Text("(\(String(format: "%.0f%%", item.percentage)))")
-                                    .font(.system(size: 8.5))
-                                    .foregroundStyle(Color.codexMuted)
+                            } label: {
+                                Text(dim.rawValue)
+                                    .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
+                                    .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
                                     .lineLimit(1)
                             }
-                            .lineLimit(1)
-                            .frame(width: 96, alignment: .trailing)
+                            .buttonStyle(.plain)
+                            .fixedSize()
                         }
                     }
+                    .padding(2)
+                    .background(Color.codexMist.opacity(0.6), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+                    )
+                    .fixedSize()
+                }
+
+                switch store.analyticsRankingDimension {
+                case .model:
+                    modelRankingsListView
+                case .provider:
+                    providerRankingsListView
+                case .account:
+                    accountRankingsListView
                 }
             }
         }
@@ -778,6 +944,185 @@ struct GatewayAnalyticsView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.8)
         )
+    }
+
+    private var rankingSectionTitle: String {
+        switch store.analyticsRankingDimension {
+        case .model: return "Top 模型消耗"
+        case .provider: return "Top 供应商消耗"
+        case .account:
+            if let p = store.selectedAnalyticsProviderFilter, !p.isEmpty, p != "全部" {
+                return "\(p) 账号消耗"
+            }
+            return "Top 账号消耗"
+        }
+    }
+
+    // 模型排行列表
+    private var modelRankingsListView: some View {
+        let models = store.analyticsModelRankings
+        return Group {
+            if models.isEmpty {
+                Text("暂无模型记录")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.vertical, 8)
+            } else {
+                let maxToks = max(1, models.first?.tokens ?? 1)
+                ForEach(models) { item in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(colorForCategory(item.name))
+                            .frame(width: 6, height: 6)
+                        Text(item.name)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.codexInk)
+                            .frame(width: 95, alignment: .leading)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+
+                        GeometryReader { g in
+                            let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxToks))
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.codexMist.opacity(0.4))
+                                Capsule().fill(colorForCategory(item.name).opacity(0.85))
+                                    .frame(width: barW)
+                            }
+                        }
+                        .frame(height: 6)
+
+                        HStack(spacing: 4) {
+                            Spacer(minLength: 0)
+                            Text(GatewayStore.formatTokens(item.tokens))
+                                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                            Text("(\(String(format: "%.0f%%", item.percentage)))")
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                        .lineLimit(1)
+                        .frame(width: 96, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    // 供应商排行列表
+    private var providerRankingsListView: some View {
+        let providers = store.analyticsProviderRankings
+        return Group {
+            if providers.isEmpty {
+                Text("暂无供应商消耗记录")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.vertical, 8)
+            } else {
+                let maxToks = max(1, providers.first?.tokens ?? 1)
+                ForEach(providers) { item in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(colorForCategory(item.name))
+                            .frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.name)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                            Text("\(item.accountsCount) 个已连账号")
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 105, alignment: .leading)
+
+                        GeometryReader { g in
+                            let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxToks))
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.codexMist.opacity(0.4))
+                                Capsule().fill(colorForCategory(item.name).opacity(0.85))
+                                    .frame(width: barW)
+                            }
+                        }
+                        .frame(height: 6)
+
+                        HStack(spacing: 4) {
+                            Spacer(minLength: 0)
+                            Text(GatewayStore.formatTokens(item.tokens))
+                                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                            Text("(\(String(format: "%.0f%%", item.percentage)))")
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                        .lineLimit(1)
+                        .frame(width: 96, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    // 账号排行列表 (解决同供应商不同账号查看痛点)
+    private var accountRankingsListView: some View {
+        let accounts = store.analyticsAccountRankings
+        return Group {
+            if accounts.isEmpty {
+                Text("暂无账号消耗记录")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.vertical, 8)
+            } else {
+                let maxToks = max(1, accounts.first?.tokens ?? 1)
+                ForEach(accounts) { item in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(colorForCategory(item.name))
+                            .frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.name)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Text(item.provider)
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 105, alignment: .leading)
+
+                        GeometryReader { g in
+                            let barW = max(4, g.size.width * CGFloat(item.tokens) / CGFloat(maxToks))
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.codexMist.opacity(0.4))
+                                Capsule().fill(colorForCategory(item.name).opacity(0.85))
+                                    .frame(width: barW)
+                            }
+                        }
+                        .frame(height: 6)
+
+                        HStack(spacing: 4) {
+                            Spacer(minLength: 0)
+                            Text(GatewayStore.formatTokens(item.tokens))
+                                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+                                .lineLimit(1)
+                            Text("(\(String(format: "%.0f%%", item.percentage)))")
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                        .lineLimit(1)
+                        .frame(width: 96, alignment: .trailing)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - 5. 网关性能基准与客户端透视 (右卡片)
@@ -966,17 +1311,17 @@ struct GatewayAnalyticsView: View {
 
     private func colorForCategory(_ key: String) -> Color {
         let k = key.lowercased()
-        if k.contains("3.7") || k.contains("hermes") {
+        if k.contains("google") || k.contains("gemini") || k.contains("3.7") || k.contains("hermes") {
             return elegantBluePalette[0] // 经典亮蓝
-        } else if k.contains("3.8") || k.contains("api") {
+        } else if k.contains("openai") || k.contains("codex") || k.contains("3.8") || k.contains("api") {
             return elegantBluePalette[1] // 柔和天蓝
         } else if k.contains("deepseek") || k.contains("pi") {
             return elegantBluePalette[2] // 沉稳藏青
-        } else if k.contains("claude") || k.contains("computer") {
+        } else if k.contains("claude") || k.contains("anthropic") || k.contains("computer") {
             return elegantBluePalette[3] // 蔚蓝海蓝
-        } else if k.contains("glm") || k.contains("dsh") || k.contains("browser") {
+        } else if k.contains("glm") || k.contains("opencode") || k.contains("dsh") || k.contains("browser") {
             return elegantBluePalette[4] // 雅致钢蓝
-        } else if k.contains("sites") || k.contains("github") {
+        } else if k.contains("sites") || k.contains("github") || k.contains("qwen") || k.contains("kimi") {
             return elegantBluePalette[5] // 浅冰晶蓝
         } else {
             let hash = abs(k.hashValue)
@@ -994,12 +1339,15 @@ struct GatewayAnalyticsView: View {
         } label: {
             Text(title)
                 .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
                 .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
                 .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
         }
         .buttonStyle(.plain)
+        .fixedSize()
     }
 
     private func daysPillButton(days: Int) -> some View {
@@ -1013,12 +1361,15 @@ struct GatewayAnalyticsView: View {
         } label: {
             Text("\(days)天")
                 .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
                 .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
         }
         .buttonStyle(.plain)
+        .fixedSize()
     }
 
     private func toggleLegendGroup(_ grp: String, uniqueGroups: [String]) {
@@ -1036,34 +1387,120 @@ struct GatewayAnalyticsView: View {
 
     private func legendItemButton(grp: String, uniqueGroups: [String]) -> some View {
         let isHidden = hiddenAnalyticsGroups.contains(grp)
+        let isOtherModels = grp == "other-models"
+
         return Button {
             withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                 toggleLegendGroup(grp, uniqueGroups: uniqueGroups)
             }
         } label: {
             HStack(spacing: 5) {
-                Circle()
-                    .fill(isHidden ? Color.codexMuted.opacity(0.25) : colorForCategory(grp))
-                    .frame(width: 7, height: 7)
-                    .overlay(
-                        Circle()
-                            .stroke(isHidden ? Color.codexLine.opacity(0.5) : Color.clear, lineWidth: 1)
-                    )
-                Text(grp)
-                    .font(.system(size: 10.5, weight: isHidden ? .regular : .medium))
-                    .foregroundStyle(isHidden ? Color.codexMuted.opacity(0.40) : Color.codexInk.opacity(0.90))
+                Capsule(style: .continuous)
+                    .fill(isHidden ? Color.codexMuted.opacity(0.35) : colorForCategory(grp))
+                    .frame(width: 12, height: 2.5)
+
+                Text(isOtherModels ? "other-models (微量模型集合)" : grp)
+                    .font(.system(size: 11, weight: isHidden ? .regular : .medium))
+                    .foregroundStyle(isHidden ? Color.codexMuted.opacity(0.40) : Color.codexInk.opacity(0.88))
                     .strikethrough(isHidden, color: Color.codexMuted.opacity(0.40))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                if isOtherModels {
+                    Text("低频汇总")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Color.codexMuted.opacity(0.75))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.codexMist.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
+                }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            .background(
-                isHidden ? Color.clear : Color.codexMist.opacity(0.4),
-                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isHidden ? "点击重新展示 \(grp)" : "点击隐藏 \(grp)")
+        .fixedSize(horizontal: true, vertical: false)
+        .help(isOtherModels ? "包含当前周期内 Token 用量小于 10,000 的低频模型集合，点击隐藏或显示" : (isHidden ? "点击重新展示 \(grp)" : "点击隐藏 \(grp)"))
+    }
+}
+
+// MARK: - 自适应流式图例布局 (支持自然靠左对齐、按内容自适应宽度、图例换行、图例内文字不折行)
+struct AnalyticsLegendFlowLayout: Layout {
+    var horizontalSpacing: CGFloat = 16
+    var verticalSpacing: CGFloat = 8
+    var alignment: HorizontalAlignment = .leading
+
+    struct Row {
+        var subviews: [LayoutSubview] = []
+        var sizes: [CGSize] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
     }
 
+    private func computeRows(proposal: ProposedViewSize, subviews: Subviews) -> [Row] {
+        let maxWidth = proposal.width ?? .infinity
+        var rows: [Row] = []
+        var currentRow = Row()
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let neededWidth = currentRow.subviews.isEmpty ? size.width : (currentRow.width + horizontalSpacing + size.width)
+
+            if neededWidth > maxWidth && !currentRow.subviews.isEmpty {
+                rows.append(currentRow)
+                currentRow = Row(subviews: [subview], sizes: [size], width: size.width, height: size.height)
+            } else {
+                currentRow.subviews.append(subview)
+                currentRow.sizes.append(size)
+                currentRow.width = neededWidth
+                currentRow.height = max(currentRow.height, size.height)
+            }
+        }
+
+        if !currentRow.subviews.isEmpty {
+            rows.append(currentRow)
+        }
+
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = computeRows(proposal: proposal, subviews: subviews)
+        let maxWidth = proposal.width ?? .infinity
+        let totalHeight = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * verticalSpacing
+        let maxRowWidth = rows.reduce(0) { max($0, $1.width) }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : maxRowWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = computeRows(proposal: ProposedViewSize(width: bounds.width, height: bounds.height), subviews: subviews)
+        var y = bounds.minY
+
+        for row in rows {
+            let xOffset: CGFloat
+            switch alignment {
+            case .leading:
+                xOffset = 0
+            case .trailing:
+                xOffset = max(0, bounds.width - row.width)
+            case .center:
+                xOffset = max(0, (bounds.width - row.width) / 2.0)
+            default:
+                xOffset = 0
+            }
+            var x = bounds.minX + xOffset
+
+            for (subview, size) in zip(row.subviews, row.sizes) {
+                let yOffset = (row.height - size.height) / 2.0
+                subview.place(
+                    at: CGPoint(x: x, y: y + yOffset),
+                    proposal: ProposedViewSize(width: ceil(size.width) + 1, height: ceil(size.height))
+                )
+                x += size.width + horizontalSpacing
+            }
+
+            y += row.height + verticalSpacing
+        }
+    }
 }
