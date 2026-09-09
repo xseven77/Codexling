@@ -4,13 +4,13 @@ import Observation
 import SQLite3
 
 public enum GatewayNavTab: String, CaseIterable, Identifiable {
-    case connect = "接入与模型"
-    case automation = "自动化任务"
-    case agents = "一键接入 Agent"
-    case overview = "监控概览"
+    case connect = "模型接入"
+    case automation = "自动化"
+    case agents = "Agent 接入"
+    case overview = "运行概览"
     case analytics = "用量分析"
-    case requests = "实时请求"
-    case doctor = "Gateway Doctor"
+    case requests = "请求监控"
+    case doctor = "网关诊断"
     case logs = "运行日志"
 
     public var id: String { rawValue }
@@ -52,6 +52,8 @@ public struct GatewayAgentWorkRow: Identifiable {
     public let tasksCount: Int
     public let statusBadge: String
     public let detailText: String
+    /// 本地资源名（agent-logos/ 下的 PNG 文件名，不含扩展名）；无真实 logo 时为 nil，回落到 SF Symbol。
+    public let logoAsset: String?
 
     public init(
         id: String,
@@ -61,7 +63,8 @@ public struct GatewayAgentWorkRow: Identifiable {
         durationText: String,
         tasksCount: Int,
         statusBadge: String,
-        detailText: String
+        detailText: String,
+        logoAsset: String? = nil
     ) {
         self.id = id
         self.agentName = agentName
@@ -71,6 +74,25 @@ public struct GatewayAgentWorkRow: Identifiable {
         self.tasksCount = tasksCount
         self.statusBadge = statusBadge
         self.detailText = detailText
+        self.logoAsset = logoAsset
+    }
+}
+
+/// 每日 Agent 工作时长数据点（按天采样，x=日期，y=秒数，按 agent 分系列）
+public struct GatewayAgentDayPoint: Identifiable, Sendable {
+    public var id: String { "\(day)_\(agentID)" }
+    public let day: String        // "yyyy-MM-dd"
+    public let date: Date
+    public let agentID: String
+    public let agentName: String
+    public let seconds: TimeInterval
+
+    public init(day: String, date: Date, agentID: String, agentName: String, seconds: TimeInterval) {
+        self.day = day
+        self.date = date
+        self.agentID = agentID
+        self.agentName = agentName
+        self.seconds = seconds
     }
 }
 
@@ -425,6 +447,7 @@ public final class GatewayStore {
     }
 
     public func runAutomationTaskNow(_ task: GatewayAutomationTask) async -> (success: Bool, message: String) {
+        let startedAt = Int64(Date().timeIntervalSince1970)
         let res = await triggerModelCheck(
             providers: task.providers.isEmpty ? nil : task.providers,
             accountIds: task.allAccounts ? nil : task.accountIds,
@@ -432,11 +455,33 @@ public final class GatewayStore {
         )
         if res.success {
             if let idx = gatewaySettings.automationTasks.firstIndex(where: { $0.id == task.id }) {
-                gatewaySettings.automationTasks[idx].lastRunAt = Int64(Date().timeIntervalSince1970)
+                gatewaySettings.automationTasks[idx].lastRunAt = startedAt
                 gatewaySettings.automationTasks[idx].lastRunStatus = "running"
             }
+            recordAutomationRunStart(taskId: task.id, taskName: task.name, taskType: task.taskType, startedAt: startedAt)
         }
         return res
+    }
+
+    /// 记录一次自动化任务开始执行（新建一条进行中的 RunLog）
+    public func recordAutomationRunStart(taskId: String, taskName: String, taskType: AutomationTaskType, startedAt: Int64) {
+        var logs = gatewaySettings.automationRunLogs
+        logs.append(GatewayAutomationRunLog(taskId: taskId, taskName: taskName, taskType: taskType, startedAt: startedAt))
+        // 最多保留最近 300 条，避免设置无限膨胀
+        if logs.count > 300 {
+            logs = Array(logs.suffix(300))
+        }
+        gatewaySettings.automationRunLogs = logs
+    }
+
+    /// 结束一次自动化任务（按 taskId 补全最近一条进行中的 RunLog 的结束时点、结果与摘要）
+    public func finishAutomationRun(taskId: String, finishedAt: Int64, isSuccess: Bool?, summary: String?) {
+        var logs = gatewaySettings.automationRunLogs
+        guard let idx = logs.lastIndex(where: { $0.taskId == taskId && $0.finishedAt == nil }) else { return }
+        logs[idx].finishedAt = finishedAt
+        logs[idx].isSuccess = isSuccess
+        logs[idx].summary = summary
+        gatewaySettings.automationRunLogs = logs
     }
 
     // Agent status is discovered off the main actor when the Agents page is
@@ -545,6 +590,7 @@ public final class GatewayStore {
     public private(set) var isAnalyticsLoading: Bool = false
     public var analyticsGrouping: String = "model" // "model", "provider", "account", "surface"
     public var analyticsMetricMode: GatewayAnalyticsMetricMode = .tokens // 默认 Tokens 为纵坐标，支持切换为轮次
+    public var analyticsChartStyle: GatewayAnalyticsChartStyle = .area // 趋势图呈现方式：面积曲线 / 堆叠柱状
     public var analyticsRankingDimension: GatewayAnalyticsRankingDimension = .model
     public var selectedAnalyticsProviderFilter: String? = nil
     public var analyticsDaysRange: Int = 7 // 7, 30, or 90
@@ -1111,12 +1157,18 @@ public final class GatewayStore {
                         // 若有自动化任务之前被标记为 running，更新其最终运行状态
                         for idx in self.gatewaySettings.automationTasks.indices {
                             if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
+                                let finalStatus: String
+                                let finalSummary: String?
                                 if let summary = status.lastSummary {
-                                    self.gatewaySettings.automationTasks[idx].lastRunStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
-                                    self.gatewaySettings.automationTasks[idx].lastRunSummary = "可用 \(summary.available) · 异常 \(summary.error)"
+                                    finalStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
+                                    finalSummary = "可用 \(summary.available) · 异常 \(summary.error)"
                                 } else {
-                                    self.gatewaySettings.automationTasks[idx].lastRunStatus = "success"
+                                    finalStatus = "success"
+                                    finalSummary = nil
                                 }
+                                self.gatewaySettings.automationTasks[idx].lastRunStatus = finalStatus
+                                self.gatewaySettings.automationTasks[idx].lastRunSummary = finalSummary
+                                self.finishAutomationRun(taskId: self.gatewaySettings.automationTasks[idx].id, finishedAt: status.lastFinishedAt ?? Int64(Date().timeIntervalSince1970), isSuccess: finalStatus == "success", summary: finalSummary)
                             }
                         }
                         // 巡检刚结束，立即刷新全量模型健康状态
@@ -1150,12 +1202,18 @@ public final class GatewayStore {
                 // 若有自动化任务之前被标记为 running，更新其最终运行状态
                 for idx in self.gatewaySettings.automationTasks.indices {
                     if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
+                        let finalStatus: String
+                        let finalSummary: String?
                         if let summary = status.lastSummary {
-                            self.gatewaySettings.automationTasks[idx].lastRunStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
-                            self.gatewaySettings.automationTasks[idx].lastRunSummary = "可用 \(summary.available) · 异常 \(summary.error)"
+                            finalStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
+                            finalSummary = "可用 \(summary.available) · 异常 \(summary.error)"
                         } else {
-                            self.gatewaySettings.automationTasks[idx].lastRunStatus = "success"
+                            finalStatus = "success"
+                            finalSummary = nil
                         }
+                        self.gatewaySettings.automationTasks[idx].lastRunStatus = finalStatus
+                        self.gatewaySettings.automationTasks[idx].lastRunSummary = finalSummary
+                        self.finishAutomationRun(taskId: self.gatewaySettings.automationTasks[idx].id, finishedAt: status.lastFinishedAt ?? Int64(Date().timeIntervalSince1970), isSuccess: finalStatus == "success", summary: finalSummary)
                     }
                 }
                 Task { [weak self] in
@@ -1685,9 +1743,8 @@ public final class GatewayStore {
             // 2. 时序走势 - 密集时间槽采样与零填充，彻底消除断崖切断并保证多系列堆叠平滑连续
             let slotInterval: Int64
             switch daysRange {
-            case ..<10: slotInterval = 7200  // 7天: 每 2 小时一采样
-            case ..<40: slotInterval = 14400 // 30天: 每 4 小时一采样
-            default: slotInterval = 43200    // 90天: 每 12 小时一采样
+            case ..<10: slotInterval = 7200  // 7天: 每 2 小时一采样 (恢复高精度细腻波形)
+            default: slotInterval = 86400    // 30天与90天: 每天一采样 (大幅缩减长周期采样点，避免膨胀卡顿)
             }
 
             let startMs = Int64(calendar.date(byAdding: .day, value: -daysRange, to: today)!.timeIntervalSince1970 * 1000)
@@ -3660,6 +3717,34 @@ public final class GatewayStore {
         )
 
         return [agRow, codexRow, dshRow, hermesRow, piRow]
+    }
+
+    /// 过去 `days` 天（含今天）内，每个 Agent 的每日工作时长序列（按天采样排序）。
+    /// 供「本地 Agent 活动与伴侣观测」的每日图使用；图中按 agent 分系列，支持面积/柱状。
+    public func agentDailyWorkSeries(days: Int) -> [GatewayAgentDayPoint] {
+        let store = companionStatsStore ?? CompanionStatsStore()
+        let rows = store.dailyAgentSeconds(days: days)
+
+        let names: [String: (String, String)] = [
+            "antigravity": ("Google Antigravity", "sparkles"),
+            "codex": ("Codex (CLI / App)", "apple.terminal"),
+            "dsh": ("Deepseek Harness (CLI)", "bolt.horizontal.circle"),
+            "hermes": ("Hermes Agent", "cube.transparent"),
+            "pi": ("Pi (CLI)", "terminal")
+        ]
+
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone.current
+
+        var out: [GatewayAgentDayPoint] = []
+        for r in rows {
+            let (name, _) = names[r.agent] ?? (r.agent, "terminal")
+            let date = df.date(from: r.day) ?? Date()
+            out.append(GatewayAgentDayPoint(day: r.day, date: date, agentID: r.agent, agentName: name, seconds: r.seconds))
+        }
+        return out.sorted { $0.day < $1.day || ($0.day == $1.day && $0.agentID < $1.agentID) }
     }
 
     public var agentRows: [GatewayAgentWorkRow] {

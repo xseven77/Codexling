@@ -237,7 +237,7 @@ public struct GatewayTelemetryEventDetail: Codable, Identifiable {
     public var formattedTime: String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000.0)
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: date)
     }
 
@@ -301,7 +301,7 @@ public enum GatewayRequestColumn: String, CaseIterable, Identifiable, Codable, S
 
     public var subtitle: String {
         switch self {
-        case .time: return "请求发起的本地时间戳 (HH:mm:ss)"
+        case .time: return "请求发起的本地完整时间戳 (yyyy-MM-dd HH:mm:ss)"
         case .id: return "链路唯一请求标识符 (点击可复制)"
         case .agent: return "发起请求的客户端 (Cursor, Claude Code 等)"
         case .ingressProtocol: return "入向服务协议 (OpenAI Chat, Messages 等)"
@@ -335,7 +335,7 @@ public enum GatewayRequestColumn: String, CaseIterable, Identifiable, Codable, S
 
     public var minWidth: CGFloat {
         switch self {
-        case .time: return 58
+        case .time: return 130
         case .id: return 68
         case .agent: return 70
         case .ingressProtocol: return 75
@@ -371,7 +371,7 @@ public enum GatewayRequestColumn: String, CaseIterable, Identifiable, Codable, S
 
     public var maxWidth: CGFloat {
         switch self {
-        case .time: return 68
+        case .time: return 145
         case .id: return 84
         case .agent: return 120
         case .ingressProtocol: return 110
@@ -599,6 +599,22 @@ public enum GatewayAnalyticsMetricMode: String, CaseIterable, Identifiable, Send
     case turns = "轮次"
 
     public var id: String { rawValue }
+}
+
+public enum GatewayAnalyticsChartStyle: String, CaseIterable, Identifiable, Sendable {
+    case area = "面积曲线"
+    case bars = "堆叠柱状"
+
+    public var id: String { rawValue }
+
+    public var title: String { rawValue }
+
+    public var icon: String {
+        switch self {
+        case .area: return "waveform.path.ecg"
+        case .bars: return "chart.bar.fill"
+        }
+    }
 }
 
 public enum GatewayAnalyticsRankingDimension: String, CaseIterable, Identifiable, Sendable {

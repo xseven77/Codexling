@@ -86,7 +86,7 @@ public struct GatewayLogEntry: Identifiable, Equatable, Sendable {
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()

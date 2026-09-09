@@ -13,10 +13,16 @@ public final class GatewayWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private var hostingController: NSHostingController<GatewayView>!
 
+    /// Kept separately because this detached window may be created after the
+    /// app-wide appearance pass has already completed.
+    var appSettings: AppSettingsStore? {
+        didSet { refreshThemeAppearance() }
+    }
+
     /// Set by AppDelegate after init so GatewayView can forward proxy toggles
     /// through MultiAgentSettingsStore (the owner of in-memory account state).
     var multiAgentSettingsStore: MultiAgentSettingsStore? {
-        didSet { hostingController?.rootView = GatewayView(settingsStore: multiAgentSettingsStore) }
+        didSet { refreshRootView() }
     }
 
     public static func defaultWindowSize(for screen: NSScreen? = nil) -> NSSize {
@@ -69,6 +75,19 @@ public final class GatewayWindowController: NSObject, NSWindowDelegate {
             window.standardWindowButton(type)?.isHidden = false
         }
         window.center()
+    }
+
+    func refreshThemeAppearance() {
+        window.appearance = appSettings?.theme.nsAppearance
+        refreshRootView()
+        window.contentView?.needsDisplay = true
+    }
+
+    private func refreshRootView() {
+        hostingController?.rootView = GatewayView(
+            settingsStore: multiAgentSettingsStore,
+            preferredColorScheme: appSettings?.resolvedColorScheme
+        )
     }
 
     public func show(on screen: NSScreen? = nil) {

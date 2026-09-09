@@ -306,6 +306,24 @@ struct GatewayAnalyticsView: View {
             }
         }()
         let uniqueGroups = Array(Set(allPoints.map { $0.groupKey })).sorted()
+
+        // 按排序后的图例顺序为每个分组唯一分配色号（分组数 ≤ 调色板数则绝不撞色），
+        // 这样同族的多模型各占一色，图例虽密集但每一项颜色独立、可清晰分辨。
+        let neutralColor = Color(red: 0.55, green: 0.58, blue: 0.62)
+        let groupColors: [String: Color] = {
+            var m: [String: Color] = [:]
+            var ordinal = 0
+            for g in uniqueGroups {
+                let k = g.lowercased()
+                if k == "other-models" || k == "未知模型" {
+                    m[g] = neutralColor
+                } else {
+                    m[g] = elegantBluePalette[ordinal % elegantBluePalette.count]
+                    ordinal += 1
+                }
+            }
+            return m
+        }()
         let activePoints = allPoints
             .filter { !hiddenAnalyticsGroups.contains($0.groupKey) }
             .sorted {
@@ -392,11 +410,12 @@ struct GatewayAnalyticsView: View {
                 Spacer(minLength: 12)
 
                 // 控制栏: 固定分两行排布
-                // 第一行: Tokens / 轮次 模式切换 + 时间跨度 (7天 | 30天 | 90天)
+                // 第一行: Tokens / 轮次 模式切换 + 面积/堆叠呈现方式 + 时间跨度 (7天 | 30天 | 90天)
                 // 第二行: 全部供应商下拉筛选 + By 系列多维切换 (By model | By provider | By account | By surface)
                 VStack(alignment: .trailing, spacing: 6) {
                     HStack(spacing: 8) {
                         metricModePill
+                        chartStylePill
                         daysRangePill
                     }
                     .fixedSize(horizontal: true, vertical: false)
@@ -435,14 +454,15 @@ struct GatewayAnalyticsView: View {
                     Spacer()
                 }
             } else {
-                turnsStackedChartView(activePoints: activePoints, slotDates: slotDates)
-                    .id("turns_chart_\(hiddenAnalyticsGroups.count)")
+                turnsStackedChartView(activePoints: activePoints, slotDates: slotDates, groupColors: groupColors, neutralColor: neutralColor)
+                    .id("turns_chart_\(store.analyticsGrouping)_\(store.analyticsMetricMode.rawValue)_\(store.analyticsChartStyle.rawValue)_\(store.analyticsDaysRange)_\(store.selectedAnalyticsProviderFilter ?? "")_\(hiddenAnalyticsGroups.count)")
                     .frame(height: 200)
+                    .transition(.opacity)
 
                 // 交互式可点击图例栏 (自适应内容宽度，允许图例换行，图例项内单行不折行)
                 AnalyticsLegendFlowLayout(horizontalSpacing: 14, verticalSpacing: 8, alignment: .leading) {
                     ForEach(uniqueGroups, id: \.self) { grp in
-                        legendItemButton(grp: grp, uniqueGroups: uniqueGroups)
+                        legendItemButton(grp: grp, uniqueGroups: uniqueGroups, colors: groupColors, neutral: neutralColor)
                     }
 
                     if !hiddenAnalyticsGroups.isEmpty {
@@ -491,9 +511,7 @@ struct GatewayAnalyticsView: View {
             ForEach(GatewayAnalyticsMetricMode.allCases) { mode in
                 let isSelected = store.analyticsMetricMode == mode
                 Button {
-                    withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
-                        store.analyticsMetricMode = mode
-                    }
+                    store.analyticsMetricMode = mode
                 } label: {
                     Text(mode.rawValue)
                         .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
@@ -503,6 +521,41 @@ struct GatewayAnalyticsView: View {
                         .padding(.vertical, 4)
                         .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
                         .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                        .animation(.spring(response: 0.22, dampingFraction: 0.85), value: isSelected)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+            }
+        }
+        .padding(2)
+        .background(Color.codexMist.opacity(0.6), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.6)
+        )
+        .fixedSize()
+    }
+
+    private var chartStylePill: some View {
+        HStack(spacing: 2) {
+            ForEach(GatewayAnalyticsChartStyle.allCases) { style in
+                let isSelected = store.analyticsChartStyle == style
+                Button {
+                    store.analyticsChartStyle = style
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: style == .area ? "waveform.path.ecg" : "chart.bar.fill")
+                            .font(.system(size: 8.5))
+                        Text(style.rawValue)
+                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
+                    .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                    .animation(.spring(response: 0.22, dampingFraction: 0.85), value: isSelected)
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -591,30 +644,39 @@ struct GatewayAnalyticsView: View {
         .fixedSize()
     }
 
+    private static let tooltipDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "MM/dd HH:mm"
+        return df
+    }()
+
     private func findClosestSlotDate(to targetDate: Date, in slotDates: [Date]) -> Date? {
         guard !slotDates.isEmpty else { return nil }
-        var closestDate = slotDates[0]
-        var minDiff = abs(slotDates[0].timeIntervalSince(targetDate))
-        for dt in slotDates {
-            let diff = abs(dt.timeIntervalSince(targetDate))
-            if diff < minDiff {
-                minDiff = diff
-                closestDate = dt
+        var low = 0
+        var high = slotDates.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            if slotDates[mid] < targetDate {
+                low = mid + 1
+            } else if slotDates[mid] > targetDate {
+                high = mid - 1
+            } else {
+                return slotDates[mid]
             }
         }
-        return closestDate
+        if low >= slotDates.count { return slotDates[slotDates.count - 1] }
+        if high < 0 { return slotDates[0] }
+        let d1 = abs(slotDates[low].timeIntervalSince(targetDate))
+        let d2 = abs(slotDates[high].timeIntervalSince(targetDate))
+        return d1 < d2 ? slotDates[low] : slotDates[high]
     }
 
     @ViewBuilder
-    private func chartTooltipPopup(for date: Date, in activePoints: [GatewayModelTimeseriesPoint]) -> some View {
+    private func chartTooltipPopup(for date: Date, in activePoints: [GatewayModelTimeseriesPoint], groupColors: [String: Color], neutralColor: Color) -> some View {
         let matching = activePoints.filter { abs($0.date.timeIntervalSince(date)) < 1.0 }
         let totalTurns = matching.reduce(0) { $0 + $1.count }
         let totalTokens = matching.reduce(0) { $0 + $1.tokens }
-        let dateString: String = {
-            let df = DateFormatter()
-            df.dateFormat = "MM/dd HH:mm"
-            return df.string(from: date)
-        }()
+        let dateString = Self.tooltipDateFormatter.string(from: date)
 
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 4) {
@@ -638,7 +700,21 @@ struct GatewayAnalyticsView: View {
                 .frame(height: 0.6)
 
             let isTokensMetric = store.analyticsMetricMode == .tokens
-            let activeItems = matching.filter { $0.count > 0 || $0.tokens > 0 }
+            let activeItems = matching
+                .filter { $0.count > 0 || $0.tokens > 0 }
+                .sorted {
+                    if isTokensMetric {
+                        if $0.tokens != $1.tokens {
+                            return $0.tokens > $1.tokens
+                        }
+                        return $0.count > $1.count
+                    } else {
+                        if $0.count != $1.count {
+                            return $0.count > $1.count
+                        }
+                        return $0.tokens > $1.tokens
+                    }
+                }
             if activeItems.isEmpty {
                 Text("无活动记录")
                     .font(.system(size: 9))
@@ -648,12 +724,13 @@ struct GatewayAnalyticsView: View {
                     let isOther = item.groupKey == "other-models"
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(colorForCategory(item.groupKey))
+                            .fill(groupColors[item.groupKey] ?? neutralColor)
                             .frame(width: 5.5, height: 5.5)
                         Text(isOther ? "other-models" : item.groupKey)
                             .font(.system(size: 9.5))
                             .foregroundStyle(Color.codexInk.opacity(0.88))
                             .lineLimit(1)
+                            .truncationMode(.tail)
                         Spacer(minLength: 6)
                         if isTokensMetric {
                             Text(GatewayStore.formatTokens(item.tokens))
@@ -683,23 +760,36 @@ struct GatewayAnalyticsView: View {
     }
 
     @ViewBuilder
-    private func turnsStackedChartView(activePoints: [GatewayModelTimeseriesPoint], slotDates: [Date]) -> some View {
+    private func turnsStackedChartView(
+        activePoints: [GatewayModelTimeseriesPoint],
+        slotDates: [Date],
+        groupColors: [String: Color],
+        neutralColor: Color
+    ) -> some View {
         let isTokens = store.analyticsMetricMode == .tokens
+        let style = store.analyticsChartStyle
 
-        Chart(activePoints) { (pt: GatewayModelTimeseriesPoint) in
-            AreaMark(
-                x: .value("Date", pt.date),
-                y: .value(isTokens ? "Tokens" : "Turns", isTokens ? pt.tokens : Int64(pt.count)),
-                series: .value("Group", pt.groupKey),
-                stacking: .standard
-            )
-            .interpolationMethod(.monotone)
-            .foregroundStyle(colorForCategory(pt.groupKey).opacity(0.78))
-
-            if let selectedSlotDate = hoveredSlotDate {
-                RuleMark(x: .value("SelectedDate", selectedSlotDate))
-                    .foregroundStyle(Color(red: 0.09, green: 0.49, blue: 0.98).opacity(0.85))
-                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
+        Chart {
+            ForEach(activePoints) { (pt: GatewayModelTimeseriesPoint) in
+                let y = isTokens ? pt.tokens : Int64(pt.count)
+                if style == .bars {
+                    BarMark(
+                        x: .value("Date", pt.date),
+                        y: .value(isTokens ? "Tokens" : "Turns", y),
+                        stacking: .standard
+                    )
+                    .foregroundStyle((groupColors[pt.groupKey] ?? neutralColor).opacity(0.85))
+                    .cornerRadius(2)
+                } else {
+                    AreaMark(
+                        x: .value("Date", pt.date),
+                        y: .value(isTokens ? "Tokens" : "Turns", y),
+                        series: .value("Group", pt.groupKey),
+                        stacking: .standard
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle((groupColors[pt.groupKey] ?? neutralColor).opacity(0.78))
+                }
             }
         }
         .chartLegend(.hidden)
@@ -785,6 +875,14 @@ struct GatewayAnalyticsView: View {
                        let xPos = proxy.position(forX: selectedSlotDate),
                        let plotFrame = proxy.plotFrame {
                         let actualX = xPos + geo[plotFrame].origin.x
+                        // 1. 垂直指示虚线 (在 overlay 中用 Path 直接绘制，无任何 Swift Charts 重绘开销)
+                        Path { path in
+                            path.move(to: CGPoint(x: actualX, y: geo[plotFrame].minY))
+                            path.addLine(to: CGPoint(x: actualX, y: geo[plotFrame].maxY))
+                        }
+                        .stroke(Color(red: 0.09, green: 0.49, blue: 0.98).opacity(0.85), style: StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
+
+                        // 2. 悬浮 Tooltip 气泡
                         let plotWidth = geo[plotFrame].width
                         let isRightSide = actualX > (geo[plotFrame].minX + plotWidth / 2)
                         let tooltipX: CGFloat = isRightSide
@@ -792,7 +890,7 @@ struct GatewayAnalyticsView: View {
                             : min(actualX + 98, geo[plotFrame].maxX - 92)
                         let tooltipY: CGFloat = geo[plotFrame].minY + 45
 
-                        chartTooltipPopup(for: selectedSlotDate, in: activePoints)
+                        chartTooltipPopup(for: selectedSlotDate, in: activePoints, groupColors: groupColors, neutralColor: neutralColor)
                             .position(x: tooltipX, y: tooltipY)
                             .allowsHitTesting(false)
                     }
@@ -1299,40 +1397,52 @@ struct GatewayAnalyticsView: View {
         }
     }
 
+    // 冷色相近但可区分的调色板 (蓝 → 青 → 靛 → 紫灰谱系，同一模型始终独占一色)
     private let elegantBluePalette: [Color] = [
-        Color(red: 0.09, green: 0.49, blue: 0.98), // 0: 经典亮蓝 (Primary Tech Blue - 图1核心主色)
-        Color(red: 0.45, green: 0.75, blue: 0.98), // 1: 柔和天蓝 (Soft Sky Blue - 图1右侧柱状层浅色)
+        Color(red: 0.09, green: 0.49, blue: 0.98), // 0: 经典亮蓝 (Primary Tech Blue)
+        Color(red: 0.45, green: 0.75, blue: 0.98), // 1: 柔和天蓝 (Sky Blue)
         Color(red: 0.14, green: 0.30, blue: 0.66), // 2: 沉稳藏青 (Deep Cobalt Navy)
         Color(red: 0.24, green: 0.60, blue: 0.90), // 3: 蔚蓝海蓝 (Cerulean Azure)
         Color(red: 0.38, green: 0.52, blue: 0.70), // 4: 雅致钢蓝 (Steel Slate Blue)
         Color(red: 0.60, green: 0.82, blue: 0.96), // 5: 浅冰晶蓝 (Glacier Ice Blue)
         Color(red: 0.30, green: 0.44, blue: 0.62), // 6: 沉静灰蓝 (Muted Slate Blue)
+        Color(red: 0.10, green: 0.62, blue: 0.55), // 7: 清透湖绿 (Teal)
+        Color(red: 0.55, green: 0.85, blue: 0.75), // 8: 薄荷青 (Mint Teal)
+        Color(red: 0.20, green: 0.48, blue: 0.42), // 9: 深邃墨绿 (Deep Jade)
+        Color(red: 0.20, green: 0.68, blue: 0.82), // 10: 冰蓝 Cyan (Cyan Blue)
+        Color(red: 0.72, green: 0.88, blue: 0.94), // 11: 淡雾青 (Ice Cyan)
+        Color(red: 0.35, green: 0.30, blue: 0.85), // 12: 深靛蓝 (Deep Indigo)
+        Color(red: 0.70, green: 0.42, blue: 0.90), // 13: 柔和紫罗兰 (Soft Violet)
+        Color(red: 0.85, green: 0.65, blue: 0.92), // 14: 浅紫丁香 (Lavender)
+        Color(red: 0.40, green: 0.36, blue: 0.60), // 15: 蓝紫灰 (Slate Purple)
+        Color(red: 0.28, green: 0.22, blue: 0.55), // 16: 深邃紫 (Deep Violet)
+        Color(red: 0.42, green: 0.66, blue: 0.82), // 17: 灰蓝 (Steel Blue)
+        Color(red: 0.16, green: 0.54, blue: 0.72), // 18: 湖蓝 (Aqua Teal)
+        Color(red: 0.50, green: 0.58, blue: 0.74), // 19: 雾灰蓝 (Ash Blue)
     ]
 
+    // 确定性字符串哈希 (DJB2)：跨启动稳定，保证同一模型永远映射到同一颜色
+    private func stableHash(_ s: String) -> Int {
+        var h = 5381
+        for byte in s.utf8 {
+            h = ((h << 5) &+ h) &+ Int(byte)
+        }
+        return h & 0x7fffffff
+    }
+
+    // 每个分类项独占一色：按名称稳定哈希取色，杜绝同族模型撞色
     private func colorForCategory(_ key: String) -> Color {
         let k = key.lowercased()
-        if k.contains("google") || k.contains("gemini") || k.contains("3.7") || k.contains("hermes") {
-            return elegantBluePalette[0] // 经典亮蓝
-        } else if k.contains("openai") || k.contains("codex") || k.contains("3.8") || k.contains("api") {
-            return elegantBluePalette[1] // 柔和天蓝
-        } else if k.contains("deepseek") || k.contains("pi") {
-            return elegantBluePalette[2] // 沉稳藏青
-        } else if k.contains("claude") || k.contains("anthropic") || k.contains("computer") {
-            return elegantBluePalette[3] // 蔚蓝海蓝
-        } else if k.contains("glm") || k.contains("opencode") || k.contains("dsh") || k.contains("browser") {
-            return elegantBluePalette[4] // 雅致钢蓝
-        } else if k.contains("sites") || k.contains("github") || k.contains("qwen") || k.contains("kimi") {
-            return elegantBluePalette[5] // 浅冰晶蓝
-        } else {
-            let hash = abs(k.hashValue)
-            return elegantBluePalette[hash % elegantBluePalette.count]
+        if k == "other-models" || k == "未知模型" {
+            return Color(red: 0.55, green: 0.58, blue: 0.62) // 中性灰，明确区分"汇总集合"
         }
+        return elegantBluePalette[stableHash(k) % elegantBluePalette.count]
     }
 
     private func groupingPillButton(title: String, key: String) -> some View {
         let isSelected = store.analyticsGrouping == key
         return Button {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+            withAnimation(.easeInOut(duration: 0.2)) {
                 store.analyticsGrouping = key
                 hiddenAnalyticsGroups.removeAll()
             }
@@ -1353,10 +1463,8 @@ struct GatewayAnalyticsView: View {
     private func daysPillButton(days: Int) -> some View {
         let isSelected = store.analyticsDaysRange == days
         return Button {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                store.analyticsDaysRange = days
-                hiddenAnalyticsGroups.removeAll()
-            }
+            store.analyticsDaysRange = days
+            hiddenAnalyticsGroups.removeAll()
             Task { await store.refreshAnalyticsData() }
         } label: {
             Text("\(days)天")
@@ -1367,6 +1475,7 @@ struct GatewayAnalyticsView: View {
                 .padding(.vertical, 4)
                 .background(isSelected ? Color.codexCard : Color.clear, in: Capsule())
                 .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
+                .animation(.spring(response: 0.22, dampingFraction: 0.85), value: isSelected)
         }
         .buttonStyle(.plain)
         .fixedSize()
@@ -1385,7 +1494,7 @@ struct GatewayAnalyticsView: View {
         }
     }
 
-    private func legendItemButton(grp: String, uniqueGroups: [String]) -> some View {
+    private func legendItemButton(grp: String, uniqueGroups: [String], colors: [String: Color], neutral: Color) -> some View {
         let isHidden = hiddenAnalyticsGroups.contains(grp)
         let isOtherModels = grp == "other-models"
 
@@ -1396,7 +1505,7 @@ struct GatewayAnalyticsView: View {
         } label: {
             HStack(spacing: 5) {
                 Capsule(style: .continuous)
-                    .fill(isHidden ? Color.codexMuted.opacity(0.35) : colorForCategory(grp))
+                    .fill(isHidden ? Color.codexMuted.opacity(0.35) : (colors[grp] ?? neutral))
                     .frame(width: 12, height: 2.5)
 
                 Text(isOtherModels ? "other-models (微量模型集合)" : grp)

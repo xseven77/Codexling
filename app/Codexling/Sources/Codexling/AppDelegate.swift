@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.statusController?.refreshThemeAppearance()
             self?.windowController?.refreshThemeAppearance()
             self?.settingsWindowController?.refreshThemeAppearance()
+            GatewayWindowController.shared.refreshThemeAppearance()
         }
         settingsStore.onWindowAlwaysOnTopChanged = { [weak self] _ in
             self?.windowController?.refreshAlwaysOnTop()
@@ -105,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             companionStatsStore: companionStatsStore
         )
         GatewayWindowController.shared.multiAgentSettingsStore = multiAgentSettingsStore
+        GatewayWindowController.shared.appSettings = settingsStore
 
         let actions = UsageActions(
             refresh: { [weak self] in

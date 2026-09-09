@@ -127,6 +127,56 @@ public struct GatewayAutomationTask: Codable, Identifiable, Equatable, Sendable 
     }
 }
 
+public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    public var taskId: String
+    public var taskName: String
+    public var taskType: AutomationTaskType
+    public var startedAt: Int64
+    public var finishedAt: Int64?
+    public var isSuccess: Bool?
+    public var summary: String?
+
+    public var idGenerator: String { id }
+
+    public init(
+        id: String = UUID().uuidString,
+        taskId: String,
+        taskName: String,
+        taskType: AutomationTaskType = .modelHealthCheck,
+        startedAt: Int64,
+        finishedAt: Int64? = nil,
+        isSuccess: Bool? = nil,
+        summary: String? = nil
+    ) {
+        self.id = id
+        self.taskId = taskId
+        self.taskName = taskName
+        self.taskType = taskType
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.isSuccess = isSuccess
+        self.summary = summary
+    }
+
+    public var durationMs: Int64? {
+        guard let finishedAt else { return nil }
+        return max(0, finishedAt - startedAt)
+    }
+
+    public var durationText: String {
+        guard let ms = durationMs else { return "进行中" }
+        if ms < 1000 { return "\(ms)ms" }
+        let seconds = ms / 1000
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        let rem = seconds % 60
+        return rem > 0 ? "\(minutes)m \(rem)s" : "\(minutes)m"
+    }
+
+    public var startDate: Date { Date(timeIntervalSince1970: TimeInterval(startedAt)) }
+}
+
 public struct GatewaySettings: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 2
 
@@ -141,6 +191,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
     public var autoCheckOnStartupWithHistory: Bool
     public var healthCheckInterval: String
     public var automationTasks: [GatewayAutomationTask]
+    public var automationRunLogs: [GatewayAutomationRunLog]
     public var allowLanAccess: Bool
     public var authToken: String
 
@@ -167,6 +218,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         case autoCheckOnStartupWithHistory
         case healthCheckInterval
         case automationTasks
+        case automationRunLogs
         case allowLanAccess
         case authToken
     }
@@ -183,6 +235,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         autoCheckOnStartupWithHistory: Bool = false,
         healthCheckInterval: String = HealthCheckInterval.oneHour.rawValue,
         automationTasks: [GatewayAutomationTask] = [],
+        automationRunLogs: [GatewayAutomationRunLog] = [],
         allowLanAccess: Bool = false,
         authToken: String = Self.generateSecureToken()
     ) {
@@ -197,6 +250,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         self.autoCheckOnStartupWithHistory = autoCheckOnStartupWithHistory
         self.healthCheckInterval = healthCheckInterval
         self.automationTasks = automationTasks
+        self.automationRunLogs = automationRunLogs
         self.allowLanAccess = allowLanAccess
         self.authToken = authToken
     }
@@ -214,6 +268,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         autoCheckOnStartupWithHistory = try container.decodeIfPresent(Bool.self, forKey: .autoCheckOnStartupWithHistory) ?? false
         healthCheckInterval = try container.decodeIfPresent(String.self, forKey: .healthCheckInterval) ?? HealthCheckInterval.oneHour.rawValue
         automationTasks = try container.decodeIfPresent([GatewayAutomationTask].self, forKey: .automationTasks) ?? []
+        automationRunLogs = try container.decodeIfPresent([GatewayAutomationRunLog].self, forKey: .automationRunLogs) ?? []
         allowLanAccess = try container.decodeIfPresent(Bool.self, forKey: .allowLanAccess) ?? false
         let decodedToken = try container.decodeIfPresent(String.self, forKey: .authToken)?
             .trimmingCharacters(in: .whitespacesAndNewlines)

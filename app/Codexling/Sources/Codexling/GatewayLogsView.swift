@@ -338,11 +338,12 @@ struct GatewayLogsView: View {
         let isWarn = entry.level == .warn
 
         return HStack(alignment: .top, spacing: 8) {
-            // 时间戳
+            // 时间戳 (包含年份、日期与时间 yyyy-MM-dd HH:mm:ss，自适应宽度不截断)
             Text(entry.formattedTime)
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Color.codexMuted)
-                .frame(width: 66, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.top, 1)
 
             // 级别徽章

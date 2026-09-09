@@ -11,11 +11,15 @@ public struct GatewayView: View {
     /// Injected by GatewayWindowController; used to route proxy toggles through
     /// MultiAgentSettingsStore so in-memory account state stays consistent.
     var settingsStore: MultiAgentSettingsStore?
+    /// The independent AppKit window does not inherit the menu popover's
+    /// SwiftUI environment, so its resolved scheme is supplied explicitly.
+    var preferredColorScheme: ColorScheme?
 
     public init() {}
 
-    init(settingsStore: MultiAgentSettingsStore?) {
+    init(settingsStore: MultiAgentSettingsStore?, preferredColorScheme: ColorScheme? = nil) {
         self.settingsStore = settingsStore
+        self.preferredColorScheme = preferredColorScheme
     }
 
     public var body: some View {
@@ -114,6 +118,7 @@ public struct GatewayView: View {
             }
         }
         .animation(.easeInOut(duration: 0.24), value: showsStickyTitle)
+        .preferredColorScheme(preferredColorScheme)
         .overlay(alignment: .bottom) {
             if let toast {
                 HStack(spacing: 8) {

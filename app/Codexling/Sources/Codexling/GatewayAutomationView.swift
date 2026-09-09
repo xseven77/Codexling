@@ -10,6 +10,7 @@ public struct GatewayAutomationView: View {
     @State private var isCreatingTask = false
     @State private var editingTask: GatewayAutomationTask? = nil
     @State private var runningTaskIDs: Set<String> = []
+    @State private var logForTask: GatewayAutomationTask? = nil
 
     init(
         store: GatewayStore,
@@ -71,6 +72,9 @@ public struct GatewayAutomationView: View {
                     toast("已更新自动化任务: \(updated.name)")
                 }
             )
+        }
+        .sheet(item: $logForTask) { task in
+            AutomationRunLogSheet(task: task, store: store)
         }
     }
 
@@ -602,6 +606,23 @@ public struct GatewayAutomationView: View {
                 Spacer()
 
                 Button {
+                    logForTask = task
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10))
+                        Text("执行日志")
+                            .font(.system(size: 11))
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(Color.codexLine.opacity(0.1), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(Color.codexInk)
+                }
+                .buttonStyle(.plain)
+                .help("查看该任务的历史执行记录（触发时间、耗时与成功/失败结果）")
+
+                Button {
                     editingTask = task
                 } label: {
                     HStack(spacing: 3) {
@@ -648,8 +669,7 @@ public struct GatewayAutomationView: View {
     private func providerBadge(_ provider: String) -> some View {
         let (title, icon) = providerInfo(provider)
         return HStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.system(size: 8))
+            AutomationProviderIcon(provider: provider, fallback: icon, size: 14)
             Text(title)
                 .font(.system(size: 10, weight: .medium))
         }
@@ -710,6 +730,34 @@ public struct GatewayAutomationView: View {
             (task.lastRunStatus == "failed" ? Color.red.opacity(0.10) : Color.codexLine.opacity(0.12))),
             in: Capsule()
         )
+    }
+}
+
+/// Shared branding for automation summaries and provider selection.
+private struct AutomationProviderIcon: View {
+    let provider: String
+    let fallback: String
+    let size: CGFloat
+
+    private var asset: BrandAssetID? {
+        switch provider.lowercased() {
+        case "openai", "codex": .codex
+        case "google", "gemini": .googleGemini
+        case "deepseek": .deepSeek
+        case "opencode": .openCode
+        default: nil
+        }
+    }
+
+    var body: some View {
+        if let asset {
+            BrandIconView(asset: asset, size: size, cornerRadius: 3)
+        } else {
+            Image(systemName: fallback)
+                .font(.system(size: size * 0.65))
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -882,7 +930,7 @@ public struct AutomationTaskEditorSheet: View {
                                             isSelected ? Color.codexPrimary : Color.codexLine.opacity(0.12),
                                             in: RoundedRectangle(cornerRadius: 5, style: .continuous)
                                         )
-                                        .foregroundStyle(isSelected ? Color.white : Color.codexInk)
+                                        .foregroundStyle(isSelected ? Color.codexOnPrimary : Color.codexInk)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -913,8 +961,7 @@ public struct AutomationTaskEditorSheet: View {
                                         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                                             .font(.system(size: 12))
                                             .foregroundStyle(isSelected ? Color.codexPrimary : Color.codexMuted)
-                                        Image(systemName: icon)
-                                            .font(.system(size: 11))
+                                        AutomationProviderIcon(provider: key, fallback: icon, size: 15)
                                         Text(title)
                                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                                             .lineLimit(1)
@@ -923,14 +970,13 @@ public struct AutomationTaskEditorSheet: View {
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 6)
                                     .background(
-                                        isSelected ? Color.codexPrimary.opacity(0.10) : Color.codexLine.opacity(0.08),
+                                        isSelected ? Color.codexPrimary.opacity(0.12) : Color.codexLine.opacity(0.10),
                                         in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                                     )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(isSelected ? Color.codexPrimary.opacity(0.4) : Color.codexLine.opacity(0.2), lineWidth: 1)
+                                            .stroke(isSelected ? Color.codexPrimary.opacity(0.55) : Color.codexLine.opacity(0.35), lineWidth: 0.8)
                                     )
-                                    .foregroundStyle(isSelected ? Color.codexInk : Color.codexMuted)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1192,6 +1238,246 @@ struct FlowLayout: Layout {
             x += size.width + horizontalSpacing
             currentRowHeight = max(currentRowHeight, size.height)
         }
+    }
+}
+
+// MARK: - 自动化任务执行日志弹窗
+struct AutomationRunLogSheet: View {
+    let task: GatewayAutomationTask
+    let store: GatewayStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var logs: [GatewayAutomationRunLog] = []
+    @State private var isRunningNow = false
+
+    private var successCount: Int { logs.filter { $0.isSuccess == true }.count }
+    private var failCount: Int { logs.filter { $0.isSuccess == false }.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerBar
+            Divider().overlay(Color.codexLine.opacity(0.2))
+
+            if logs.isEmpty {
+                emptyState
+            } else {
+                summaryStrip
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(logs, id: \.id) { log in
+                            logRow(log)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+                }
+            }
+        }
+        .background(Color.codexCard)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 320, maxHeight: 520)
+        .onAppear {
+            reload()
+        }
+    }
+
+    // 头部: 任务类型徽章 + 标题 + 副标题 + 关闭
+    private var headerBar: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.codexPrimary.opacity(0.12))
+                    .frame(width: 38, height: 38)
+                Image(systemName: task.taskType.iconName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.codexPrimary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("执行日志")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                Text(task.name)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 26, height: 26)
+                    .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("关闭")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+
+    // 顶部统计条
+    private var summaryStrip: some View {
+        HStack(spacing: 12) {
+            Text("共 \(logs.count) 次执行")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+
+            HStack(spacing: 4) {
+                Circle().fill(Color.green.opacity(0.85)).frame(width: 6, height: 6)
+                Text("成功 \(successCount)")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            HStack(spacing: 4) {
+                Circle().fill(Color.red.opacity(0.85)).frame(width: 6, height: 6)
+                Text("失败 \(failCount)")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+            }
+
+            Spacer()
+
+            runNowButton
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+    }
+
+    private var runNowButton: some View {
+        Button {
+            runNow()
+        } label: {
+            HStack(spacing: 4) {
+                if isRunningNow {
+                    ProgressView().controlSize(.mini).scaleEffect(0.7)
+                } else {
+                    Image(systemName: "play.fill").font(.system(size: 9))
+                }
+                Text(isRunningNow ? "运行中..." : "立即运行一次")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(Color.codexPrimary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .foregroundStyle(Color.codexPrimary)
+        }
+        .buttonStyle(.plain)
+        .disabled(isRunningNow || store.isModelCheckRunning)
+    }
+
+    // 空态: 居中、紧凑、带主操作
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.codexMist.opacity(0.5))
+                    .frame(width: 52, height: 52)
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(Color.codexMuted.opacity(0.7))
+            }
+            VStack(spacing: 3) {
+                Text("暂无执行记录")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+                Text("任务触发后将展示开始时间、耗时与成功/失败结果")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.codexMuted)
+            }
+            runNowButton
+                .disabled(isRunningNow)
+                .padding(.top, 2)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
+    private func runNow() {
+        guard !isRunningNow, !store.isModelCheckRunning else { return }
+        isRunningNow = true
+        Task {
+            _ = await store.runAutomationTaskNow(task)
+            isRunningNow = false
+            reload()
+        }
+    }
+
+    private func reload() {
+        logs = store.gatewaySettings.automationRunLogs
+            .filter { $0.taskId == task.id }
+            .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    private func logRow(_ log: GatewayAutomationRunLog) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            // 状态圆点
+            Circle()
+                .fill(color(for: log))
+                .frame(width: 7, height: 7)
+
+            // 开始时间
+            Text(log.startDate.formatted(date: .numeric, time: .standard))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 148, alignment: .leading)
+
+            // 耗时胶囊
+            Text(log.durationText)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .lineLimit(1)
+                .frame(width: 74, alignment: .leading)
+
+            // 结果标签
+            Text(resultLabel(for: log))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(color(for: log))
+                .frame(width: 50, alignment: .leading)
+                .lineLimit(1)
+
+            // 摘要
+            if let summary = log.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.6)
+        )
+    }
+
+    private func resultLabel(for log: GatewayAutomationRunLog) -> String {
+        guard let isSuccess = log.isSuccess else { return "进行中" }
+        return isSuccess ? "成功" : "失败"
+    }
+
+    private func color(for log: GatewayAutomationRunLog) -> Color {
+        guard let isSuccess = log.isSuccess else { return Color.orange.opacity(0.85) }
+        return isSuccess ? Color.green.opacity(0.85) : Color.red.opacity(0.85)
     }
 }
 

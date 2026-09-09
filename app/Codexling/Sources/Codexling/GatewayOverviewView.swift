@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 
 @MainActor
@@ -6,12 +7,20 @@ struct GatewayOverviewView: View {
     @Bindable var store: GatewayStore
     var supervisor: GatewaySupervisor = .shared
 
+    @State private var agentDailyDays = 30
+    @State private var agentDailyStyle: GatewayAnalyticsChartStyle = .area
+    @State private var agentDailyHidden: Set<String> = []
+    @State private var agentDayHover: String? = nil
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             // ==========================================
             // 区块一：本地 Agent 活动与伴侣观测 (Hook 监听)
             // ==========================================
             hookedAgentActivityBlock
+
+            // 区块一·附加：Agent 每日工作时长（面积 / 堆叠柱状 双形态）
+            agentDailyWorkChartCard
 
             CodexDivider(.horizontal)
 
@@ -70,12 +79,7 @@ struct GatewayOverviewView: View {
             LazyVGrid(columns: [GridItem(.flexible(minimum: 280)), GridItem(.flexible(minimum: 280))], spacing: 8) {
                 ForEach(store.hookedAgentRows) { agent in
                     HStack(spacing: 10) {
-                        Image(systemName: agent.iconName)
-                            .font(.system(size: 13))
-                            .frame(width: 26, height: 26)
-                            .background(Color.purple.opacity(0.10))
-                            .foregroundStyle(.purple)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        agentBrandIcon(for: agent)
 
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
@@ -120,6 +124,441 @@ struct GatewayOverviewView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func agentBrandIcon(for agent: GatewayAgentWorkRow) -> some View {
+        switch agent.id {
+        case "antigravity":
+            BrandIconView(asset: .antigravity, size: 26, cornerRadius: 6)
+        case "codex":
+            BrandIconView(asset: .codex, size: 26, cornerRadius: 6)
+        case "dsh":
+            BrandIconView(asset: .deepSeek, size: 26, cornerRadius: 6)
+        case "hermes":
+            BrandIconView(asset: .hermesAgent, size: 26, cornerRadius: 6)
+        case "pi":
+            BrandIconView(asset: .piAgent, size: 26, cornerRadius: 6)
+        default:
+            Image(systemName: agent.iconName)
+                .font(.system(size: 13))
+                .frame(width: 26, height: 26)
+                .background(Color.purple.opacity(0.10))
+                .foregroundStyle(.purple)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+    }
+
+    // MARK: - 区块一·附加：Agent 每日工作时长（面积 / 堆叠柱状 双形态）
+    private var agentDailyWorkChartCard: some View {
+        let all = store.agentDailyWorkSeries(days: agentDailyDays)
+        let activeAgents = Array(Set(all.map(\.agentID))).sorted()
+        let visible = all.filter { !agentDailyHidden.contains($0.agentID) }
+        let slotDates = Array(Set(all.map(\.date))).sorted()
+        let slotDayKeys = Array(Set(all.map(\.day))).sorted()
+        // 柱状类别轴：每隔 7 天取一个刻度，避免 30 个标签全挤
+        let barTickDays = slotDayKeys.enumerated().compactMap { $0.offset % 7 == 0 ? $0.element : nil }
+        // y 纵轴（分钟）最大值，用于顶部留白
+        let yMax = max((visible.map { $0.seconds / 60 }.max() ?? 1), 1)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // 顶栏：标题 + 面积/柱状 + 时间跨度
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "chart.xyaxis.line")
+                            .foregroundStyle(.purple)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Agent 每日工作时长")
+                            .font(.system(size: 13.5, weight: .bold))
+                            .foregroundStyle(Color.codexInk)
+                            .lineLimit(1)
+                        Text("按天采样")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.12), in: Capsule())
+                            .foregroundStyle(.purple)
+                    }
+                    Text("各本地 Agent 每天工作时长 · 支持面积曲线与堆叠柱状切换 · 点击图例可隐藏单个 Agent")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .layoutPriority(0)
+
+                Spacer(minLength: 6)
+
+                // 面积 / 堆叠柱状切换
+                agentDailyStylePill
+
+                // 时间跨度 30 / 90
+                HStack(spacing: 2) {
+                    ForEach([30, 90], id: \.self) { d in
+                        Button {
+                            agentDailyDays = d
+                        } label: {
+                            Text("\(d)天")
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 7)
+                                .frame(height: 22)
+                                .foregroundStyle(agentDailyDays == d ? Color.codexOnPrimary : Color.codexMuted)
+                                .background(agentDailyDays == d ? Color.codexPrimary : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+                )
+            }
+
+            // 图表
+            if all.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 34))
+                        .foregroundStyle(Color.codexMuted.opacity(0.6))
+                    Text("暂无每日工作时长数据")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.codexMuted)
+                    Text("记录将从此版本开始每日累积")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 210)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.codexCard.opacity(0.5))
+                )
+            } else {
+                Chart(visible) { p in
+                    let color = agentDayColor(p.agentID)
+                    if agentDailyStyle == .bars {
+                        BarMark(
+                            x: .value("日期", p.day),
+                            y: .value("分钟", p.seconds / 60),
+                            stacking: .standard
+                        )
+                        .foregroundStyle(color)
+                        .cornerRadius(2)
+                    } else {
+                        AreaMark(
+                            x: .value("日期", p.date, unit: .day),
+                            y: .value("分钟", p.seconds / 60),
+                            series: .value("Agent", p.agentID),
+                            stacking: .standard
+                        )
+                        .foregroundStyle(color.gradient)
+                        .interpolationMethod(.monotone)
+                    }
+                }
+                .chartXAxis {
+                    if agentDailyStyle == .bars {
+                        AxisMarks(values: barTickDays) { value in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                                .foregroundStyle(Color.codexLine.opacity(0.35))
+                            AxisValueLabel {
+                                Text(agentShortDayLabel(value.as(String.self) ?? ""))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Color.codexMuted)
+                            }
+                        }
+                    } else {
+                        AxisMarks(values: .stride(by: .day, count: 7)) { _ in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                                .foregroundStyle(Color.codexLine.opacity(0.35))
+                            AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                            .foregroundStyle(Color.codexLine.opacity(0.35))
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(agentDurationAxisLabel(v))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Color.codexMuted)
+                            }
+                        }
+                    }
+                }
+                .chartYScale(domain: 0...(yMax * 1.14))
+                .frame(height: 232)
+                // Keep the top Y-axis label clear of the card description.
+                .padding(.top, 12)
+                .chartOverlay { (proxy: ChartProxy) in
+                    GeometryReader { geo in
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    switch phase {
+                                    case .active(let location):
+                                        guard let plotFrame = proxy.plotFrame else { return }
+                                        let plotArea = geo[plotFrame]
+                                        guard location.x >= plotArea.minX - 8 && location.x <= plotArea.maxX + 8 else {
+                                            if agentDayHover != nil { agentDayHover = nil }
+                                            return
+                                        }
+                                        let xInPlot = max(0, min(location.x - plotArea.origin.x, plotArea.width))
+                                        if agentDailyStyle == .bars {
+                                            // 类别轴：value(atX:) 返回该柱的 dayKey（逐柱跟手）
+                                            if let key: String = proxy.value(atX: xInPlot),
+                                               slotDayKeys.contains(key) {
+                                                if agentDayHover != key { agentDayHover = key }
+                                            }
+                                        } else {
+                                            // 日期轴：反查 Date 再吸附最近的日
+                                            if let date: Date = proxy.value(atX: xInPlot),
+                                               let snapped = agentClosestDayKey(to: date, slotDates: slotDates) {
+                                                if agentDayHover != snapped { agentDayHover = snapped }
+                                            }
+                                        }
+                                    case .ended:
+                                        if agentDayHover != nil { agentDayHover = nil }
+                                    }
+                                }
+
+                            if let hoverKey = agentDayHover {
+                                // 竖线吸附到该日的锚点（柱状=类别中心、面积=日期值），跟手
+                                let xPos: CGFloat? = agentDailyStyle == .bars
+                                    ? proxy.position(forX: hoverKey)
+                                    : slotDates.first(where: { agentDayKey($0) == hoverKey })
+                                        .flatMap { proxy.position(forX: $0) }
+                                if let xPos, let plotFrame = proxy.plotFrame {
+                                    let actualX = xPos + geo[plotFrame].origin.x
+                                    Path { path in
+                                        path.move(to: CGPoint(x: actualX, y: geo[plotFrame].minY))
+                                        path.addLine(to: CGPoint(x: actualX, y: geo[plotFrame].maxY))
+                                    }
+                                    .stroke(Color(red: 0.54, green: 0.31, blue: 0.97).opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+
+                                    let plotWidth = geo[plotFrame].width
+                                    let isRightSide = actualX > (geo[plotFrame].minX + plotWidth / 2)
+                                    let tooltipX: CGFloat = isRightSide
+                                        ? max(actualX - 108, geo[plotFrame].minX + 100)
+                                        : min(actualX + 108, geo[plotFrame].maxX - 44)
+                                    let tooltipY = geo[plotFrame].minY + 20
+
+                                    agentDailyTooltip(dayKey: hoverKey, allPoints: all)
+                                        .position(x: tooltipX, y: tooltipY)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 图例（点击隐藏/显示单个 Agent）
+            FlowLayout(spacing: 6) {
+                ForEach(activeAgents, id: \.self) { agentID in
+                    let isHidden = agentDailyHidden.contains(agentID)
+                    let label = agentDisplayName(agentID)
+                    Button {
+                        if isHidden { agentDailyHidden.remove(agentID) }
+                        else { agentDailyHidden.insert(agentID) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(agentDayColor(agentID))
+                                .frame(width: 8, height: 8)
+                            Text(label)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .lineLimit(1)
+                                .foregroundStyle(isHidden ? Color.codexMuted.opacity(0.55) : Color.codexInk)
+                            if isHidden {
+                                Image(systemName: "eye.slash")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Color.codexMuted.opacity(0.55))
+                            }
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Color.codexLine.opacity(isHidden ? 0.3 : 0.5), lineWidth: 0.7)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(label) · \(isHidden ? "显示" : "隐藏")")
+                }
+            }
+            .padding(.top, 16)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.codexCard)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.4), lineWidth: 0.8)
+        )
+    }
+
+    private var agentDailyStylePill: some View {
+        HStack(spacing: 2) {
+            ForEach(GatewayAnalyticsChartStyle.allCases) { style in
+                let isSel = agentDailyStyle == style
+                Button {
+                    agentDailyStyle = style
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: style.icon)
+                            .font(.system(size: 9))
+                        Text(style.title)
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .foregroundStyle(isSel ? Color.codexOnPrimary : Color.codexMuted)
+                    .background(isSel ? Color.codexPrimary : Color.clear)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+        )
+    }
+
+    private func agentDayColor(_ id: String) -> Color {
+        switch id {
+        case "antigravity": return Color(red: 0.36, green: 0.46, blue: 0.94) // indigo
+        case "codex": return Color(red: 0.23, green: 0.51, blue: 0.96)       // blue
+        case "dsh": return Color(red: 0.02, green: 0.71, blue: 0.67)        // teal
+        case "hermes": return Color(red: 0.66, green: 0.33, blue: 0.97)     // violet
+        case "pi": return Color(red: 0.58, green: 0.64, blue: 0.72)         // slate
+        default: return Color(red: 0.45, green: 0.55, blue: 0.65)
+        }
+    }
+
+    private func agentDisplayName(_ id: String) -> String {
+        switch id {
+        case "antigravity": return "Google Antigravity"
+        case "codex": return "Codex (CLI / App)"
+        case "dsh": return "Deepseek Harness (CLI)"
+        case "hermes": return "Hermes Agent"
+        case "pi": return "Pi (CLI)"
+        default: return id
+        }
+    }
+
+    private func agentDurationAxisLabel(_ minutes: Double) -> String {
+        let total = max(0, Int(minutes))
+        return "\(total)m"
+    }
+
+    private func unitDurationText(_ seconds: Double) -> String {
+        if seconds < 60 { return "\(Int(seconds)) 秒" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟" }
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        return m > 0 ? "\(h) 小时 \(m) 分钟" : "\(h) 小时"
+    }
+
+    private func agentDayKey(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        return df.string(from: date)
+    }
+
+    private func agentClosestDayKey(to date: Date, slotDates: [Date]) -> String? {
+        guard let nearest = slotDates.min(by: {
+            abs($0.timeIntervalSince(date)) < abs($1.timeIntervalSince(date))
+        }) else { return nil }
+        return agentDayKey(nearest)
+    }
+
+    /// "yyyy-MM-dd" -> "9/10"（柱状类别轴标签用）
+    private func agentShortDayLabel(_ day: String) -> String {
+        let parts = day.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return day }
+        return "\(m)/\(d)"
+    }
+
+    private func agentDailyTooltip(dayKey: String, allPoints: [GatewayAgentDayPoint]) -> some View {
+        let dayPoints = allPoints
+            .filter { $0.day == dayKey && $0.seconds > 0 }
+            .sorted { $0.seconds > $1.seconds }
+        let total = dayPoints.reduce(0) { $0 + $1.seconds }
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text(dayKey)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.codexMuted)
+                Spacer(minLength: 4)
+                Text("共 \(agentShortDuration(total))")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.54, green: 0.31, blue: 0.97))
+            }
+
+            if dayPoints.isEmpty {
+                Text("无活动")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
+            } else {
+                ForEach(dayPoints, id: \.id) { p in
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(agentDayColor(p.agentID))
+                            .frame(width: 5.5, height: 5.5)
+                        Text(agentDisplayName(p.agentID))
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.codexInk.opacity(0.88))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 6)
+                        Text(agentShortDuration(p.seconds))
+                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(width: 165)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.codexCard.opacity(0.96))
+                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+        )
+    }
+
+    /// 紧凑时长（tooltip 内窄列使用）：≥1h → "1h52m"，≥1m → "5m"，<1m → "40s"，0 → "0s"
+    private func agentShortDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return m > 0 ? "\(h)h\(m)m" : "\(h)h"
+        }
+        if m > 0 {
+            return s > 0 ? "\(m)m\(s)s" : "\(m)m"
+        }
+        return "\(s)s"
     }
 
     // MARK: - 区块二: Gateway 实时脉搏与路由健康
@@ -486,7 +925,8 @@ struct GatewayOverviewView: View {
                             Text(req.formattedTime)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(Color.codexMuted)
-                                .frame(width: 58, alignment: .leading)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
 
                             Text(req.agent)
                                 .font(.system(size: 10.5, weight: .semibold))

@@ -58,6 +58,11 @@ final class PetFrameStore {
 @MainActor
 @Observable
 final class CompanionStatsStore {
+    private struct DayRecord: Codable {
+        var accumulatedSeconds: TimeInterval
+        var perAgentSeconds: [String: TimeInterval]
+    }
+
     private struct Record: Codable {
         var localDay: String
         var accumulatedSeconds: TimeInterval
@@ -65,6 +70,7 @@ final class CompanionStatsStore {
         var activeSince: Date?
         var activeAgent: String?
         var lastPersistedAt: Date
+        var dailyHistory: [String: DayRecord] = [:]
     }
 
     private let fileURL: URL
@@ -89,15 +95,33 @@ final class CompanionStatsStore {
 
         let day = Self.dayKey(for: now, calendar: calendar)
         if let data = try? Data(contentsOf: self.fileURL),
-           let decoded = try? JSONDecoder.codexling.decode(Record.self, from: data),
-           decoded.localDay == day {
-            record = decoded
-            let recordedSum = (record.perAgentSeconds ?? [:]).values.reduce(0, +)
-            if record.accumulatedSeconds > recordedSum {
-                let diff = record.accumulatedSeconds - recordedSum
-                var map = record.perAgentSeconds ?? [:]
-                map["antigravity", default: 0] += diff
-                record.perAgentSeconds = map
+           let decoded = try? JSONDecoder.codexling.decode(Record.self, from: data) {
+            if decoded.localDay == day {
+                record = decoded
+                let recordedSum = (record.perAgentSeconds ?? [:]).values.reduce(0, +)
+                if record.accumulatedSeconds > recordedSum {
+                    let diff = record.accumulatedSeconds - recordedSum
+                    var map = record.perAgentSeconds ?? [:]
+                    map["antigravity", default: 0] += diff
+                    record.perAgentSeconds = map
+                }
+            } else {
+                // 跨日冷启动：先把上一天的记录归档进每日历史，再开新的一天
+                var history = decoded.dailyHistory
+                history[decoded.localDay] = DayRecord(
+                    accumulatedSeconds: decoded.accumulatedSeconds,
+                    perAgentSeconds: decoded.perAgentSeconds ?? [:]
+                )
+                history = Self.trim(history)
+                record = Record(
+                    localDay: day,
+                    accumulatedSeconds: 0,
+                    perAgentSeconds: [:],
+                    activeSince: nil,
+                    activeAgent: nil,
+                    lastPersistedAt: now,
+                    dailyHistory: history
+                )
             }
         } else {
             record = Record(
@@ -170,13 +194,21 @@ final class CompanionStatsStore {
     private func settle(now: Date) {
         let day = Self.dayKey(for: now, calendar: calendar)
         if record.localDay != day {
+            // 跨日：把当天累积值归档进每日历史，再开新的一天
+            var history = record.dailyHistory
+            history[record.localDay] = DayRecord(
+                accumulatedSeconds: record.accumulatedSeconds,
+                perAgentSeconds: record.perAgentSeconds ?? [:]
+            )
+            history = Self.trim(history)
             record = Record(
                 localDay: day,
                 accumulatedSeconds: 0,
                 perAgentSeconds: [:],
                 activeSince: record.activeSince == nil ? nil : now,
                 activeAgent: record.activeSince == nil ? nil : record.activeAgent,
-                lastPersistedAt: now
+                lastPersistedAt: now,
+                dailyHistory: history
             )
         } else if let activeSince = record.activeSince {
             // A regular heartbeat is 30 seconds. Cap a single interval so a
@@ -204,6 +236,46 @@ final class CompanionStatsStore {
         } catch {
             // Companion stats are optional and must not affect core usage UI.
         }
+    }
+
+    private static func trim(_ history: [String: DayRecord]) -> [String: DayRecord] {
+        // 只保留最近 92 天，避免文件无限膨胀
+        let keys = history.keys.sorted()
+        if keys.count <= 92 { return history }
+        var trimmed = history
+        for k in keys.prefix(keys.count - 92) { trimmed.removeValue(forKey: k) }
+        return trimmed
+    }
+
+    /// 过去 `days` 天（含今天）内，每个 Agent 每天的工作秒数，按天升序。
+    /// history 不含今天，今天用当前累积值补齐；当天无记录的 Agent 记为 0。
+    func dailyAgentSeconds(days: Int, now: Date = Date()) -> [(day: String, agent: String, seconds: TimeInterval)] {
+        // 生成最近 days 天的 dayKey 序列（含今天）
+        var dayKeys: [String] = []
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.calendar = calendar
+        df.locale = Locale(identifier: "en_US_POSIX")
+        for offset in stride(from: days - 1, through: 0, by: -1) {
+            guard let dt = calendar.date(byAdding: .day, value: -offset, to: now) else { continue }
+            dayKeys.append(df.string(from: dt))
+        }
+
+        let todayKey = dayKeys.last ?? Self.dayKey(for: now, calendar: calendar)
+        let agents = ["antigravity", "codex", "dsh", "hermes", "pi"]
+        var out: [(day: String, agent: String, seconds: TimeInterval)] = []
+
+        for day in dayKeys {
+            let isToday = day == todayKey
+            let dayRecord: DayRecord? = isToday
+                ? DayRecord(accumulatedSeconds: record.accumulatedSeconds, perAgentSeconds: record.perAgentSeconds ?? [:])
+                : record.dailyHistory[day]
+            for a in agents {
+                let s = dayRecord?.perAgentSeconds[a] ?? (isToday ? seconds(for: a) : 0)
+                out.append((day, a, s))
+            }
+        }
+        return out
     }
 
     private static func dayKey(for date: Date, calendar: Calendar) -> String {
