@@ -158,8 +158,11 @@ struct GatewayOverviewView: View {
         let slotDayKeys = Array(Set(all.map(\.day))).sorted()
         // 柱状类别轴：每隔 7 天取一个刻度，避免 30 个标签全挤
         let barTickDays = slotDayKeys.enumerated().compactMap { $0.offset % 7 == 0 ? $0.element : nil }
-        // y 纵轴（分钟）最大值，用于顶部留白
-        let yMax = max((visible.map { $0.seconds / 60 }.max() ?? 1), 1)
+        // y 纵轴（分钟）最大值，用于顶部留白（堆叠图需按天汇总所有可见 agent 的分钟数，否则顶部会被截断超标）
+        let dayTotals = Dictionary(grouping: visible, by: \.day).mapValues { points in
+            points.reduce(0.0) { $0 + ($1.seconds / 60) }
+        }
+        let yMax = max((dayTotals.values.max() ?? 1), 1)
 
         return VStack(alignment: .leading, spacing: 10) {
             // 顶栏：标题 + 面积/柱状 + 时间跨度
@@ -461,6 +464,9 @@ struct GatewayOverviewView: View {
 
     private func agentDurationAxisLabel(_ minutes: Double) -> String {
         let total = max(0, Int(minutes))
+        if total >= 60 && total % 60 == 0 {
+            return "\(total / 60)h"
+        }
         return "\(total)m"
     }
 
