@@ -277,10 +277,12 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
     var balance: ProviderBalanceSnapshot?
     /// 可访问的模型 id 列表（来自官方接口动态获取）。
     var availableModelIDs: [String] = []
+    /// 最近一次成功从官方接口取到模型目录的时间；nil 表示尚未取到过。
+    var lastValidatedAt: Date?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case id, label, credentialHandle, keySuffix, authenticationState, isEnabled, balance, availableModelIDs, createdAt
+        case id, label, credentialHandle, keySuffix, authenticationState, isEnabled, balance, availableModelIDs, lastValidatedAt, createdAt
     }
 
     init(
@@ -292,6 +294,7 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
         isEnabled: Bool = true,
         balance: ProviderBalanceSnapshot? = nil,
         availableModelIDs: [String] = [],
+        lastValidatedAt: Date? = nil,
         createdAt: Date
     ) {
         self.id = id
@@ -302,6 +305,7 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
         self.isEnabled = isEnabled
         self.balance = balance
         self.availableModelIDs = availableModelIDs
+        self.lastValidatedAt = lastValidatedAt
         self.createdAt = createdAt
     }
 
@@ -315,6 +319,7 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         balance = try container.decodeIfPresent(ProviderBalanceSnapshot.self, forKey: .balance)
         availableModelIDs = try container.decodeIfPresent([String].self, forKey: .availableModelIDs) ?? []
+        lastValidatedAt = try container.decodeIfPresent(Date.self, forKey: .lastValidatedAt)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 
@@ -328,6 +333,7 @@ struct DeepSeekAPIConnection: Identifiable, Equatable, Codable, Sendable {
         try container.encode(isEnabled, forKey: .isEnabled)
         try container.encodeIfPresent(balance, forKey: .balance)
         try container.encode(availableModelIDs, forKey: .availableModelIDs)
+        try container.encodeIfPresent(lastValidatedAt, forKey: .lastValidatedAt)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }

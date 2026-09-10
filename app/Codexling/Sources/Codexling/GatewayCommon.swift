@@ -17,6 +17,7 @@ enum GatewayScrollCoordinateSpace {
 enum GatewayAgentConnectTarget {
     case hermes
     case pi
+    case dsh
 }
 
 struct GatewayTableWidthKey: PreferenceKey {

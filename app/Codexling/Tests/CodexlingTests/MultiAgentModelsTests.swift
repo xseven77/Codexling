@@ -299,6 +299,56 @@ final class MultiAgentModelsTests: XCTestCase {
         XCTAssertEqual(Set(refreshedConnectionIDs), Set([firstID, secondID]))
     }
 
+    /// 回归：DeepSeek 官方模型目录只能来自官方接口。
+    /// 拉取失败时必须保留上一次的官方结果，绝不能回退到本地写死的型号清单。
+    @MainActor
+    func testDeepSeekCatalogKeepsLastOfficialResultWhenFetchFails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexling-deepseek-catalog-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let connection = DeepSeekAPIConnection(
+            id: ConnectionID(rawValue: UUID()),
+            label: "DSH",
+            credentialHandle: "handle",
+            keySuffix: "1234",
+            authenticationState: .connected,
+            availableModelIDs: ["deepseek-flash", "deepseek-v4-pro"],
+            lastValidatedAt: Date(timeIntervalSince1970: 1_789_000_000),
+            createdAt: Date()
+        )
+        let registry = ConnectionRegistryStorage(fileURL: root.appendingPathComponent("connections.json"))
+        try registry.save(ConnectionRegistrySnapshot(codexAccounts: [], deepSeekConnections: [connection]))
+
+        let store = MultiAgentSettingsStore(
+            hookManager: AgentHookManager(homeDirectory: root.appendingPathComponent("home", isDirectory: true)),
+            registryStorage: registry,
+            codexRuntimeManager: CodexAccountRuntimeManager(
+                runtimesRoot: root.appendingPathComponent("runtimes", isDirectory: true)
+            ),
+            credentialStore: TestDeepSeekCredentialStore(values: ["handle": "official-key"]),
+            deepSeekBalanceService: TestDeepSeekBalanceService(),
+            deepSeekModelsService: FailingDeepSeekModelsService(),
+            startsAutomaticRefresh: false,
+            migratesLegacyAccount: false
+        )
+
+        await store.refreshDeepSeekConnection(store.deepSeekConnections[0])
+
+        let refreshed = try XCTUnwrap(store.deepSeekConnections.first)
+        XCTAssertEqual(
+            refreshed.availableModelIDs,
+            ["deepseek-flash", "deepseek-v4-pro"],
+            "官方目录拉取失败时应保留上一次官方结果，不得写入本地写死的型号"
+        )
+        XCTAssertEqual(
+            refreshed.lastValidatedAt,
+            Date(timeIntervalSince1970: 1_789_000_000),
+            "失败不应刷新目录时间戳"
+        )
+    }
+
     @MainActor
     func testRefreshingConnectionIDsTrackPerAccountLoading() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -665,5 +715,12 @@ private actor TestDeepSeekBalanceService: DeepSeekBalanceFetching {
 private struct TestDeepSeekModelsService: DeepSeekModelsFetching {
     func validate(apiKey: String) async throws -> [String] {
         ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
+    }
+}
+
+/// 官方模型目录接口失败：用于验证「保留上一次官方结果」而不是回退硬编码清单。
+private struct FailingDeepSeekModelsService: DeepSeekModelsFetching {
+    func validate(apiKey: String) async throws -> [String] {
+        throw DeepSeekValidationError.unavailable
     }
 }

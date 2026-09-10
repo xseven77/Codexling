@@ -29,76 +29,81 @@ public struct GatewayView: View {
 
             CodexDivider(.vertical)
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
-                    tabHeader
+            GeometryReader { contentGeometry in
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        tabHeader
 
-                    switch store.selectedTab {
-                    case .connect:
-                        GatewayConnectView(
-                            store: store,
-                            supervisor: supervisor,
-                            settingsStore: settingsStore,
-                            onToast: showToast
-                        )
-                    case .automation:
-                        GatewayAutomationView(
-                            store: store,
-                            supervisor: supervisor,
-                            settingsStore: settingsStore,
-                            onToast: showToast
-                        )
-                    case .agents:
-                        GatewayAgentsView(
-                            store: store,
-                            supervisor: supervisor,
-                            settingsStore: settingsStore,
-                            onToast: showToast
-                        )
-                    case .overview:
-                        GatewayOverviewView(
-                            store: store,
-                            supervisor: supervisor
-                        )
-                    case .analytics:
-                        GatewayAnalyticsView(
-                            store: store
-                        )
-                    case .requests:
-                        GatewayRequestsView(
-                            store: store,
-                            supervisor: supervisor
-                        )
-                    case .doctor:
-                        GatewayDoctorView(
-                            store: store,
-                            supervisor: supervisor
-                        )
-                    case .logs:
-                        GatewayLogsView()
+                        switch store.selectedTab {
+                        case .connect:
+                            GatewayConnectView(
+                                store: store,
+                                supervisor: supervisor,
+                                settingsStore: settingsStore,
+                                onToast: showToast
+                            )
+                        case .automation:
+                            GatewayAutomationView(
+                                store: store,
+                                supervisor: supervisor,
+                                settingsStore: settingsStore,
+                                onToast: showToast
+                            )
+                        case .agents:
+                            GatewayAgentsView(
+                                store: store,
+                                supervisor: supervisor,
+                                settingsStore: settingsStore,
+                                onToast: showToast
+                            )
+                        case .overview:
+                            GatewayOverviewView(
+                                store: store,
+                                supervisor: supervisor
+                            )
+                        case .analytics:
+                            GatewayAnalyticsView(
+                                store: store
+                            )
+                        case .requests:
+                            GatewayRequestsView(
+                                store: store,
+                                supervisor: supervisor
+                            )
+                        case .doctor:
+                            GatewayDoctorView(
+                                store: store,
+                                supervisor: supervisor
+                            )
+                        case .logs:
+                            GatewayLogsView()
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, GatewayLayoutMetrics.windowTopInset)
+                    .padding(.bottom, GatewayLayoutMetrics.windowBottomInset)
+                    // A vertical ScrollView otherwise uses its child's ideal
+                    // width. Wide model-table rows can then enlarge the entire
+                    // page beyond the window instead of being compressed.
+                    .frame(width: contentGeometry.size.width, alignment: .topLeading)
+                    .background(ScrollIndicatorHider())
+                }
+                .coordinateSpace(name: GatewayScrollCoordinateSpace.name)
+                .onPreferenceChange(GatewayHeaderMinYKey.self) { minY in
+                    if showsStickyTitle {
+                        if minY > -44 {
+                            showsStickyTitle = false
+                        }
+                    } else if minY < -72 {
+                        showsStickyTitle = true
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, GatewayLayoutMetrics.windowTopInset)
-                .padding(.bottom, GatewayLayoutMetrics.windowBottomInset)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(ScrollIndicatorHider())
-            }
-            .coordinateSpace(name: GatewayScrollCoordinateSpace.name)
-            .onPreferenceChange(GatewayHeaderMinYKey.self) { minY in
-                if showsStickyTitle {
-                    if minY > -44 {
-                        showsStickyTitle = false
+                .scrollIndicators(.hidden)
+                .background {
+                    ZStack {
+                        Color.codexBackground.opacity(0.50)
+                        ScrollIndicatorHider()
                     }
-                } else if minY < -72 {
-                    showsStickyTitle = true
-                }
-            }
-            .scrollIndicators(.hidden)
-            .background {
-                ZStack {
-                    Color.codexBackground.opacity(0.50)
-                    ScrollIndicatorHider()
                 }
             }
         }

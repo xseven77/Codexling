@@ -116,6 +116,31 @@ pub struct GatewayAutomationTask {
     pub last_run_summary: Option<String>,
 }
 
+/// 一次自动化任务的执行记录。
+///
+/// 字段必须与 `app/Codexling/Sources/Codexling/GatewaySettings.swift` 中的
+/// `GatewayAutomationRunLog` 保持一致：网关进程与 App 写的是同一个
+/// `gateway-settings.json`，任何字段名/类型漂移都会让 App 端解码失败。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayAutomationRunLog {
+    pub id: String,
+    pub task_id: String,
+    pub task_name: String,
+    #[serde(default = "default_automation_task_type")]
+    pub task_type: String,
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_success: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// 与 App 端 `GatewayStore.maxAutomationRunLogs` 保持一致。
+pub const MAX_AUTOMATION_RUN_LOGS: usize = 300;
+
 fn default_automation_task_type() -> String {
     "modelHealthCheck".to_string()
 }
@@ -124,6 +149,22 @@ fn default_automation_task_enabled() -> bool {
 }
 fn default_automation_task_all_accounts() -> bool {
     true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayModelCapabilityOverride {
+    pub model_id: String,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    #[serde(default)]
+    pub supports_image: Option<bool>,
+    #[serde(default)]
+    pub reasoning_levels: Option<Vec<String>>,
+    #[serde(default)]
+    pub default_reasoning_level: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -151,6 +192,10 @@ pub struct GatewaySettings {
     pub health_check_interval: String,
     #[serde(default)]
     pub automation_tasks: Vec<GatewayAutomationTask>,
+    #[serde(default)]
+    pub automation_run_logs: Vec<GatewayAutomationRunLog>,
+    #[serde(default)]
+    pub model_capability_overrides: HashMap<String, GatewayModelCapabilityOverride>,
     #[serde(default)]
     pub allow_lan_access: bool,
     #[serde(default)]
@@ -187,6 +232,8 @@ impl Default for GatewaySettings {
             auto_check_on_startup_with_history: false,
             health_check_interval: "1h".to_string(),
             automation_tasks: Vec::new(),
+            automation_run_logs: Vec::new(),
+            model_capability_overrides: HashMap::new(),
             allow_lan_access: false,
             auth_token: None,
         }
@@ -339,11 +386,61 @@ impl GatewaySettings {
             .unwrap_or_default()
     }
 
+    /// 追加一条自动化任务执行记录（保留最近 `MAX_AUTOMATION_RUN_LOGS` 条）。
+    pub fn push_automation_run_log(&mut self, log: GatewayAutomationRunLog) {
+        self.automation_run_logs.push(log);
+        if self.automation_run_logs.len() > MAX_AUTOMATION_RUN_LOGS {
+            let overflow = self.automation_run_logs.len() - MAX_AUTOMATION_RUN_LOGS;
+            self.automation_run_logs.drain(0..overflow);
+        }
+    }
+
+    /// 按 id 补全一条执行记录的结束时点、结果与摘要。
+    pub fn finish_automation_run_log(
+        &mut self,
+        log_id: &str,
+        finished_at: i64,
+        is_success: bool,
+        summary: &str,
+    ) {
+        if let Some(log) = self
+            .automation_run_logs
+            .iter_mut()
+            .rev()
+            .find(|log| log.id == log_id)
+        {
+            log.finished_at = Some(finished_at);
+            log.is_success = Some(is_success);
+            log.summary = Some(summary.to_string());
+        }
+    }
+
+    /// 写入设置文件。
+    ///
+    /// 网关进程与 App 共用同一个 `gateway-settings.json`，而两边都不一定认识对方的
+    /// 全部字段（例如 App 独有的键）。这里以「读旧文件 → 合并未知键 → 落盘」的方式写入，
+    /// 避免整份覆盖把对方的字段（自动化执行日志等）抹掉。
     pub fn save_for_home(&self, home: &str) -> std::io::Result<()> {
         let dir = format!("{home}/Library/Application Support/Codexling");
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/gateway-settings.json");
-        let content = serde_json::to_string_pretty(self)
+
+        let mut value = serde_json::to_value(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        if let Ok(existing_raw) = std::fs::read_to_string(&path) {
+            if let Ok(serde_json::Value::Object(existing)) =
+                serde_json::from_str::<serde_json::Value>(&existing_raw)
+            {
+                if let serde_json::Value::Object(ref mut merged) = value {
+                    for (key, old_value) in existing {
+                        merged.entry(key).or_insert(old_value);
+                    }
+                }
+            }
+        }
+
+        let content = serde_json::to_string_pretty(&value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         std::fs::write(&path, content)
     }
@@ -517,6 +614,98 @@ mod tests {
         let mut disabled_task = task.clone();
         disabled_task.enabled = false;
         assert!(!super::GatewaySettings::is_task_due(&disabled_task, t_hour_8));
+    }
+
+    #[test]
+    fn test_automation_run_logs_round_trip_and_unknown_keys_survive_save() {
+        let home = temporary_home();
+        let support = home.join("Library/Application Support/Codexling");
+        fs::create_dir_all(&support).unwrap();
+        let home = home.to_str().unwrap();
+
+        // App 端写入的设置：含一条执行日志 + 一个网关进程不认识的键
+        fs::write(
+            support.join("gateway-settings.json"),
+            r#"{
+                "$schemaVersion": 2,
+                "appOnlyKey": {"kept": true},
+                "automationTasks": [
+                    {
+                        "id": "task-1",
+                        "name": "5小时额度对齐巡检",
+                        "hours": [5, 10, 15, 20]
+                    }
+                ],
+                "automationRunLogs": [
+                    {
+                        "id": "app-log-1",
+                        "taskId": "task-1",
+                        "taskName": "5小时额度对齐巡检",
+                        "taskType": "modelHealthCheck",
+                        "startedAt": 1789023729,
+                        "finishedAt": 1789023800,
+                        "isSuccess": true,
+                        "summary": "可用 56 · 异常 88"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        // 模拟网关定时触发一次任务：写开始记录，再补全结束记录
+        let mut settings = super::GatewaySettings::load_for_home(home);
+        assert_eq!(settings.automation_run_logs.len(), 1);
+        settings.push_automation_run_log(super::GatewayAutomationRunLog {
+            id: "task-1-1789030000".to_string(),
+            task_id: "task-1".to_string(),
+            task_name: "5小时额度对齐巡检".to_string(),
+            task_type: "modelHealthCheck".to_string(),
+            started_at: 1789030000,
+            finished_at: None,
+            is_success: None,
+            summary: None,
+        });
+        settings.save_for_home(home).unwrap();
+
+        let mut settings = super::GatewaySettings::load_for_home(home);
+        assert_eq!(settings.automation_run_logs.len(), 2);
+        assert!(settings.automation_run_logs[1].finished_at.is_none());
+
+        settings.finish_automation_run_log("task-1-1789030000", 1789030120, true, "可用 60 · 异常 4");
+        settings.save_for_home(home).unwrap();
+
+        // 未知键必须被保留，否则 App 端字段会被网关的整份覆盖抹掉
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(support.join("gateway-settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(raw.get("appOnlyKey"), Some(&serde_json::json!({"kept": true})));
+
+        let settings = super::GatewaySettings::load_for_home(home);
+        assert_eq!(settings.automation_run_logs.len(), 2);
+        let finished = &settings.automation_run_logs[1];
+        assert_eq!(finished.finished_at, Some(1789030120));
+        assert_eq!(finished.is_success, Some(true));
+        assert_eq!(finished.summary.as_deref(), Some("可用 60 · 异常 4"));
+
+        // 容量上限：只保留最近 MAX_AUTOMATION_RUN_LOGS 条
+        let mut settings = settings;
+        for i in 0..(super::MAX_AUTOMATION_RUN_LOGS + 5) {
+            settings.push_automation_run_log(super::GatewayAutomationRunLog {
+                id: format!("bulk-{i}"),
+                task_id: "task-1".to_string(),
+                task_name: "bulk".to_string(),
+                task_type: "modelHealthCheck".to_string(),
+                started_at: 1789030000 + i as i64,
+                finished_at: None,
+                is_success: None,
+                summary: None,
+            });
+        }
+        assert_eq!(settings.automation_run_logs.len(), super::MAX_AUTOMATION_RUN_LOGS);
+        assert_eq!(
+            settings.automation_run_logs.last().map(|log| log.id.as_str()),
+            Some(format!("bulk-{}", super::MAX_AUTOMATION_RUN_LOGS + 4).as_str())
+        );
     }
 
     #[test]
@@ -1913,6 +2102,102 @@ mod tests {
     }
 
     #[test]
+    fn multimodal_user_message_keeps_its_attachment_on_every_upstream() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "这张图里是什么？"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+        ]);
+        let content = Some(&content);
+
+        // Text extraction alone is unchanged; it must not start reading images.
+        assert_eq!(
+            GatewayServer::message_text(content).as_deref(),
+            Some("这张图里是什么？")
+        );
+
+        // Gemini Cloud Code: an inlineData part beside the text.
+        let gemini = GatewayServer::gemini_inline_data_parts(content);
+        assert_eq!(gemini.len(), 1);
+        assert_eq!(gemini[0]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(gemini[0]["inlineData"]["data"], "QUJD");
+
+        // Codex Responses: an input_image part beside the input_text part.
+        let codex = GatewayServer::codex_user_content_parts(content);
+        assert_eq!(codex.len(), 2);
+        assert_eq!(codex[0]["type"], "input_text");
+        assert_eq!(codex[1]["type"], "input_image");
+        assert_eq!(codex[1]["image_url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn attachment_without_text_still_reaches_the_model() {
+        let content = serde_json::json!([
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}}
+        ]);
+        let content = Some(&content);
+
+        assert_eq!(GatewayServer::message_text(content).as_deref(), Some(""));
+        assert_eq!(GatewayServer::gemini_inline_data_parts(content).len(), 1);
+        let codex = GatewayServer::codex_user_content_parts(content);
+        assert!(codex.iter().any(|part| part["type"] == "input_image"));
+    }
+
+    #[test]
+    fn remote_image_urls_are_skipped_where_they_cannot_be_inlined() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "hi"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+        ]);
+        let content = Some(&content);
+
+        // Gemini has no field for an arbitrary remote URL, so it is dropped
+        // rather than mislabelled as text. Codex forwards the URL as-is.
+        assert!(GatewayServer::gemini_inline_data_parts(content).is_empty());
+        let codex = GatewayServer::codex_user_content_parts(content);
+        assert!(codex.iter().any(|part| part["image_url"] == "https://example.com/a.png"));
+    }
+
+    #[test]
+    fn malformed_attachments_never_panic_or_leak_as_text() {
+        assert_eq!(GatewayServer::parse_inline_data_url("data:image/png,QUJD"), None);
+        assert_eq!(GatewayServer::parse_inline_data_url("data:;base64,QUJD"), None);
+        assert_eq!(GatewayServer::parse_inline_data_url("data:image/png;base64,"), None);
+        assert_eq!(GatewayServer::parse_inline_data_url("not-a-url"), None);
+
+        let content = serde_json::json!([
+            {"type": "image_url"},
+            {"type": "image_url", "image_url": {}},
+            {"type": "image_url", "image_url": {"url": "   "}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+        ]);
+        let content = Some(&content);
+        // Collection is syntactic: three parts carry no usable URL, while the
+        // fourth is a non-empty string that only conversion can judge.
+        assert_eq!(GatewayServer::message_image_urls(content).len(), 1);
+        // Conversion is semantic, so the payload-less data URL is refused
+        // rather than inlined as an empty image.
+        assert!(GatewayServer::gemini_inline_data_parts(content).is_empty());
+
+        // A plain string message is not multimodal and must stay unaffected.
+        let plain = serde_json::json!("just text");
+        assert!(GatewayServer::message_image_urls(Some(&plain)).is_empty());
+        assert_eq!(GatewayServer::codex_user_content_parts(Some(&plain)).len(), 1);
+    }
+
+    #[test]
+    fn requires_bearer_only_for_network_peers() {
+        // A local caller keeps working with or without the token: the machine's
+        // own user already owns the credential documents.
+        assert!(!GatewayServer::peer_requires_bearer(true, false));
+        assert!(!GatewayServer::peer_requires_bearer(true, true));
+
+        // A network peer is refused until it authenticates. This is the case
+        // that used to consume quota unauthenticated whenever LAN access was on.
+        assert!(GatewayServer::peer_requires_bearer(false, false));
+        assert!(!GatewayServer::peer_requires_bearer(false, true));
+    }
+
+    #[test]
     fn infers_agent_name_from_pi_user_agent_and_headers() {
         // Explicit header
         assert_eq!(
@@ -2232,7 +2517,28 @@ impl GatewayServer {
         .into_bytes()
     }
 
+    /// Whether a request from this peer must present the local bearer token.
+    ///
+    /// The gateway binds `0.0.0.0` when LAN access is enabled, and the
+    /// inference and model-list paths used to answer unauthenticated on every
+    /// interface — so turning LAN access on silently published the user's
+    /// model quota to the whole network while the UI claimed the local token
+    /// was protecting it.
+    ///
+    /// A loopback peer is the machine's own user, who already owns the
+    /// credential documents, so local clients keep working unchanged. Any other
+    /// peer must authenticate, which is exactly what the LAN toggle promises.
+    pub fn peer_requires_bearer(is_loopback: bool, authorized: bool) -> bool {
+        !is_loopback && !authorized
+    }
+
     pub fn handle_client(&self, mut stream: TcpStream) -> std::io::Result<bool> {
+        // Captured before the request is read: the peer address is the only
+        // fact distinguishing a local caller from a network one.
+        let peer_is_loopback = stream
+            .peer_addr()
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(false);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
         let mut buffer = [0_u8; 65_536];
@@ -2328,6 +2634,18 @@ impl GatewayServer {
 
         // Direct upstream proxy for chat completions
         if method == "POST" && (path == "/v1/chat/completions" || path == "/chat/completions") {
+            // Inference spends the user's upstream quota, so a non-loopback
+            // peer must authenticate before any of it is consumed.
+            if Self::peer_requires_bearer(peer_is_loopback, authorized) {
+                let response = Self::response(
+                    "401 Unauthorized",
+                    "application/json",
+                    r#"{"error":{"message":"unauthorized: this gateway is reachable from the network (LAN access is enabled), so /v1/chat/completions requires the local bearer token","type":"invalid_request_error"}}"#,
+                );
+                stream.write_all(&response)?;
+                stream.flush()?;
+                return Ok(false);
+            }
             self.active_requests.fetch_add(1, Ordering::SeqCst);
             self.total_requests.fetch_add(1, Ordering::Relaxed);
             let _ = self.proxy_chat_completions(&request, body, &mut stream);
@@ -2410,9 +2728,19 @@ impl GatewayServer {
                 }
             }
             ("GET", "/v1/models") | ("GET", "/models") => {
-                let payload = Self::get_dynamic_models_payload();
-                let filtered = self.model_health.filter_models_payload(payload);
-                Self::response("200 OK", "application/json", &filtered.to_string())
+                // The catalog names every account-scoped model the gateway
+                // serves, so it follows the same network rule as inference.
+                if Self::peer_requires_bearer(peer_is_loopback, authorized) {
+                    Self::response(
+                        "401 Unauthorized",
+                        "application/json",
+                        r#"{"error":"unauthorized"}"#,
+                    )
+                } else {
+                    let payload = Self::get_dynamic_models_payload();
+                    let filtered = self.model_health.filter_models_payload(payload);
+                    Self::response("200 OK", "application/json", &filtered.to_string())
+                }
             }
             ("POST", "/internal/model-check") => {
                 if !authorized {
@@ -3515,6 +3843,10 @@ impl GatewayServer {
                     parts.push(serde_json::json!({"text": text}));
                 }
             }
+            // An attachment travels as a Gemini `inlineData` part. Only a
+            // `data:` URL can be inlined; a remote URL has no Cloud Code
+            // equivalent here, so it is skipped rather than sent as text.
+            parts.extend(Self::gemini_inline_data_parts(message.get("content")));
             if role == "assistant" {
                 if let Some(tool_calls) =
                     message.get("tool_calls").and_then(|value| value.as_array())
@@ -4453,11 +4785,15 @@ impl GatewayServer {
                     }
                 }
             } else if role == "user" {
-                if let Some(text) = Self::message_text(content) {
+                // Images are collected beside the text: `message_text` sees
+                // only text parts, so an attachment would otherwise be dropped
+                // and the model would answer about an image it never received.
+                let parts = Self::codex_user_content_parts(content);
+                if !parts.is_empty() {
                     input.push(serde_json::json!({
                         "type": "message",
                         "role": "user",
-                        "content": [{"type": "input_text", "text": text}]
+                        "content": parts
                     }));
                 }
             } else if role == "assistant" {
@@ -4950,6 +5286,73 @@ impl GatewayServer {
             ),
             _ => None,
         }
+    }
+
+    /// Image parts carried by an OpenAI-style multimodal `content` array.
+    ///
+    /// `message_text` reads only `text` parts, so every structured upstream
+    /// adapter used to drop a user's attachment without a word and the model
+    /// then answered about an image it never received. Each adapter converts
+    /// these URLs into its own protocol's image shape instead.
+    fn message_image_urls(content: Option<&serde_json::Value>) -> Vec<String> {
+        let Some(serde_json::Value::Array(parts)) = content else {
+            return Vec::new();
+        };
+        parts
+            .iter()
+            .filter_map(|part| {
+                if part.get("type").and_then(|value| value.as_str()) != Some("image_url") {
+                    return None;
+                }
+                let url = part
+                    .get("image_url")
+                    .and_then(|value| value.get("url"))
+                    .and_then(|value| value.as_str())?;
+                let trimmed = url.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect()
+    }
+
+    /// Split an inline `data:<mime>;base64,<payload>` URL, the form clients use
+    /// for an attached file. Returns `None` for a remote URL, which has no
+    /// inlinable Gemini equivalent.
+    fn parse_inline_data_url(url: &str) -> Option<(String, String)> {
+        let rest = url.strip_prefix("data:")?;
+        let (meta, payload) = rest.split_once(',')?;
+        let mime = meta.split(';').next()?.trim();
+        if !meta.to_ascii_lowercase().contains("base64") || mime.is_empty() || payload.trim().is_empty()
+        {
+            return None;
+        }
+        Some((mime.to_string(), payload.to_string()))
+    }
+
+    /// Gemini Cloud Code `inlineData` parts for one message's attachments.
+    fn gemini_inline_data_parts(content: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+        Self::message_image_urls(content)
+            .iter()
+            .filter_map(|url| Self::parse_inline_data_url(url))
+            .map(|(mime_type, data)| {
+                serde_json::json!({"inlineData": {"mimeType": mime_type, "data": data}})
+            })
+            .collect()
+    }
+
+    /// Responses-API content parts for one user message, images included.
+    fn codex_user_content_parts(content: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+        let mut parts = Vec::new();
+        if let Some(text) = Self::message_text(content) {
+            parts.push(serde_json::json!({"type": "input_text", "text": text}));
+        }
+        for url in Self::message_image_urls(content) {
+            parts.push(serde_json::json!({"type": "input_image", "image_url": url}));
+        }
+        parts
     }
 
     fn write_gateway_error(

@@ -47,6 +47,8 @@ public struct GatewayAutomationView: View {
             }
         }
         .task {
+            // 定时任务的“上次触发/执行日志”由网关进程写入，进入页面时先同步磁盘
+            store.reloadAutomationStateFromDisk()
             await store.refreshModelHealth()
             await store.pollModelCheckStatus()
             if store.isModelCheckRunning {
@@ -1413,6 +1415,8 @@ struct AutomationRunLogSheet: View {
     }
 
     private func reload() {
+        // 定时触发由网关进程执行并写入同一个 settings 文件，先同步磁盘再展示。
+        store.reloadAutomationStateFromDisk()
         logs = store.gatewaySettings.automationRunLogs
             .filter { $0.taskId == task.id }
             .sorted { $0.startedAt > $1.startedAt }

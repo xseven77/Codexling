@@ -1378,6 +1378,11 @@ private struct DeepSeekDashboardCard: View {
                 } else {
                     Text("—").font(.system(size: 36, weight: .bold)).foregroundStyle(Color.codexMuted).padding(.top, 4)
                 }
+                // 官方模型目录来源与新鲜度：型号不落地写死，全部取自 GET /models。
+                Text(modelCatalogSummary)
+                    .font(.system(size: 9))
+                    .foregroundStyle(connection.availableModelIDs.isEmpty ? Color.codexAmber : Color.codexMuted)
+                    .padding(.top, 4)
                 Button(action: onRefresh) {
                     Group {
                         if isRefreshingConnection {
@@ -1425,6 +1430,18 @@ private struct DeepSeekDashboardCard: View {
             total: connection.balance?.total,
             authenticationState: connection.authenticationState
         )
+    }
+
+    /// 官方模型目录摘要：款数 + 最近一次成功抓取时间。
+    private var modelCatalogSummary: String {
+        guard !connection.availableModelIDs.isEmpty else {
+            return "官方模型目录：尚未取到，请点「查询余额」重试"
+        }
+        guard let lastValidatedAt = connection.lastValidatedAt else {
+            return "官方模型目录：\(connection.availableModelIDs.count) 款可用模型"
+        }
+        let stamp = lastValidatedAt.formatted(date: .numeric, time: .shortened)
+        return "官方模型目录：\(connection.availableModelIDs.count) 款可用模型 · 更新于 \(stamp)"
     }
 }
 

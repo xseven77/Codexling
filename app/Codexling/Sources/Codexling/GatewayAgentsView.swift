@@ -38,6 +38,14 @@ struct GatewayAgentsView: View {
                 agentConfigSucceeded: $agentConfigSucceeded
             )
 
+            DSHAgentCardView(
+                store: store,
+                configuringAgent: $configuringAgent,
+                unconfiguringAgent: $unconfiguringAgent,
+                agentConfigMessage: $agentConfigMessage,
+                agentConfigSucceeded: $agentConfigSucceeded
+            )
+
             GenericAgentCardsView(
                 supervisor: supervisor,
                 agentConfigMessage: $agentConfigMessage
@@ -569,6 +577,271 @@ private struct PiAgentCardView: View {
             .buttonStyle(.plain)
             .disabled(configuringAgent != nil || unconfiguringAgent != nil)
             .opacity(configuringAgent != nil && configuringAgent != .pi ? 0.55 : 1)
+        }
+    }
+}
+
+// MARK: - DSH (DeepSeek Harness) Card
+@MainActor
+private struct DSHAgentCardView: View {
+    @Bindable var store: GatewayStore
+    @Binding var configuringAgent: GatewayAgentConnectTarget?
+    @Binding var unconfiguringAgent: GatewayAgentConnectTarget?
+    @Binding var agentConfigMessage: String?
+    @Binding var agentConfigSucceeded: Bool
+
+    @State private var isRefreshingModels = false
+    @State private var setAsDefaultModel = false
+
+    private var isBusy: Bool {
+        configuringAgent != nil || unconfiguringAgent != nil || isRefreshingModels
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                BrandIconView(asset: .deepSeek, size: 34, cornerRadius: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text("DSH (DeepSeek Harness)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.codexInk)
+                        statusBadge
+                    }
+                    Text("通过内置 llm-pi-ai 适配器以 OpenAI 兼容协议接入，支持工具调用与流式交互")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                }
+                Spacer()
+                actionButtons
+            }
+
+            CodexDivider(.horizontal)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("接入配置参数")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.codexInk)
+                VStack(alignment: .leading, spacing: 4) {
+                    parameterRow(label: "路由", value: "codexling")
+                    parameterRow(label: "Base URL", value: "http://127.0.0.1:\(String(GatewaySupervisor.shared.port))/v1")
+                    parameterRow(label: "设置文档", value: store.dshSettingsPath)
+                    parameterRow(label: "凭据文档", value: store.dshCredentialsPath)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.codexBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            CodexDivider(.horizontal)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center) {
+                    HStack(spacing: 6) {
+                        Text("模型列表")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.codexInk)
+                        Text("\(configuredModelCount) 个模型")
+                            .font(.system(size: 9.5))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.codexMuted.opacity(0.12), in: Capsule())
+                            .foregroundStyle(Color.codexMuted)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        guard !isBusy else { return }
+                        isRefreshingModels = true
+                        agentConfigMessage = nil
+                        Task {
+                            let res = await store.refreshDSHModels()
+                            agentConfigSucceeded = res.success
+                            agentConfigMessage = res.message
+                            isRefreshingModels = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if isRefreshingModels {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 9.5))
+                            }
+                            Text("刷新模型列表")
+                        }
+                        .font(.system(size: 10.5, weight: .medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.codexMuted.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .foregroundStyle(Color.codexInk)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isBusy || !store.dshAgentConfigured)
+                }
+
+                Text("刷新会就地重写 codexling 路由的模型清单：下架的模型随之移除、新模型随即出现，整个替换在单次原子写入内完成，不存在「先移除再接入」的空窗期。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .lineSpacing(2)
+
+                if store.dshCredentialShadowed {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.orange)
+                        Text("检测到进程环境变量 CODEXLING_GATEWAY_TOKEN，DSH 会优先生效该值，从而遮蔽此处写入的令牌。请取消该环境变量后重新接入。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.orange)
+                            .lineSpacing(2)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+
+                defaultModelToggle
+            }
+        }
+        .padding(14)
+        .background(Color.codexCard)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+        )
+    }
+
+    private var configuredModelCount: Int {
+        store.dshAgentConfigured ? store.dshAvailableModelCount : 0
+    }
+
+    private func parameterRow(label: String, value: String) -> some View {
+        HStack {
+            Text("\(label):")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+                .frame(width: 66, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private var defaultModelToggle: some View {
+        Button {
+            setAsDefaultModel.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: setAsDefaultModel ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(setAsDefaultModel ? Color.codexPrimary : Color.codexMuted)
+                Text("同时将 Codexling 设为 DSH 默认模型（写入 agent-default-model）")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.codexInk)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if !store.hasLoadedAgentIntegrationStatus || store.isRefreshingAgentIntegrationStatus {
+            badge("正在检测…", tint: Color.codexMuted, weight: .regular)
+        } else if store.dshAgentConfigured {
+            badge("已接入 Gateway", tint: .green, weight: .semibold)
+        } else if store.dshAgentInstalled {
+            badge("已安装 / 未接入", tint: .blue, weight: .medium)
+        } else {
+            badge("未检测到 ~/.dsh", tint: Color.codexMuted, weight: .regular)
+        }
+    }
+
+    private func badge(_ text: String, tint: Color, weight: Font.Weight) -> some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: weight))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(tint.opacity(0.12), in: Capsule())
+            .foregroundStyle(tint)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 8) {
+            if store.dshAgentConfigured {
+                Button {
+                    guard !isBusy else { return }
+                    unconfiguringAgent = .dsh
+                    agentConfigMessage = nil
+                    Task {
+                        let result = await store.unconfigureDSHAgent()
+                        agentConfigSucceeded = result.success
+                        agentConfigMessage = result.message
+                        unconfiguringAgent = nil
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        if unconfiguringAgent == .dsh {
+                            ProgressView().controlSize(.small)
+                            Text("移除中…")
+                        } else {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10))
+                            Text("移除")
+                        }
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.red.opacity(0.25), lineWidth: 0.8)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(isBusy)
+            }
+
+            Button {
+                guard !isBusy else { return }
+                configuringAgent = .dsh
+                agentConfigMessage = nil
+                Task {
+                    let res = await store.configureDSHAgent(setAsDefaultModel: setAsDefaultModel)
+                    agentConfigSucceeded = res.success
+                    agentConfigMessage = res.message
+                    configuringAgent = nil
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    if configuringAgent == .dsh {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Color.codexOnPrimary)
+                        Text("接入中…")
+                    } else {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10))
+                        Text(store.dshAgentConfigured ? "更新接入配置" : "一键接入 Gateway")
+                    }
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .frame(minWidth: store.dshAgentConfigured ? 92 : 118)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(Color.codexOnPrimary)
+            }
+            .buttonStyle(.plain)
+            .disabled(isBusy)
+            .opacity(configuringAgent != nil && configuringAgent != .dsh ? 0.55 : 1)
         }
     }
 }

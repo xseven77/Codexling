@@ -426,10 +426,16 @@ struct DeepSeekModelsService: DeepSeekModelsFetching {
         if http.statusCode == 401 || http.statusCode == 403 { throw DeepSeekValidationError.unauthorized }
         if http.statusCode == 429 || http.statusCode >= 500 { throw DeepSeekValidationError.unavailable }
         guard (200..<300).contains(http.statusCode) else { throw DeepSeekValidationError.invalidResponse }
-        if let decoded = try? JSONDecoder().decode(Response.self, from: data), !decoded.data.isEmpty {
-            return decoded.data.map(\.id)
-        }
-        return ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
+
+        // 模型目录只以官方响应为准：解析失败或返回空列表时抛错，由调用方决定
+        // 「保留上一次官方结果」或「提示未取到」。绝不回退到本地写死的模型名，
+        // 否则界面会显示官方根本不存在的型号。
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        let modelIDs = decoded.data
+            .map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !modelIDs.isEmpty else { throw DeepSeekValidationError.invalidResponse }
+        return modelIDs
     }
 }
 

@@ -325,9 +325,11 @@ public final class GatewayStore {
     private weak var companionStatsStore: CompanionStatsStore?
     private let hermesConfigurator: HermesGatewayConfigurator
     private let piConfigurator: PiGatewayConfigurator
+    private let dshConfigurator: DSHGatewayConfigurator
     private let agentCatalogDefaults = UserDefaults.standard
     private let hermesCatalogFingerprintKey = "Codexling.hermesCatalogFingerprint"
     private let piCatalogFingerprintKey = "Codexling.piCatalogFingerprint"
+    private let dshCatalogFingerprintKey = "Codexling.dshCatalogFingerprint"
     @ObservationIgnored nonisolated(unsafe) private var agentStatusObserver: (any NSObjectProtocol)?
 
     deinit {
@@ -342,8 +344,83 @@ public final class GatewayStore {
     public let settingsStorage: GatewaySettingsStorage
     public var gatewaySettings: GatewaySettings {
         didSet {
-            try? settingsStorage.save(gatewaySettings)
+            persistGatewaySettings()
         }
+    }
+
+    /// 触发设置主动落盘
+    public func saveGatewaySettings() {
+        persistGatewaySettings()
+    }
+
+    /// 与网关进程 `MAX_AUTOMATION_RUN_LOGS` 保持一致。
+    public static let maxAutomationRunLogs = 300
+
+    /// 落盘前先与磁盘合并。
+    ///
+    /// `codexling-gateway` 进程与 App 写的是同一个 `gateway-settings.json`，定时巡检的
+    /// `lastRun*` 与 `automationRunLogs` 都由网关写入。这里若直接整份覆盖，App 内存中的
+    /// 旧副本就会把这些记录抹掉（历史上“执行日志打开就是空的”正是这个原因之一）。
+    private func persistGatewaySettings() {
+        var merged = gatewaySettings
+        let onDisk = settingsStorage.load()
+
+        if !onDisk.automationRunLogs.isEmpty {
+            var seen = Set(merged.automationRunLogs.map(\.id))
+            var logs = merged.automationRunLogs
+            for log in onDisk.automationRunLogs where seen.insert(log.id).inserted {
+                logs.append(log)
+            }
+            if logs.count > Self.maxAutomationRunLogs {
+                logs = Array(logs.suffix(Self.maxAutomationRunLogs))
+            }
+            merged.automationRunLogs = logs
+        }
+
+        // 磁盘上更晚的一次运行结果优先，避免用内存里的旧状态覆盖网关刚写入的记录。
+        if !onDisk.automationTasks.isEmpty {
+            for idx in merged.automationTasks.indices {
+                guard let diskTask = onDisk.automationTasks.first(where: { $0.id == merged.automationTasks[idx].id }) else { continue }
+                if (diskTask.lastRunAt ?? 0) > (merged.automationTasks[idx].lastRunAt ?? 0) {
+                    merged.automationTasks[idx].lastRunAt = diskTask.lastRunAt
+                    merged.automationTasks[idx].lastRunStatus = diskTask.lastRunStatus
+                    merged.automationTasks[idx].lastRunSummary = diskTask.lastRunSummary
+                }
+            }
+        }
+
+        try? settingsStorage.save(merged)
+    }
+
+    /// 从磁盘同步自动化任务的运行态与执行日志（网关进程会异步写入这些字段）。
+    public func reloadAutomationStateFromDisk() {
+        let onDisk = settingsStorage.load()
+        var updated = gatewaySettings
+
+        if !onDisk.automationRunLogs.isEmpty {
+            var seen = Set(updated.automationRunLogs.map(\.id))
+            var logs = updated.automationRunLogs
+            for log in onDisk.automationRunLogs where seen.insert(log.id).inserted {
+                logs.append(log)
+            }
+            logs.sort { $0.startedAt < $1.startedAt }
+            if logs.count > Self.maxAutomationRunLogs {
+                logs = Array(logs.suffix(Self.maxAutomationRunLogs))
+            }
+            updated.automationRunLogs = logs
+        }
+
+        for idx in updated.automationTasks.indices {
+            guard let diskTask = onDisk.automationTasks.first(where: { $0.id == updated.automationTasks[idx].id }) else { continue }
+            if (diskTask.lastRunAt ?? 0) > (updated.automationTasks[idx].lastRunAt ?? 0) {
+                updated.automationTasks[idx].lastRunAt = diskTask.lastRunAt
+                updated.automationTasks[idx].lastRunStatus = diskTask.lastRunStatus
+                updated.automationTasks[idx].lastRunSummary = diskTask.lastRunSummary
+            }
+        }
+
+        guard updated != gatewaySettings else { return }
+        gatewaySettings = updated
     }
 
     public var autoCheckOnStartupWithHistory: Bool {
@@ -468,8 +545,8 @@ public final class GatewayStore {
         var logs = gatewaySettings.automationRunLogs
         logs.append(GatewayAutomationRunLog(taskId: taskId, taskName: taskName, taskType: taskType, startedAt: startedAt))
         // 最多保留最近 300 条，避免设置无限膨胀
-        if logs.count > 300 {
-            logs = Array(logs.suffix(300))
+        if logs.count > Self.maxAutomationRunLogs {
+            logs = Array(logs.suffix(Self.maxAutomationRunLogs))
         }
         gatewaySettings.automationRunLogs = logs
     }
@@ -492,6 +569,14 @@ public final class GatewayStore {
     public private(set) var hermesLanBypassConfigured = false
     public private(set) var piAgentInstalled = false
     public private(set) var piAgentConfigured = false
+    public private(set) var dshAgentInstalled = false
+    public private(set) var dshAgentConfigured = false
+    /// True when a `CODEXLING_GATEWAY_TOKEN` in the process environment shadows
+    /// the token in `~/.dsh/.credentials.yaml`, which DSH resolves *after* the
+    /// environment and cannot be overridden from inside a process.
+    public private(set) var dshCredentialShadowed = false
+    /// Cached so a SwiftUI body never reads the connection registry on render.
+    public private(set) var dshAvailableModelCount = 0
     public private(set) var isRefreshingAgentIntegrationStatus = false
     public private(set) var hasLoadedAgentIntegrationStatus = false
 
@@ -752,6 +837,7 @@ public final class GatewayStore {
         self.gatewaySettings = settingsStorage.load()
         self.hermesConfigurator = HermesGatewayConfigurator()
         self.piConfigurator = PiGatewayConfigurator()
+        self.dshConfigurator = DSHGatewayConfigurator()
         loadCustomModels()
         loadCachedModelHealth()
         registerAgentStatusObserver()
@@ -767,12 +853,14 @@ public final class GatewayStore {
         companionStatsStore: CompanionStatsStore? = nil,
         hermesConfigurator: HermesGatewayConfigurator = HermesGatewayConfigurator(),
         piConfigurator: PiGatewayConfigurator = PiGatewayConfigurator(),
+        dshConfigurator: DSHGatewayConfigurator = DSHGatewayConfigurator(),
         settingsStorage: GatewaySettingsStorage = GatewaySettingsStorage()
     ) {
         self.activityStore = activityStore
         self.companionStatsStore = companionStatsStore
         self.hermesConfigurator = hermesConfigurator
         self.piConfigurator = piConfigurator
+        self.dshConfigurator = dshConfigurator
         self.settingsStorage = settingsStorage
         self.gatewaySettings = settingsStorage.load()
         loadCustomModels()
@@ -2770,33 +2858,8 @@ public final class GatewayStore {
             )
         }
 
-        // 2. DeepSeek 官方账号模型列表
-        var deepseekModelList: [GatewayExportedModel] = [] /*
-            GatewayExportedModel(
-                id: "deepseek-chat",
-                modelName: "deepseek-chat",
-                sourceBadge: "DeepSeek 官方",
-                sourceBadgeColor: NSColor.systemBlue,
-                capability: "高性价比 · 强中文 · V3 核心",
-                description: "DeepSeek V3 通用代码与对话模型，中文理解与代码生成性价比极高"
-            ),
-            GatewayExportedModel(
-                id: "deepseek-reasoner",
-                modelName: "deepseek-reasoner",
-                sourceBadge: "DeepSeek 官方",
-                sourceBadgeColor: NSColor.systemBlue,
-                capability: "深度思考 · R1 逻辑推理",
-                description: "DeepSeek R1 深度思考推理模型，完整保留 <think> 思考链流式分发"
-            ),
-            GatewayExportedModel(
-                id: "deepseek-v4-pro",
-                modelName: "deepseek-v4-pro",
-                sourceBadge: "DeepSeek 官方",
-                sourceBadgeColor: NSColor.systemBlue,
-                capability: "次世代旗舰 · 顶尖推理",
-                description: "DeepSeek V4 Pro 顶阶推理大模型"
-            )
-        ] */
+        // 2. DeepSeek 官方账号模型列表（仅来自官方 /models 接口，本地不预置任何型号）
+        var deepseekModelList: [GatewayExportedModel] = []
         for conn in registry.deepSeekConnections {
             for mid in conn.availableModelIDs where !deepseekModelList.contains(where: { $0.modelName == mid }) {
                 deepseekModelList.append(
@@ -3035,12 +3098,12 @@ public final class GatewayStore {
                     hasProxyCredential: false,
                     badgeText: "官方直连 · 未配置",
                     badgeColor: NSColor.systemBlue,
-                    quickConnectTip: "第三方 Agent 填入 deepseek-reasoner 可完整获得 R1 深度思考推理链流式输出；填入 deepseek-chat 或 deepseek-v4-pro 享受极速代码生成，支持任何新发布的 DeepSeek 模型名直接请求。",
-                    recommendedModels: ["DeepSeek · deepseek-chat (deepseek)", "DeepSeek · deepseek-reasoner (deepseek)", "DeepSeek · deepseek-v4-pro (deepseek)"],
+                    quickConnectTip: "接入 DeepSeek 官方账号后，模型清单由官方接口 (GET /models) 自动同步，官方新发布的模型名可直接请求，无需在此手动登记。",
+                    recommendedModels: [],
                     sampleConfigSnippet: """
                     Base URL: http://127.0.0.1:\(portStr)/v1
                     API Key:  \(token)
-                    Model:    DeepSeek · deepseek-reasoner (deepseek)
+                    Model:    <官方模型名，接入后自动同步>
                     """,
                     models: deepseekModelList
                 )
@@ -4029,13 +4092,17 @@ public final class GatewayStore {
 
         let hermes = hermesConfigurator
         let pi = piConfigurator
+        let dsh = dshConfigurator
         let status = await Task.detached(priority: .utility) {
             (
                 hermesInstalled: hermes.isHermesInstalled,
                 hermesConfigured: hermes.isConfigured,
                 hermesLanBypass: hermes.isLanBypassConfigured,
                 piInstalled: pi.isPiInstalled,
-                piConfigured: pi.isConfigured
+                piConfigured: pi.isConfigured,
+                dshInstalled: dsh.isDSHInstalled,
+                dshConfigured: dsh.isConfigured,
+                dshShadowed: dsh.isCredentialShadowedByEnvironment
             )
         }.value
         hermesAgentInstalled = status.hermesInstalled
@@ -4043,6 +4110,10 @@ public final class GatewayStore {
         hermesLanBypassConfigured = status.hermesLanBypass
         piAgentInstalled = status.piInstalled
         piAgentConfigured = status.piConfigured
+        dshAgentInstalled = status.dshInstalled
+        dshAgentConfigured = status.dshConfigured
+        dshCredentialShadowed = status.dshShadowed
+        dshAvailableModelCount = deduplicatedDSHModels().count
         if notifyPeers {
             NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
         }
@@ -4094,6 +4165,145 @@ public final class GatewayStore {
         }
     }
 
+    // MARK: - DSH (DeepSeek Harness) 一键接入
+
+    public var dshSettingsPath: String { dshConfigurator.settingsURL.path }
+    public var dshCredentialsPath: String { dshConfigurator.credentialsURL.path }
+
+    /// DSH has no `settings`/`credentials` CLI, so the integration surface is
+    /// the two documents the DSH Models page itself writes.
+    ///
+    /// Every entry carries an explicit, conservative capacity because
+    /// `/v1/models` publishes no sizing metadata; leaving a model unsized would
+    /// adopt the adapter's 262,144 / 32,768 defaults, and an over-claimed
+    /// context is rejected mid-turn after the message is already durable.
+    private func deduplicatedDSHModels() -> [DSHModel] {
+        var seen = Set<String>()
+        var result: [DSHModel] = []
+        let overrides = gatewaySettings.modelCapabilityOverrides
+        for model in allExportedModels {
+            let id = Self.agentCompatibleModelID(model.modelName)
+            guard !id.isEmpty, !id.contains(where: { $0.isWhitespace }), !seen.contains(id) else { continue }
+            seen.insert(id)
+            let userOverride = overrides[id] ?? overrides[ModelCapabilityRegistry.normalizeModelSlug(id)]
+            let capability = ModelCapabilityRegistry.resolveCapability(for: id, override: userOverride)
+            let reasoningEfforts = DSHModelReasoning.from(levels: capability.reasoningLevels)
+            result.append(
+                DSHModel(
+                    id: id,
+                    name: model.modelName,
+                    contextWindow: capability.contextWindow,
+                    maxTokens: capability.maxTokens,
+                    input: DSHModelModality.input(supportsImage: capability.supportsImage),
+                    reasoning: reasoningEfforts
+                )
+            )
+        }
+        return result
+    }
+
+    /// Fingerprint of the whole generated route entry, not just its model ids.
+    ///
+    /// An id-only fingerprint cannot see a change to a model's declared
+    /// capacity, modalities or thinking levels, so a corrected capability table
+    /// would never reach an already-configured document through the automatic
+    /// sync.
+    nonisolated static func dshCatalogFingerprint(_ models: [DSHModel]) -> String {
+        models
+            .map { model in
+                let reasoning = model.reasoning
+                    .map { "\($0.level)=\($0.wire ?? "")" }
+                    .joined(separator: ",")
+                return "\(model.id)|\(model.contextWindow)|\(model.maxTokens)"
+                    + "|\(model.input.joined(separator: ","))|\(reasoning)"
+            }
+            .sorted()
+            .joined(separator: "\n")
+    }
+
+    public func configureDSHAgent(setAsDefaultModel: Bool = false) async -> (success: Bool, message: String) {
+        let baseURL = "http://127.0.0.1:\(GatewaySupervisor.shared.port)/v1"
+        let token = GatewaySupervisor.shared.localToken
+        let configurator = dshConfigurator
+        let models = deduplicatedDSHModels()
+
+        do {
+            guard !models.isEmpty else {
+                throw DSHGatewayConfigurationError.noGatewayModel
+            }
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.configure(
+                    baseURL: baseURL,
+                    apiKey: token,
+                    models: models,
+                    setAsAgentDefaultModel: setAsDefaultModel
+                )
+            }.value
+            agentCatalogDefaults.set(Self.dshCatalogFingerprint(models), forKey: dshCatalogFingerprintKey)
+            dshAgentInstalled = true
+            dshAgentConfigured = true
+            dshCredentialShadowed = configurator.isCredentialShadowedByEnvironment
+            dshAvailableModelCount = models.count
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
+            return (
+                true,
+                "DSH 已接入 Codexling Gateway · \(models.count) 个模型 · \(baseURL)（已写入并读回校验通过；配置热重载，无需重启 dsh）"
+            )
+        } catch {
+            return (false, "配置 DSH 失败：\(error.localizedDescription)")
+        }
+    }
+
+    public func unconfigureDSHAgent() async -> (success: Bool, message: String) {
+        let configurator = dshConfigurator
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try configurator.unconfigure()
+            }.value
+            agentCatalogDefaults.removeObject(forKey: dshCatalogFingerprintKey)
+            dshAgentConfigured = false
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
+            return (true, "已成功从 DSH 卸载 Codexling Gateway 配置")
+        } catch {
+            return (false, "卸载 DSH 配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// Refresh the DSH route's model catalog.
+    ///
+    /// A refresh is expressible directly: the route span is rewritten in one
+    /// atomic commit, so retired models disappear and new ones appear without
+    /// any window where the route is unconfigured. The remove-then-reconnect
+    /// fallback is therefore not needed, and this reports whether the document
+    /// actually changed so the UI can distinguish "已刷新" from "已是最新".
+    public func refreshDSHModels() async -> (success: Bool, message: String) {
+        let baseURL = "http://127.0.0.1:\(GatewaySupervisor.shared.port)/v1"
+        let token = GatewaySupervisor.shared.localToken
+        let configurator = dshConfigurator
+        let models = deduplicatedDSHModels()
+
+        do {
+            guard !models.isEmpty else {
+                throw DSHGatewayConfigurationError.noGatewayModel
+            }
+            let changed = try await Task.detached(priority: .userInitiated) {
+                try configurator.refreshModels(baseURL: baseURL, apiKey: token, models: models)
+            }.value
+            agentCatalogDefaults.set(Self.dshCatalogFingerprint(models), forKey: dshCatalogFingerprintKey)
+            dshAgentInstalled = true
+            dshAgentConfigured = true
+            dshCredentialShadowed = configurator.isCredentialShadowedByEnvironment
+            dshAvailableModelCount = models.count
+            NotificationCenter.default.post(name: .agentIntegrationStatusDidChange, object: self)
+            if changed {
+                return (true, "DSH 模型列表已刷新为 \(models.count) 个模型（热重载生效）")
+            }
+            return (true, "DSH 模型列表已是最新（\(models.count) 个模型，未改动配置文档）")
+        } catch {
+            return (false, "刷新 DSH 模型列表失败：\(error.localizedDescription)")
+        }
+    }
+
     /// Refresh the configured Agent allowlists after account discovery. This
     /// is intentionally fingerprinted: an unchanged periodic refresh never
     /// rewrites client configuration, while a newly published official model
@@ -4111,6 +4321,13 @@ public final class GatewayStore {
            !piModels.isEmpty,
            agentCatalogDefaults.string(forKey: piCatalogFingerprintKey) != catalogFingerprint(piModels) {
             _ = await configurePiAgent()
+        }
+
+        let dshModels = deduplicatedDSHModels()
+        if dshConfigurator.isConfigured,
+           !dshModels.isEmpty,
+           agentCatalogDefaults.string(forKey: dshCatalogFingerprintKey) != Self.dshCatalogFingerprint(dshModels) {
+            _ = await refreshDSHModels()
         }
     }
 
@@ -4158,6 +4375,15 @@ public final class GatewayStore {
                 syncedAgents.append("Pi")
             } catch {
                 failedAgents.append("Pi (\(error.localizedDescription))")
+            }
+        }
+
+        if dshConfigurator.isConfigured {
+            do {
+                try dshConfigurator.updateApiKey(newToken)
+                syncedAgents.append("DSH")
+            } catch {
+                failedAgents.append("DSH (\(error.localizedDescription))")
             }
         }
 

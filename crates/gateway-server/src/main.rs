@@ -105,37 +105,77 @@ fn main() -> std::io::Result<()> {
             loop {
                 thread::sleep(Duration::from_secs(30));
 
-                let mut settings = GatewaySettings::load_for_home(&home);
+                let settings = GatewaySettings::load_for_home(&home);
                 let now = model_health::ModelHealthEngine::now_epoch_secs();
 
-                for i in 0..settings.automation_tasks.len() {
-                    let is_due = GatewaySettings::is_task_due(&settings.automation_tasks[i], now);
-                    if !is_due {
+                for task in settings.automation_tasks.iter() {
+                    if !GatewaySettings::is_task_due(task, now) {
                         continue;
                     }
-                    let (task_id, scope) = {
-                        let task = &settings.automation_tasks[i];
-                        let scope = model_health::CheckScope::Selective {
-                            providers: task.providers.clone(),
-                            account_ids: if task.all_accounts { Vec::new() } else { task.account_ids.clone() },
-                            all_accounts: task.all_accounts,
-                        };
-                        (task.id.clone(), scope)
+
+                    let task_id = task.id.clone();
+                    let task_name = task.name.clone();
+                    let task_type = task.task_type.clone();
+                    let scope = model_health::CheckScope::Selective {
+                        providers: task.providers.clone(),
+                        account_ids: if task.all_accounts { Vec::new() } else { task.account_ids.clone() },
+                        all_accounts: task.all_accounts,
                     };
+
                     let targets = health_engine.collect_targets(&home, &scope);
                     let count = targets.len();
                     let scope_desc = format!("task:{task_id}");
-                    if health_engine.try_start_job(&scope_desc, count).is_ok() {
-                        settings.automation_tasks[i].last_run_at = Some(now);
-                        settings.automation_tasks[i].last_run_status = Some("running".to_string());
-                        let _ = settings.save_for_home(&home);
-
-                        health_engine.run_check(&home, scope);
-
-                        settings.automation_tasks[i].last_run_status = Some("success".to_string());
-                        settings.automation_tasks[i].last_run_summary = Some(format!("完成 {} 个模型探测", count));
-                        let _ = settings.save_for_home(&home);
+                    if health_engine.try_start_job(&scope_desc, count).is_err() {
+                        continue;
                     }
+
+                    // 每 30 秒复查一次设置文件：run_check 可能持续数分钟，
+                    // 期间 App 可能改过设置，因此每次都基于最新内容改写。
+                    let log_id = format!("{task_id}-{now}");
+                    let mut start_settings = GatewaySettings::load_for_home(&home);
+                    if let Some(entry) = start_settings
+                        .automation_tasks
+                        .iter_mut()
+                        .find(|entry| entry.id == task_id)
+                    {
+                        entry.last_run_at = Some(now);
+                        entry.last_run_status = Some("running".to_string());
+                        entry.last_run_summary = None;
+                    }
+                    start_settings.push_automation_run_log(server::GatewayAutomationRunLog {
+                        id: log_id.clone(),
+                        task_id: task_id.clone(),
+                        task_name,
+                        task_type,
+                        started_at: now,
+                        finished_at: None,
+                        is_success: None,
+                        summary: None,
+                    });
+                    let _ = start_settings.save_for_home(&home);
+
+                    health_engine.run_check(&home, scope);
+
+                    let finished_at = model_health::ModelHealthEngine::now_epoch_secs();
+                    let (is_success, summary_text) = summarize_job_result(&health_engine);
+
+                    let mut end_settings = GatewaySettings::load_for_home(&home);
+                    if let Some(entry) = end_settings
+                        .automation_tasks
+                        .iter_mut()
+                        .find(|entry| entry.id == task_id)
+                    {
+                        entry.last_run_status =
+                            Some(if is_success { "success" } else { "failed" }.to_string());
+                        entry.last_run_summary = Some(summary_text.clone());
+                    }
+                    end_settings.finish_automation_run_log(
+                        &log_id,
+                        finished_at,
+                        is_success,
+                        &summary_text,
+                    );
+                    let _ = end_settings.save_for_home(&home);
                 }
             }
         });
@@ -144,4 +184,38 @@ fn main() -> std::io::Result<()> {
     server.run_loop(listener)?;
 
     Ok(())
+}
+
+/// 汇总一次巡检的结果，文案与 App 端 `GatewayStore.pollModelCheckStatus` 保持一致。
+fn summarize_job_result(engine: &model_health::ModelHealthEngine) -> (bool, String) {
+    let summary = {
+        let job = match engine.job.lock() {
+            Ok(job) => job,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        job.last_summary.clone()
+    };
+
+    let number = |key: &str| -> i64 {
+        summary
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+    };
+
+    let available = number("available");
+    let error = number("error");
+    let cancelled = summary
+        .as_ref()
+        .and_then(|value| value.get("cancelled"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    if cancelled {
+        return (false, format!("已取消 · 可用 {available} · 异常 {error}"));
+    }
+
+    let is_success = available > 0 || error == 0;
+    (is_success, format!("可用 {available} · 异常 {error}"))
 }

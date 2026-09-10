@@ -423,7 +423,7 @@ struct GatewayConnectView: View {
                         Image(systemName: "lock.shield.fill")
                             .font(.system(size: 10))
                             .foregroundStyle(Color.codexMuted)
-                        Text("局域网设备接入时仍需携带上方「本地授权 API Key」以保证安全。")
+                        Text("局域网设备接入时仍需携带上方「本地授权 API Key」：/v1/chat/completions 与 /v1/models 对非本机来源强制校验该令牌，本机回环调用不受影响。")
                             .font(.system(size: 10))
                             .foregroundStyle(Color.codexMuted)
                     }
@@ -946,6 +946,7 @@ struct GatewayProviderSectionCard: View {
                 }()
 
                 GatewayAccountModelsDrawer(
+                    store: store,
                     quickConnectTip: isConsolidated
                         ? "已开启账号池聚合调度，所有可用账号将依据健康状态与额度自动均衡分配。在客户端中指定模型名称（包含供应商前缀）即可直接调用。"
                         : activeGroup.quickConnectTip,
@@ -967,6 +968,7 @@ struct GatewayProviderSectionCard: View {
                         copyModel(name, id: id)
                     }
                 )
+                .padding(.horizontal, 2)
             }
         }
         .padding(10)
@@ -2007,6 +2009,7 @@ private struct GatewayRecommendedModelsGrid: View {
 
 @MainActor
 private struct GatewayAccountModelsDrawer: View {
+    @Bindable var store: GatewayStore
     let quickConnectTip: String
     let models: [GatewayExportedModel]
     var healthModels: [String: GatewayModelHealthItem] = [:]
@@ -2019,6 +2022,12 @@ private struct GatewayAccountModelsDrawer: View {
     let onAddCustomModel: (String) -> Void
     let onRemoveCustomModel: (String) -> Void
     let onCopyModel: (String, String) -> Void
+
+    @State private var configuringCapabilityModel: GatewayExportedModel? = nil
+
+    private let tableSpacing: CGFloat = 8
+    private let tableHorizontalPadding: CGFloat = 9
+    private let operationColumnWidth: CGFloat = 80
 
     private func healthColor(for status: String) -> Color {
         switch status {
@@ -2151,56 +2160,82 @@ private struct GatewayAccountModelsDrawer: View {
                     .padding(.vertical, 10)
                     .padding(.horizontal, 6)
                 } else {
+                    // 三个数据列始终共享当前卡片的剩余宽度，不声明固定或最小宽度。
+                    HStack(spacing: tableSpacing) {
+                        Text("模型名称 / ID")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("调度 / 特性")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("说明 / 状态")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("操作")
+                            .frame(width: operationColumnWidth, alignment: .trailing)
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, tableHorizontalPadding)
+                    .padding(.vertical, 4)
+                    .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+
                     ForEach(filteredModels) { model in
                         let isCopied = copiedModelId == model.id
                         let healthItem = findHealth(for: model)
 
-                        HStack(spacing: 8) {
-                            Text(model.modelName)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color.codexInk)
-                                .frame(width: 200, alignment: .leading)
-                                .lineLimit(1)
+                        HStack(spacing: tableSpacing) {
+                            HStack(spacing: 5) {
+                                Text(model.modelName)
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .help(model.modelName)
 
-                            if let healthItem = healthItem {
-                                HStack(spacing: 3.5) {
-                                    Circle()
-                                        .fill(healthColor(for: healthItem.status))
-                                        .frame(width: 5.5, height: 5.5)
-                                    Text(healthText(for: healthItem))
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(healthColor(for: healthItem.status))
-                                    if let ms = healthItem.latencyMs {
-                                        Text("\(ms)ms")
-                                            .font(.system(size: 8.5, design: .monospaced))
+                                if let healthItem = healthItem {
+                                    HStack(spacing: 3.5) {
+                                        Circle()
+                                            .fill(healthColor(for: healthItem.status))
+                                            .frame(width: 5.5, height: 5.5)
+                                        Text(healthText(for: healthItem))
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(healthColor(for: healthItem.status))
+                                        if let ms = healthItem.latencyMs {
+                                            Text("\(ms)ms")
+                                                .font(.system(size: 8.5, design: .monospaced))
+                                                .foregroundStyle(Color.codexMuted)
+                                        }
+                                    }
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(healthColor(for: healthItem.status).opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                                    .help(healthItem.reason.map { "[\(healthText(for: healthItem))] \($0)" } ?? (healthItem.isAvailable ? "状态正常 (已验证)" : "未检查"))
+                                    .fixedSize()
+                                } else {
+                                    HStack(spacing: 3.5) {
+                                        Circle()
+                                            .fill(Color.codexMuted.opacity(0.5))
+                                            .frame(width: 5, height: 5)
+                                        Text("未检查")
+                                            .font(.system(size: 9))
                                             .foregroundStyle(Color.codexMuted)
                                     }
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.codexLine.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                                    .help("点击上方“检查可用性”即可检测该模型")
+                                    .fixedSize()
                                 }
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(healthColor(for: healthItem.status).opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                                .help(healthItem.reason.map { "[\(healthText(for: healthItem))] \($0)" } ?? (healthItem.isAvailable ? "状态正常 (已验证)" : "未检查"))
-                            } else {
-                                HStack(spacing: 3.5) {
-                                    Circle()
-                                        .fill(Color.codexMuted.opacity(0.5))
-                                        .frame(width: 5, height: 5)
-                                    Text("未检查")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(Color.codexMuted)
-                                }
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.codexLine.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
-                                .help("点击上方“检查可用性”即可检测该模型")
                             }
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
                             let displayCapability: String = {
                                 if isConsolidated {
                                     if routingMode == .pinnedAccount, let pName = pinnedAccountName, !pName.isEmpty {
                                         return "固定直通 \(pName)"
                                     }
-                                    return "多账号均衡调度"
+                                    return "同供应商额度自动调度聚合模型"
                                 }
                                 return model.capability
                             }()
@@ -2208,49 +2243,68 @@ private struct GatewayAccountModelsDrawer: View {
                             Text(displayCapability)
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(Color.codexMuted)
-                                .frame(width: 140, alignment: .leading)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                                .help(displayCapability)
 
-                            if let reason = healthItem?.reason, !reason.isEmpty, healthItem?.status != "available" {
-                                Text(reason)
-                                    .font(.system(size: 9.5, design: .monospaced))
-                                    .foregroundStyle(healthColor(for: healthItem?.status ?? ""))
-                                    .lineLimit(1)
-                                    .help(reason)
-                            } else {
-                                Text(model.description)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color.codexMuted)
-                                    .lineLimit(1)
+                            Group {
+                                if let reason = healthItem?.reason, !reason.isEmpty, healthItem?.status != "available" {
+                                    Text(reason)
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(healthColor(for: healthItem?.status ?? ""))
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .help(reason)
+                                } else {
+                                    Text(model.description)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.codexMuted)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .help(model.description)
+                                }
                             }
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
-                            Spacer(minLength: 4)
-
-                            if model.isCustom {
+                            HStack(spacing: 8) {
                                 Button {
-                                    onRemoveCustomModel(model.modelName)
+                                    configuringCapabilityModel = model
                                 } label: {
-                                    Image(systemName: "trash")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(Color.red.opacity(0.7))
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(.system(size: 9.5))
+                                        .foregroundStyle(Color.codexMuted)
                                 }
                                 .buttonStyle(.plain)
-                                .help("移除自定义透传模型")
-                            }
+                                .help("配置该模型的规格与推理能力")
 
-                            Button {
-                                onCopyModel(model.modelName, model.id)
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                    Text(isCopied ? "已复制" : "复制")
+                                if model.isCustom {
+                                    Button {
+                                        onRemoveCustomModel(model.modelName)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(Color.red.opacity(0.7))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("移除自定义透传模型")
                                 }
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(isCopied ? Color.green : Color.codexMuted)
+
+                                Button {
+                                    onCopyModel(model.modelName, model.id)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                        Text(isCopied ? "已复制" : "复制")
+                                    }
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(isCopied ? Color.green : Color.codexMuted)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
+                            .frame(width: operationColumnWidth, alignment: .trailing)
                         }
-                        .padding(.horizontal, 9)
+                        .padding(.horizontal, tableHorizontalPadding)
                         .padding(.vertical, 5)
                         .background(Color.codexBackground.opacity(0.5))
                         .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -2258,8 +2312,23 @@ private struct GatewayAccountModelsDrawer: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity.combined(with: .move(edge: .top)))
+        .sheet(item: $configuringCapabilityModel) { model in
+            GatewayModelCapabilityModal(
+                modelID: model.id,
+                modelName: model.modelName,
+                settings: $store.gatewaySettings,
+                onSave: {
+                    store.saveGatewaySettings()
+                },
+                onDismiss: {
+                    configuringCapabilityModel = nil
+                }
+            )
+        }
     }
+
 }
 
 struct ModelCheckElapsedTimeView: View {

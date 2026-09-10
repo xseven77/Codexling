@@ -806,6 +806,89 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(finalReload.automationTasks.isEmpty)
     }
 
+    /// 定时触发的执行日志由网关进程写入同一个 settings 文件，
+    /// App 侧的任意一次落盘、以及重新打开日志弹窗的读盘，都不能把记录丢掉。
+    func testAutomationRunLogsSurviveGatewayAndStoreWrites() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-automation-runlogs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let task = GatewayAutomationTask(name: "5小时额度对齐巡检", hours: [5, 10, 15, 20])
+        store.addAutomationTask(task)
+
+        // 1. 网关进程在 20 点那次定时触发后写入的记录与运行态
+        let gatewayLog = GatewayAutomationRunLog(
+            id: "\(task.id)-1789030000",
+            taskId: task.id,
+            taskName: task.name,
+            startedAt: 1789030000,
+            finishedAt: 1789030120,
+            isSuccess: true,
+            summary: "可用 60 · 异常 4"
+        )
+        try simulateGatewaySettingsWrite(
+            at: settingsURL,
+            runLogs: [gatewayLog],
+            taskLastRunAt: 1789030000,
+            taskLastRunSummary: "可用 60 · 异常 4"
+        )
+
+        // 2. App 侧一次普通设置改动不应覆盖掉网关写入的内容
+        store.allowLanAccess = true
+        let afterStoreSave = storage.load()
+        XCTAssertEqual(afterStoreSave.automationRunLogs.map(\.id), [gatewayLog.id])
+        XCTAssertEqual(afterStoreSave.automationTasks.first?.lastRunAt, 1789030000)
+        XCTAssertEqual(afterStoreSave.automationTasks.first?.lastRunSummary, "可用 60 · 异常 4")
+
+        // 3. 打开执行日志弹窗时的读盘同步
+        store.reloadAutomationStateFromDisk()
+        XCTAssertEqual(store.gatewaySettings.automationRunLogs.map(\.id), [gatewayLog.id])
+        XCTAssertEqual(store.automationTasks.first?.lastRunAt, 1789030000)
+
+        // 4. App 手动“立即运行一次”的记录与网关记录共存
+        store.recordAutomationRunStart(
+            taskId: task.id,
+            taskName: task.name,
+            taskType: .modelHealthCheck,
+            startedAt: 1789030500
+        )
+        let afterManualRun = storage.load()
+        XCTAssertEqual(afterManualRun.automationRunLogs.count, 2)
+        XCTAssertTrue(afterManualRun.automationRunLogs.contains { $0.id == gatewayLog.id })
+        XCTAssertTrue(afterManualRun.automationRunLogs.contains { $0.startedAt == 1789030500 })
+    }
+
+    /// 模拟网关进程（Rust）直接改写 settings 文件：追加执行日志并更新任务运行态。
+    private func simulateGatewaySettingsWrite(
+        at url: URL,
+        runLogs: [GatewayAutomationRunLog],
+        taskLastRunAt: Int64,
+        taskLastRunSummary: String
+    ) throws {
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        let encodedLogs = try JSONEncoder().encode(runLogs)
+        json["automationRunLogs"] = try JSONSerialization.jsonObject(with: encodedLogs)
+
+        if var tasks = json["automationTasks"] as? [[String: Any]] {
+            for idx in tasks.indices {
+                tasks[idx]["lastRunAt"] = taskLastRunAt
+                tasks[idx]["lastRunStatus"] = "success"
+                tasks[idx]["lastRunSummary"] = taskLastRunSummary
+            }
+            json["automationTasks"] = tasks
+        }
+
+        let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        try out.write(to: url)
+    }
+
     func testDynamicHermesAndPiExecutableResolution() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dynamic-agent-test-\(UUID().uuidString)")
@@ -991,6 +1074,611 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(store.localToken.hasPrefix("cdx_"))
         XCTAssertEqual(GatewaySupervisor.shared.localToken, store.localToken)
     }
+
+    // MARK: - DSH (DeepSeek Harness) 一键接入
+
+    /// A realistic pre-integration `settings.yaml`: unrelated top-level
+    /// sections, comments and an empty dormant `llm-pi-ai` section.
+    private static let dshSettingsFixture = """
+    ui-onboarding:
+      welcomeNoticeVersion: 2026-08-13.1
+    agent-default-model:
+      provider: deepseek-official
+      model: deepseek-v4-flash-vision-exp
+      reasoningEffort: high
+    ui-theme:
+      preference: system # keep me
+    llm-pi-ai:
+      providers: {}
+    """
+
+    private static let dshCredentialsFixture = """
+    version: 1
+
+    refs:
+      DEEPSEEK_API_KEY: dummy-deepseek-value
+
+    records:
+      llm-pi-ai/openai-codex:
+        kind: api-key
+        key: dummy-record-value
+    """
+
+    private func makeDSHDocuments(
+        settings: String? = GatewayTests.dshSettingsFixture,
+        credentials: String? = GatewayTests.dshCredentialsFixture
+    ) throws -> (directory: URL, settingsURL: URL, credentialsURL: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsh-config-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let settingsURL = directory.appendingPathComponent("settings.yaml")
+        let credentialsURL = directory.appendingPathComponent(".credentials.yaml")
+        if let settings {
+            try Data(settings.utf8).write(to: settingsURL)
+        }
+        if let credentials {
+            try Data(credentials.utf8).write(to: credentialsURL)
+        }
+        return (directory, settingsURL, credentialsURL)
+    }
+
+    private func dshModels(_ ids: [String] = ["openai/gpt-5-6", "deepseek/deepseek-v4-pro"]) -> [DSHModel] {
+        ids.map { id in
+            let cap = ModelCapabilityRegistry.resolveCapability(for: id, override: nil)
+            return DSHModel(
+                id: id,
+                name: id,
+                contextWindow: cap.contextWindow,
+                maxTokens: cap.maxTokens,
+                input: DSHModelModality.input(supportsImage: cap.supportsImage),
+                reasoning: DSHModelReasoning.from(levels: cap.reasoningLevels)
+            )
+        }
+    }
+
+    func testDSHGatewayConfigurationWritesRouteAndCredentialDocuments() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        XCTAssertTrue(configurator.isDSHInstalled)
+        XCTAssertFalse(configurator.isConfigured)
+
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(),
+            setAsAgentDefaultModel: false
+        )
+
+        XCTAssertTrue(configurator.isConfigured)
+        let state = configurator.state
+        XCTAssertEqual(state.baseURL, "http://127.0.0.1:58349/v1")
+        XCTAssertEqual(state.apiKeyEnv, DSHGatewayConfigurator.credentialRef)
+        XCTAssertEqual(state.modelIDs, ["openai/gpt-5-6", "deepseek/deepseek-v4-pro"])
+        XCTAssertTrue(state.credentialPresent)
+
+        let settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("codexling:"))
+        XCTAssertTrue(settings.contains("api: openai-completions"))
+        XCTAssertTrue(settings.contains("X-Agent-Name: DSH"))
+
+        let credentials = try String(contentsOf: docs.credentialsURL, encoding: .utf8)
+        XCTAssertTrue(credentials.contains("CODEXLING_GATEWAY_TOKEN: cdx_testtoken"))
+
+        // The credential provider refuses to parse a document any other user
+        // can read, so the mode is part of the contract.
+        let attributes = try FileManager.default.attributesOfItem(atPath: docs.credentialsURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testDSHGatewayConfigurationPreservesUnrelatedKeysCommentsAndSiblingRoutes() throws {
+        // A sibling route written by the DSH Models page must survive both
+        // directions; only the Codexling span may ever change.
+        let settingsWithSibling = Self.dshSettingsFixture.replacingOccurrences(
+            of: "  providers: {}",
+            with: """
+              providers:
+                someone-elses-route:
+                  api: openai-completions
+                  baseURL: https://example.invalid/v1
+                  models:
+                    - id: their-model
+            """
+        )
+        let docs = try makeDSHDocuments(settings: settingsWithSibling)
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6"]),
+            setAsAgentDefaultModel: false
+        )
+
+        var settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("someone-elses-route:"))
+        XCTAssertTrue(settings.contains("baseURL: https://example.invalid/v1"))
+        XCTAssertTrue(settings.contains("- id: their-model"))
+        // Untouched sections keep their exact bytes, comment included.
+        XCTAssertTrue(settings.contains("preference: system # keep me"))
+        XCTAssertTrue(settings.contains("welcomeNoticeVersion: 2026-08-13.1"))
+        XCTAssertTrue(settings.contains("reasoningEffort: high"))
+
+        try configurator.unconfigure()
+
+        settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertFalse(settings.contains("codexling"))
+        XCTAssertTrue(settings.contains("someone-elses-route:"))
+        XCTAssertTrue(settings.contains("- id: their-model"))
+        XCTAssertTrue(settings.contains("preference: system # keep me"))
+        // The sibling route must keep the section alive rather than letting
+        // the empty-section collapse delete it.
+        XCTAssertTrue(settings.contains("llm-pi-ai:"))
+
+        let credentials = try String(contentsOf: docs.credentialsURL, encoding: .utf8)
+        XCTAssertFalse(credentials.contains(DSHGatewayConfigurator.credentialRef))
+        XCTAssertTrue(credentials.contains("DEEPSEEK_API_KEY: dummy-deepseek-value"))
+        XCTAssertTrue(credentials.contains("llm-pi-ai/openai-codex:"))
+    }
+
+    func testDSHGatewayConfigurationRollsBackWhenCredentialDocumentIsLegacy() throws {
+        // A refusal after the settings document was already rewritten must
+        // restore it byte for byte, never leave a half-applied route.
+        let legacyCredentials = "DEEPSEEK_API_KEY: dummy-deepseek-value\n"
+        let docs = try makeDSHDocuments(credentials: legacyCredentials)
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+
+        let originalSettings = try Data(contentsOf: docs.settingsURL)
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+
+        XCTAssertThrowsError(
+            try configurator.configure(
+                baseURL: "http://127.0.0.1:58349/v1",
+                apiKey: "cdx_testtoken",
+                models: dshModels(),
+                setAsAgentDefaultModel: false
+            )
+        ) { error in
+            guard case DSHGatewayConfigurationError.legacyCredentialDocument = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: docs.settingsURL), originalSettings)
+        XCTAssertEqual(
+            try String(contentsOf: docs.credentialsURL, encoding: .utf8),
+            legacyCredentials
+        )
+    }
+
+    func testDSHGatewayConfigurationRejectsEmptyModelList() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+
+        XCTAssertThrowsError(
+            try configurator.configure(
+                baseURL: "http://127.0.0.1:58349/v1",
+                apiKey: "cdx_testtoken",
+                models: [],
+                setAsAgentDefaultModel: false
+            )
+        ) { error in
+            guard case DSHGatewayConfigurationError.noGatewayModel = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(configurator.isConfigured)
+    }
+
+    func testDSHRefreshModelsReplacesCatalogWholesale() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6", "opencode/glm-5.3-flash"]),
+            setAsAgentDefaultModel: false
+        )
+
+        // A refresh rewrites the route span: the retired model must be gone,
+        // not merely shadowed by a newer entry.
+        let changed = try configurator.refreshModels(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6", "google/gemini-2.5-pro"])
+        )
+        XCTAssertTrue(changed)
+        XCTAssertEqual(configurator.state.modelIDs, ["openai/gpt-5-6", "google/gemini-2.5-pro"])
+
+        let settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertFalse(settings.contains("opencode/glm-5.3-flash"))
+
+        // An unchanged catalog reports no change so the UI can say "已是最新".
+        let changedAgain = try configurator.refreshModels(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6", "google/gemini-2.5-pro"])
+        )
+        XCTAssertFalse(changedAgain)
+    }
+
+    func testDSHGatewaySetsAndClearsAgentDefaultModel() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6"]),
+            setAsAgentDefaultModel: true
+        )
+
+        var settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("provider: codexling"))
+        XCTAssertTrue(settings.contains("model: openai/gpt-5-6"))
+        // The pre-existing reasoning preference is not ours to erase.
+        XCTAssertTrue(settings.contains("reasoningEffort: high"))
+
+        try configurator.unconfigure()
+        settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertFalse(settings.contains("codexling"))
+        XCTAssertTrue(settings.contains("reasoningEffort: high"))
+    }
+
+    func testDSHCredentialShadowedByEnvironmentIsDetectedBeforeWriting() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [DSHGatewayConfigurator.credentialRef: "cdx_from_shell"]
+        )
+
+        XCTAssertTrue(configurator.isCredentialShadowedByEnvironment)
+
+        // The environment wins over the managed document inside DSH, so a
+        // write that would be silently shadowed has to fail loudly instead.
+        XCTAssertThrowsError(
+            try configurator.configure(
+                baseURL: "http://127.0.0.1:58349/v1",
+                apiKey: "cdx_testtoken",
+                models: dshModels(),
+                setAsAgentDefaultModel: false
+            )
+        ) { error in
+            guard case DSHGatewayConfigurationError.verificationFailed(let key, _, _) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(key, DSHGatewayConfigurator.credentialRef)
+        }
+        XCTAssertFalse(configurator.isConfigured)
+    }
+
+    func testDSHModelModalityDeclaresImagesOnlyForVisionFamilies() {
+        // A hand-declared route has no installed catalog entry, so an entry
+        // that omits `input` is text-only and DSH refuses attachments in the
+        // client with "当前模型不支持图片".
+        let gemini = ModelCapabilityRegistry.resolveCapability(for: "google/gemini-3.8-flash-tiered", override: nil)
+        let claude = ModelCapabilityRegistry.resolveCapability(for: "google/claude-sonnet-4-6", override: nil)
+        let qwenVl = ModelCapabilityRegistry.resolveCapability(for: "opencode/qwen3-vl-235b", override: nil)
+        XCTAssertEqual(DSHModelModality.input(supportsImage: gemini.supportsImage), ["text", "image"])
+        XCTAssertEqual(DSHModelModality.input(supportsImage: claude.supportsImage), ["text", "image"])
+        XCTAssertEqual(DSHModelModality.input(supportsImage: qwenVl.supportsImage), ["text", "image"])
+
+        // Over-claiming is the expensive direction, so text-only families must
+        // stay text-only.
+        let deepseek = ModelCapabilityRegistry.resolveCapability(for: "deepseek/deepseek-v4-pro", override: nil)
+        let kimi = ModelCapabilityRegistry.resolveCapability(for: "opencode/kimi-k2.5", override: nil)
+        XCTAssertEqual(DSHModelModality.input(supportsImage: deepseek.supportsImage), ["text"])
+        XCTAssertEqual(DSHModelModality.input(supportsImage: kimi.supportsImage), ["text"])
+    }
+
+    func testDSHConfigurationWritesInputModalitiesPerModel() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["google/gemini-3.8-flash-tiered", "deepseek/deepseek-v4-pro"]),
+            setAsAgentDefaultModel: false
+        )
+
+        let settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("input: [text, image]"))
+        XCTAssertTrue(settings.contains("input: [text]"))
+        // The modality list must not disturb the id scan used for refresh.
+        XCTAssertEqual(
+            configurator.state.modelIDs,
+            ["google/gemini-3.8-flash-tiered", "deepseek/deepseek-v4-pro"]
+        )
+
+        // Refreshing rewrites the modality declaration with the catalog.
+        try configurator.refreshModels(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["deepseek/deepseek-v4-pro"])
+        )
+        let after = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertFalse(after.contains("input: [text, image]"))
+        XCTAssertEqual(configurator.state.modelIDs, ["deepseek/deepseek-v4-pro"])
+    }
+
+    func testDSHSettingsDocumentKeepsItsExistingMode() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        // The user had locked the settings document down; an atomic rewrite
+        // must not quietly widen it back to the umask default.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: docs.settingsURL.path
+        )
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(),
+            setAsAgentDefaultModel: false
+        )
+
+        let settingsMode = (try FileManager.default.attributesOfItem(atPath: docs.settingsURL.path))[
+            .posixPermissions
+        ] as? NSNumber
+        XCTAssertEqual(settingsMode?.intValue, 0o600)
+        // The credential mode is a contract, not a preference.
+        let credentialsMode = (try FileManager.default.attributesOfItem(atPath: docs.credentialsURL.path))[
+            .posixPermissions
+        ] as? NSNumber
+        XCTAssertEqual(credentialsMode?.intValue, 0o600)
+    }
+
+    func testDSHModelReasoningOnlyClaimsLevelsTheGatewayHonours() {
+        // Official profiles define the verified thinking levels.
+        let gemini = ModelCapabilityRegistry.resolveCapability(for: "google/gemini-3.8-flash-tiered", override: nil)
+        let efforts = DSHModelReasoning.from(levels: gemini.reasoningLevels)
+        XCTAssertEqual(efforts.map(\.level), ["off", "low", "medium", "high"])
+        // `off` sends nothing: the provider's own default stays in charge.
+        XCTAssertNil(efforts.first?.wire)
+        XCTAssertEqual(efforts.dropFirst().compactMap(\.wire), ["low", "medium", "high"])
+
+        let claude = ModelCapabilityRegistry.resolveCapability(for: "google/claude-3-7-sonnet", override: nil)
+        XCTAssertFalse(DSHModelReasoning.from(levels: claude.reasoningLevels).isEmpty)
+
+        // Models without reasoning levels in official spec return empty
+        let gpt4o = ModelCapabilityRegistry.resolveCapability(for: "openai/gpt-4o", override: nil)
+        XCTAssertTrue(DSHModelReasoning.from(levels: gpt4o.reasoningLevels).isEmpty)
+        let deepseek = ModelCapabilityRegistry.resolveCapability(for: "deepseek/deepseek-chat", override: nil)
+        XCTAssertTrue(DSHModelReasoning.from(levels: deepseek.reasoningLevels).isEmpty)
+
+        // User overrides take precedence
+        let userCustom = GatewayModelCapabilityOverride(
+            modelID: "custom/my-model",
+            reasoningLevels: ["low", "high"],
+            defaultReasoningLevel: "high"
+        )
+        let customResolved = ModelCapabilityRegistry.resolveCapability(for: "custom/my-model", override: userCustom)
+        XCTAssertEqual(customResolved.reasoningLevels, ["low", "high"])
+        XCTAssertEqual(customResolved.defaultReasoningLevel, "high")
+    }
+
+    func testDSHConfigurationWritesReasoningEfforts() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["google/gemini-3.8-flash-tiered", "deepseek/deepseek-chat"]),
+            setAsAgentDefaultModel: false
+        )
+
+        var settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("reasoningEfforts:"))
+        // `off` must stay value-less; a value there would send it on the wire.
+        XCTAssertTrue(settings.contains("\n            off:"))
+        XCTAssertTrue(settings.contains("\n            high: high"))
+        // Only the gemini entry declares it (deepseek-chat does not).
+        XCTAssertEqual(settings.components(separatedBy: "reasoningEfforts:").count - 1, 1)
+        XCTAssertEqual(configurator.state.modelIDs.count, 2)
+
+        // Dropping the reasoning family removes the declaration with it.
+        try configurator.refreshModels(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["deepseek/deepseek-chat"])
+        )
+        settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertFalse(settings.contains("reasoningEfforts:"))
+    }
+
+    func testDSHCatalogFingerprintCoversCapacityAndModalitiesNotJustIDs() {
+        let textOnly = DSHModel(
+            id: "google/gemini-2.5-pro", name: "gemini",
+            contextWindow: 1_000_000, maxTokens: 65_536, input: ["text"], reasoning: []
+        )
+        // Same id, modality corrected: the automatic sync must see a change.
+        let withImage = DSHModel(
+            id: "google/gemini-2.5-pro", name: "gemini",
+            contextWindow: 1_000_000, maxTokens: 65_536, input: ["text", "image"], reasoning: []
+        )
+        // Same id and modalities, capacity corrected: likewise.
+        let resized = DSHModel(
+            id: "google/gemini-2.5-pro", name: "gemini",
+            contextWindow: 200_000, maxTokens: 32_000, input: ["text"], reasoning: []
+        )
+        XCTAssertNotEqual(
+            GatewayStore.dshCatalogFingerprint([textOnly]),
+            GatewayStore.dshCatalogFingerprint([withImage])
+        )
+        XCTAssertNotEqual(
+            GatewayStore.dshCatalogFingerprint([textOnly]),
+            GatewayStore.dshCatalogFingerprint([resized])
+        )
+        // A display-name change is cosmetic and must not trigger a rewrite.
+        let renamed = DSHModel(
+            id: "google/gemini-2.5-pro", name: "Google · gemini-2.5-pro",
+            contextWindow: 1_000_000, maxTokens: 65_536, input: ["text"], reasoning: []
+        )
+        XCTAssertEqual(
+            GatewayStore.dshCatalogFingerprint([textOnly]),
+            GatewayStore.dshCatalogFingerprint([renamed])
+        )
+        // Catalog order is not a change.
+        XCTAssertEqual(
+            GatewayStore.dshCatalogFingerprint([textOnly, resized]),
+            GatewayStore.dshCatalogFingerprint([resized, textOnly])
+        )
+    }
+
+    func testDSHModelCapacityStaysConservative() {
+        // Over-claiming a context window is the expensive direction, so every
+        // table entry must stay at or below the published model card.
+        let gemini = DSHModelCapacity.resolve(modelID: "google/gemini-2.5-pro")
+        XCTAssertEqual(gemini.contextWindow, 1_048_576)
+        XCTAssertLessThanOrEqual(gemini.maxTokens, 65_536)
+
+        let unknown = DSHModelCapacity.resolve(modelID: "opencode/some-new-model")
+        XCTAssertEqual(unknown.contextWindow, DSHModelCapacity.fallbackContextWindow)
+        XCTAssertEqual(unknown.maxTokens, DSHModelCapacity.fallbackMaxTokens)
+        // Never the adapter's own larger default.
+        XCTAssertLessThan(unknown.contextWindow, 262_144)
+        XCTAssertLessThan(unknown.maxTokens, 32_768)
+    }
+
+    func testDSHConfigurationRoundTripsQuotedScalars() throws {
+        let docs = try makeDSHDocuments()
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        // A display name with YAML-significant characters must survive the
+        // write/read cycle unchanged.
+        let model = DSHModel(
+            id: "openai/gpt-5-6",
+            name: "OpenAI · gpt-5-6 (整合 3 账号) # not-a-comment",
+            contextWindow: 272_000,
+            maxTokens: 32_768,
+            input: DSHModelModality.textOnly,
+            reasoning: []
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: [model],
+            setAsAgentDefaultModel: false
+        )
+
+        let settings = try String(contentsOf: docs.settingsURL, encoding: .utf8)
+        XCTAssertTrue(settings.contains("not-a-comment"))
+        XCTAssertEqual(configurator.state.modelIDs, ["openai/gpt-5-6"])
+        XCTAssertTrue(configurator.isConfigured)
+    }
+
+    func testDSHCredentialRemovalCollapsesEmptyRefsMap() throws {
+        // The only reference in the document is ours, so removing it must leave
+        // an explicit empty mapping: a bare `refs:` parses as null, which the
+        // credential document rejects.
+        let docs = try makeDSHDocuments(
+            credentials: "version: 1\n\nrefs:\n  # Codexling gateway\n  CODEXLING_GATEWAY_TOKEN: cdx_seed\n"
+        )
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.unconfigure()
+
+        let credentials = try String(contentsOf: docs.credentialsURL, encoding: .utf8)
+        XCTAssertTrue(credentials.contains("refs: {}"))
+        XCTAssertFalse(credentials.contains("Codexling gateway"))
+        XCTAssertTrue(credentials.contains("version: 1"))
+    }
+
+    func testDSHStoreRefreshesAndUnconfiguresInjectedDocuments() async throws {
+        let docs = try makeDSHDocuments(credentials: "version: 1\n\nrefs:\n  DEEPSEEK_API_KEY: dummy\n")
+        defer { try? FileManager.default.removeItem(at: docs.directory) }
+
+        let configurator = DSHGatewayConfigurator(
+            settingsURL: docs.settingsURL,
+            credentialsURL: docs.credentialsURL,
+            environment: [:]
+        )
+        try configurator.configure(
+            baseURL: "http://127.0.0.1:58349/v1",
+            apiKey: "cdx_testtoken",
+            models: dshModels(["openai/gpt-5-6"]),
+            setAsAgentDefaultModel: false
+        )
+
+        let settingsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dsh-\(UUID().uuidString)/gateway-settings.json")
+        let store = GatewayStore(
+            dshConfigurator: configurator,
+            settingsStorage: GatewaySettingsStorage(fileURL: settingsURL)
+        )
+        defer { try? FileManager.default.removeItem(at: settingsURL.deletingLastPathComponent()) }
+
+        // Detection runs off the main actor but must land on the store.
+        await store.refreshAgentIntegrationStatus()
+        XCTAssertTrue(store.hasLoadedAgentIntegrationStatus)
+        XCTAssertTrue(store.dshAgentInstalled)
+        XCTAssertTrue(store.dshAgentConfigured)
+        XCTAssertFalse(store.dshCredentialShadowed)
+
+        let result = await store.unconfigureDSHAgent()
+        XCTAssertTrue(result.success)
+        XCTAssertFalse(store.dshAgentConfigured)
+        XCTAssertFalse(configurator.isConfigured)
+        let credentials = try String(contentsOf: docs.credentialsURL, encoding: .utf8)
+        XCTAssertFalse(credentials.contains(DSHGatewayConfigurator.credentialRef))
+    }
+
 }
 
 private final class TestHermesCommandRunner: HermesCommandRunning, @unchecked Sendable {

@@ -679,6 +679,20 @@ final class MultiAgentSettingsStore {
         return .failure(message: "未找到指定账号连接")
     }
 
+    /// 拉取 DeepSeek 官方模型目录（`GET https://api.deepseek.com/models`）。
+    ///
+    /// 只在官方返回了非空列表时返回结果，其余情况一律返回 nil：调用方应保留
+    /// 上一次的官方结果或提示失败，**绝不能**回退到本地写死的模型清单，否则界面
+    /// 会显示官方并不存在的型号。
+    private func fetchDeepSeekModelIDs(apiKey: String) async -> [String]? {
+        guard let models = try? await deepSeekModelsService.validate(apiKey: apiKey) else { return nil }
+        var seen = Set<String>()
+        let cleaned = models
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     func addDeepSeekConnection(label: String, apiKey: String) async -> Bool {
         guard !isMutatingConnections else { return false }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -694,7 +708,7 @@ final class MultiAgentSettingsStore {
         do {
             try credentialStore.save(apiKey: trimmedKey, handle: handle)
             let balance = try await deepSeekBalanceService.fetch(apiKey: trimmedKey, connectionID: id)
-            let models = (try? await deepSeekModelsService.validate(apiKey: trimmedKey)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
+            let models = await fetchDeepSeekModelIDs(apiKey: trimmedKey)
             let connection = DeepSeekAPIConnection(
                 id: id,
                 label: normalizedLabel(label, fallback: "DeepSeek Key \(deepSeekConnections.count + 1)"),
@@ -702,13 +716,16 @@ final class MultiAgentSettingsStore {
                 keySuffix: String(trimmedKey.suffix(4)),
                 authenticationState: .connected,
                 balance: balance,
-                availableModelIDs: models,
+                availableModelIDs: models ?? [],
+                lastValidatedAt: models == nil ? nil : Date(),
                 createdAt: Date()
             )
             deepSeekConnections.append(connection)
             selectDeepSeekConnection(connection)
             try saveRegistry()
-            lastMessage = "DeepSeek Key 已验证并安全保存"
+            lastMessage = models == nil
+                ? "DeepSeek Key 已验证并保存，但未取到官方模型目录，可稍后刷新重试"
+                : "DeepSeek Key 已验证并安全保存"
             return true
         } catch {
             try? credentialStore.delete(handle: handle)
@@ -742,7 +759,7 @@ final class MultiAgentSettingsStore {
             try credentialStore.save(apiKey: trimmedKey, handle: connection.credentialHandle)
             do {
                 let balance = try await deepSeekBalanceService.fetch(apiKey: trimmedKey, connectionID: connection.id)
-                let models = (try? await deepSeekModelsService.validate(apiKey: trimmedKey)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
+                let models = await fetchDeepSeekModelIDs(apiKey: trimmedKey)
                 guard let index = deepSeekConnections.firstIndex(where: { $0.id == connectionID }) else {
                     return false
                 }
@@ -750,7 +767,11 @@ final class MultiAgentSettingsStore {
                 deepSeekConnections[index].keySuffix = String(trimmedKey.suffix(4))
                 deepSeekConnections[index].authenticationState = .connected
                 deepSeekConnections[index].balance = balance
-                deepSeekConnections[index].availableModelIDs = models
+                // 官方目录取不到时保留该连接上一次的官方结果，不用本地清单顶替。
+                if let models {
+                    deepSeekConnections[index].availableModelIDs = models
+                    deepSeekConnections[index].lastValidatedAt = Date()
+                }
                 try saveRegistry()
                 lastMessage = "DeepSeek Key 已更新并验证"
                 return true
@@ -780,13 +801,20 @@ final class MultiAgentSettingsStore {
     ) async -> RefreshOutcome {
         do {
             let key = try credentialStore.read(handle: connection.credentialHandle)
+
+            // 官方模型目录与余额是两个独立接口：先各自更新，余额失败也不影响目录刷新。
+            if let models = await fetchDeepSeekModelIDs(apiKey: key),
+               let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) {
+                deepSeekConnections[index].availableModelIDs = models
+                deepSeekConnections[index].lastValidatedAt = Date()
+                try? saveRegistry()
+            }
+
             let balance = try await deepSeekBalanceService.fetch(apiKey: key, connectionID: connection.id)
-            let models = (try? await deepSeekModelsService.validate(apiKey: key)) ?? ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"]
             guard let index = deepSeekConnections.firstIndex(where: { $0.id == connection.id }) else {
                 return RefreshOutcome(failures: ["\(connection.label)：连接已不存在"])
             }
             deepSeekConnections[index].balance = balance
-            deepSeekConnections[index].availableModelIDs = models
             deepSeekConnections[index].authenticationState = .connected
             try saveRegistry()
             if publishesMessage { lastMessage = "\(connection.label) 余额已刷新" }

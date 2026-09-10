@@ -164,6 +164,21 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         return max(0, finishedAt - startedAt)
     }
 
+    /// 容错解码：执行日志由网关进程（Rust）与 App 共同写入同一个文件，
+    /// 未知的 taskType 不应让整份设置解码失败（那会导致设置被重置为默认值）。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        taskId = try container.decode(String.self, forKey: .taskId)
+        taskName = try container.decodeIfPresent(String.self, forKey: .taskName) ?? taskId
+        let rawTaskType = try container.decodeIfPresent(String.self, forKey: .taskType)
+        taskType = rawTaskType.flatMap(AutomationTaskType.init(rawValue:)) ?? .modelHealthCheck
+        startedAt = try container.decode(Int64.self, forKey: .startedAt)
+        finishedAt = try container.decodeIfPresent(Int64.self, forKey: .finishedAt)
+        isSuccess = try container.decodeIfPresent(Bool.self, forKey: .isSuccess)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+    }
+
     public var durationText: String {
         guard let ms = durationMs else { return "进行中" }
         if ms < 1000 { return "\(ms)ms" }
@@ -175,6 +190,31 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
     }
 
     public var startDate: Date { Date(timeIntervalSince1970: TimeInterval(startedAt)) }
+}
+
+public struct GatewayModelCapabilityOverride: Codable, Equatable, Sendable {
+    public var modelID: String
+    public var contextWindow: Int?
+    public var maxTokens: Int?
+    public var supportsImage: Bool?
+    public var reasoningLevels: [String]?
+    public var defaultReasoningLevel: String?
+
+    public init(
+        modelID: String,
+        contextWindow: Int? = nil,
+        maxTokens: Int? = nil,
+        supportsImage: Bool? = nil,
+        reasoningLevels: [String]? = nil,
+        defaultReasoningLevel: String? = nil
+    ) {
+        self.modelID = modelID
+        self.contextWindow = contextWindow
+        self.maxTokens = maxTokens
+        self.supportsImage = supportsImage
+        self.reasoningLevels = reasoningLevels
+        self.defaultReasoningLevel = defaultReasoningLevel
+    }
 }
 
 public struct GatewaySettings: Codable, Equatable, Sendable {
@@ -192,6 +232,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
     public var healthCheckInterval: String
     public var automationTasks: [GatewayAutomationTask]
     public var automationRunLogs: [GatewayAutomationRunLog]
+    public var modelCapabilityOverrides: [String: GatewayModelCapabilityOverride]
     public var allowLanAccess: Bool
     public var authToken: String
 
@@ -219,6 +260,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         case healthCheckInterval
         case automationTasks
         case automationRunLogs
+        case modelCapabilityOverrides
         case allowLanAccess
         case authToken
     }
@@ -236,6 +278,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         healthCheckInterval: String = HealthCheckInterval.oneHour.rawValue,
         automationTasks: [GatewayAutomationTask] = [],
         automationRunLogs: [GatewayAutomationRunLog] = [],
+        modelCapabilityOverrides: [String: GatewayModelCapabilityOverride] = [:],
         allowLanAccess: Bool = false,
         authToken: String = Self.generateSecureToken()
     ) {
@@ -251,6 +294,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         self.healthCheckInterval = healthCheckInterval
         self.automationTasks = automationTasks
         self.automationRunLogs = automationRunLogs
+        self.modelCapabilityOverrides = modelCapabilityOverrides
         self.allowLanAccess = allowLanAccess
         self.authToken = authToken
     }
@@ -269,6 +313,7 @@ public struct GatewaySettings: Codable, Equatable, Sendable {
         healthCheckInterval = try container.decodeIfPresent(String.self, forKey: .healthCheckInterval) ?? HealthCheckInterval.oneHour.rawValue
         automationTasks = try container.decodeIfPresent([GatewayAutomationTask].self, forKey: .automationTasks) ?? []
         automationRunLogs = try container.decodeIfPresent([GatewayAutomationRunLog].self, forKey: .automationRunLogs) ?? []
+        modelCapabilityOverrides = try container.decodeIfPresent([String: GatewayModelCapabilityOverride].self, forKey: .modelCapabilityOverrides) ?? [:]
         allowLanAccess = try container.decodeIfPresent(Bool.self, forKey: .allowLanAccess) ?? false
         let decodedToken = try container.decodeIfPresent(String.self, forKey: .authToken)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
