@@ -173,7 +173,7 @@ final class AppUpdateController {
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.timeoutInterval = 30
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.codexlingExternal.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw AppUpdateError.network
         }
@@ -416,7 +416,9 @@ private final class DownloadProgressSession: NSObject, URLSessionDownloadDelegat
         try await withCheckedThrowingContinuation { continuation in
             let bridge = DownloadProgressSession(expectedSize: expectedSize, onProgress: onProgress)
             bridge.continuation = continuation
-            let session = URLSession(configuration: .ephemeral, delegate: bridge, delegateQueue: nil)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.applyCodexlingExternalProxy()
+            let session = URLSession(configuration: configuration, delegate: bridge, delegateQueue: nil)
             bridge.session = session
             session.downloadTask(with: url).resume()
         }

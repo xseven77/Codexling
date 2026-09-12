@@ -34,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onAutoRefreshIntervalChanged = { [weak self] _ in
             self?.startAutoRefreshTimer()
         }
+        settingsStore.onNetworkProxyChanged = {
+            URLSession.reloadCodexlingExternalProxy()
+            GatewaySupervisor.shared.restart()
+        }
         settingsStore.onAccountCarouselIntervalChanged = { [weak self] _ in
             self?.startAccountCarouselTimer()
             self?.statusController?.refreshProviderCarouselTimer()

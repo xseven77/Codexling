@@ -204,7 +204,7 @@ actor CodexUsageService {
             "code_verifier": verifier
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.codexlingExternal.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw CodexUsageError.invalidTokenResponse
         }
@@ -238,7 +238,7 @@ actor CodexUsageService {
             "refresh_token": token.refreshToken
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.codexlingExternal.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw CodexUsageError.invalidTokenResponse
         }
@@ -326,7 +326,7 @@ actor CodexUsageService {
             request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.codexlingExternal.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw CodexUsageError.quotaUnavailable
         }
@@ -404,7 +404,7 @@ actor CodexUsageService {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.codexlingExternal.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 return CodexAPIProbe.ProbeHTTPResult(statusCode: 0, bodyJSON: nil, error: "无 HTTP 响应")
             }

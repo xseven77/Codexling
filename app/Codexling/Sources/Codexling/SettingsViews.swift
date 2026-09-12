@@ -15,6 +15,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case accounts
     case agents
     case gateway
+    case networkProxy
     case pet
 
     var id: String { rawValue }
@@ -25,6 +26,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: "Agents 与 Hooks"
         case .gateway: "Gateway"
         case .general: "通用"
+        case .networkProxy: "网络代理"
         case .pet: "状态栏与 Pet"
         }
     }
@@ -35,6 +37,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: "接入并管理本地 Coding Agent"
         case .gateway: "本地多协议 LLM 网关与遥测"
         case .general: "更新、外观、布局与刷新"
+        case .networkProxy: "统一管理 Codexling 的公网出站连接"
         case .pet: "菜单栏、任务浮窗与 Pet"
         }
     }
@@ -45,6 +48,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: "terminal"
         case .gateway: "point.3.connected.trianglepath.dotted"
         case .general: "slider.horizontal.3"
+        case .networkProxy: "network"
         case .pet: "pawprint"
         }
     }
@@ -71,6 +75,10 @@ struct SettingsView: View {
     @State private var toastDismissGeneration = 0
     @State private var selectedTab: SettingsTab = .general
     @State private var showsStickySettingsTitle = false
+    @State private var isNetworkProxyTesting = false
+    @State private var isProviderQuickTesting = false
+    @State private var proxyTestMessage: String?
+    @State private var providerQuickResults: [ProviderQuickConnectivityResult] = []
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -377,6 +385,7 @@ struct SettingsView: View {
             accountPoolSection
             agentIntegrationsSection
             updateSection
+            networkProxyPageSection
             petSection
             thirdPartyPetResourcesSection
         }
@@ -471,6 +480,8 @@ struct SettingsView: View {
                 gatewaySection
             case .general:
                 updateSection
+            case .networkProxy:
+                networkProxyPageSection
             case .pet:
                 petSection
                 thirdPartyPetResourcesSection
@@ -1309,6 +1320,154 @@ struct SettingsView: View {
                 title: \.title
             )
         }
+    }
+
+    private var networkProxyPageSection: some View {
+        SettingsSection(
+            title: "代理配置",
+            subtitle: "启用后，Codexling 的所有公网出站请求统一走此代理"
+        ) {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsInlineRow(
+                    title: "网络代理",
+                    subtitle: "本地 Gateway、OAuth 回调与局域网地址始终直连"
+                ) {
+                    SettingsSwitch(
+                        isOn: $settings.networkProxyEnabled,
+                        accessibilityLabel: "网络代理"
+                    )
+                }
+
+                if settings.networkProxyEnabled {
+                    CodexDivider()
+                    SettingsInlineRow(title: "代理协议", subtitle: "SOCKS5h 由代理端解析域名，适合 Gemini 等服务") {
+                        SettingsMenuPicker(
+                            selection: $settings.networkProxyProtocol,
+                            options: AppNetworkProxyProtocol.allCases,
+                            title: \.title
+                        )
+                    }
+                    CodexDivider()
+                    SettingsInlineRow(title: "代理地址", subtitle: "本机代理软件监听地址") {
+                        Text("127.0.0.1")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    CodexDivider()
+                    SettingsInlineRow(title: "代理端口", subtitle: "Clash 默认使用 7897；请按代理软件实际端口修改") {
+                        TextField("7897", value: Binding(
+                            get: { settings.networkProxyPort },
+                            set: { value in
+                                if (1...65_535).contains(value) {
+                                    settings.networkProxyPort = value
+                                }
+                            }
+                        ), format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 88)
+                        .help("Clash 默认端口为 7897")
+                    }
+                    CodexDivider()
+                    SettingsInlineRow(
+                        title: "连通性测试",
+                        subtitle: "测试当前代理，并对每个供应商执行一次轻量认证与模型目录检查"
+                    ) {
+                        Button {
+                            testNetworkProxyConnectivity()
+                        } label: {
+                            HStack(spacing: 5) {
+                                if isNetworkProxyTesting || isProviderQuickTesting {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "stethoscope")
+                                }
+                                Text(isNetworkProxyTesting || isProviderQuickTesting ? "测试中" : "测试连接")
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .foregroundStyle(Color.codexOnPrimary)
+                            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(CodexPressableStyle(cornerRadius: 7))
+                        .disabled(isNetworkProxyTesting || isProviderQuickTesting)
+                    }
+                }
+            }
+            .settingsGroupSurface()
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let proxyTestMessage {
+                networkProxyTestResult(message: proxyTestMessage)
+            }
+            if isProviderQuickTesting || !providerQuickResults.isEmpty {
+                networkProviderCheckResult
+            }
+        }
+    }
+
+    private func testNetworkProxyConnectivity() {
+        guard !isNetworkProxyTesting, !isProviderQuickTesting else { return }
+        isNetworkProxyTesting = true
+        proxyTestMessage = nil
+        providerQuickResults = []
+        let proxy = AppNetworkProxyConfiguration.load()
+        Task {
+            let result = await AppNetworkProxyConnectivityTester.test(using: proxy)
+            await MainActor.run {
+                proxyTestMessage = result
+                isNetworkProxyTesting = false
+            }
+            guard result.hasPrefix("代理连通正常") else { return }
+            await MainActor.run { isProviderQuickTesting = true }
+            let checks = await multiAgentSettings.quickCheckEnabledProviders()
+            await MainActor.run {
+                providerQuickResults = checks
+                isProviderQuickTesting = false
+            }
+        }
+    }
+
+    private func networkProxyTestResult(message: String) -> some View {
+        let success = message.hasPrefix("代理连通正常")
+        return Label(message, systemImage: success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(success ? Color.codexGreen : Color.codexAmber)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background((success ? Color.codexGreen : Color.codexAmber).opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var networkProviderCheckResult: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isProviderQuickTesting {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("正在逐个检查供应商的认证与模型目录…")
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.codexMuted)
+            }
+
+            ForEach(providerQuickResults) { result in
+                    HStack(spacing: 7) {
+                        Image(systemName: result.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(result.isAvailable ? Color.codexGreen : Color.codexAmber)
+                        Text("\(result.provider) · \(result.accountLabel)")
+                        Spacer(minLength: 8)
+                        Text(result.detail)
+                            .lineLimit(1)
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.codexMist.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var mainWindowProviderCarouselSection: some View {

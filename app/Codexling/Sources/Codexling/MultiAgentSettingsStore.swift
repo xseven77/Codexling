@@ -17,6 +17,15 @@ enum AccountCarouselPauseSource: Hashable {
     case notch(screenNumber: UInt32)
 }
 
+struct ProviderQuickConnectivityResult: Identifiable, Sendable {
+    let provider: String
+    let accountLabel: String
+    let isAvailable: Bool
+    let detail: String
+
+    var id: String { "\(provider):\(accountLabel)" }
+}
+
 @MainActor
 @Observable
 final class MultiAgentSettingsStore {
@@ -296,6 +305,60 @@ final class MultiAgentSettingsStore {
             outcome.merge(await task.value)
         }
         return outcome
+    }
+
+    /// Runs one lightweight, authenticated request for each configured
+    /// provider. This is intentionally separate from the per-model Gateway
+    /// health check: it validates the proxy route and account credentials
+    /// without sending inference requests for every model.
+    func quickCheckEnabledProviders() async -> [ProviderQuickConnectivityResult] {
+        var results: [ProviderQuickConnectivityResult] = []
+
+        if let connection = codexAccounts.first(where: \.isEnabled) {
+            do {
+                let tokenURL = try codexRuntimeManager.oauthTokenURL(for: connection)
+                let service = CodexUsageService(tokenStore: CodexOAuthTokenStore(fileURL: tokenURL))
+                let models = try await service.fetchAvailableModels()
+                results.append(.init(provider: "Codex", accountLabel: connection.label, isAvailable: true, detail: "OAuth 与模型目录可达（\(models.count) 个模型）"))
+            } catch {
+                results.append(.init(provider: "Codex", accountLabel: connection.label, isAvailable: false, detail: error.localizedDescription))
+            }
+        }
+
+        if let connection = geminiConnections.first(where: \.isEnabled) {
+            if let token = geminiOAuthTokenStore.load(handle: connection.credentialHandle) {
+                do {
+                    let models = try await geminiOAuthService.validateModels(accessToken: token.accessToken)
+                    results.append(.init(provider: "Gemini", accountLabel: connection.label, isAvailable: true, detail: "OAuth 与 Cloud Code 模型目录可达（\(models.count) 个模型）"))
+                } catch {
+                    results.append(.init(provider: "Gemini", accountLabel: connection.label, isAvailable: false, detail: error.localizedDescription))
+                }
+            } else {
+                results.append(.init(provider: "Gemini", accountLabel: connection.label, isAvailable: false, detail: "本地 OAuth Token 缺失，请重新登录"))
+            }
+        }
+
+        if let connection = deepSeekConnections.first(where: \.isEnabled) {
+            do {
+                let key = try credentialStore.read(handle: connection.credentialHandle)
+                let models = try await deepSeekModelsService.validate(apiKey: key)
+                results.append(.init(provider: "DeepSeek", accountLabel: connection.label, isAvailable: true, detail: "API Key 与模型目录可达（\(models.count) 个模型）"))
+            } catch {
+                results.append(.init(provider: "DeepSeek", accountLabel: connection.label, isAvailable: false, detail: error.localizedDescription))
+            }
+        }
+
+        if let connection = openCodeConnections.first(where: \.isEnabled) {
+            do {
+                let key = try openCodeCredentialStore.read(handle: connection.credentialHandle)
+                let models = try await openCodeModelsService.validate(apiKey: key, plan: connection.plan)
+                results.append(.init(provider: "OpenCode", accountLabel: connection.label, isAvailable: true, detail: "API Key 与模型目录可达（\(models.count) 个模型）"))
+            } catch {
+                results.append(.init(provider: "OpenCode", accountLabel: connection.label, isAvailable: false, detail: error.localizedDescription))
+            }
+        }
+
+        return results
     }
 
     /// 抓取单个 Codex 账号的额度结果（纯抓取，不修改状态）。

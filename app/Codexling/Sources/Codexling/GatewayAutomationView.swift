@@ -787,6 +787,16 @@ public struct AutomationTaskEditorSheet: View {
         ("opencode", "OpenCode 聚合平台", "network"),
     ]
 
+    /// Keep the editor visually generous and independent from the form's
+    /// intrinsic content height. A sheet may become the key window while it
+    /// is presented, so prefer its parent (the Gateway window) when present.
+    private var editorHeight: CGFloat {
+        let hostWindow = NSApp.keyWindow?.sheetParent ?? NSApp.mainWindow ?? NSApp.keyWindow
+        let hostHeight = hostWindow?.frame.height ?? 768
+        // Leave a consistent 24pt breathing space above and below the sheet.
+        return max(1, hostHeight - 48)
+    }
+
     public init(
         task: GatewayAutomationTask?,
         store: GatewayStore,
@@ -1089,8 +1099,7 @@ public struct AutomationTaskEditorSheet: View {
             .padding(14)
             .background(Color.codexCard)
         }
-        .frame(width: 580)
-        .frame(minHeight: 520, maxHeight: max(520, (NSApp.keyWindow?.frame.height ?? 720) - 48))
+        .frame(width: 580, height: editorHeight)
     }
 
     private var selectedHoursSummary: String {
@@ -1484,4 +1493,3 @@ struct AutomationRunLogSheet: View {
         return isSuccess ? Color.green.opacity(0.85) : Color.red.opacity(0.85)
     }
 }
-

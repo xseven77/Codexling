@@ -329,6 +329,10 @@ final class AppSettingsStore {
         static let notchDraggingEnabled = "codexling.notchDraggingEnabled"
         static let notchDisplayOffsets = "codexling.notchDisplayOffsets"
         static let knownDisplays = "codexling.knownDisplays"
+        static let networkProxyEnabled = AppNetworkProxyDefaultsKey.enabled
+        static let networkProxyProtocol = AppNetworkProxyDefaultsKey.protocolName
+        static let networkProxyHost = AppNetworkProxyDefaultsKey.host
+        static let networkProxyPort = AppNetworkProxyDefaultsKey.port
     }
 
     private let defaults: UserDefaults
@@ -345,6 +349,38 @@ final class AppSettingsStore {
         didSet {
             guard silentLaunchEnabled != oldValue else { return }
             defaults.set(silentLaunchEnabled, forKey: Keys.silentLaunchEnabled)
+        }
+    }
+
+    var networkProxyEnabled: Bool {
+        didSet {
+            guard networkProxyEnabled != oldValue else { return }
+            defaults.set(networkProxyEnabled, forKey: Keys.networkProxyEnabled)
+            onNetworkProxyChanged?()
+        }
+    }
+
+    var networkProxyProtocol: AppNetworkProxyProtocol {
+        didSet {
+            guard networkProxyProtocol != oldValue else { return }
+            defaults.set(networkProxyProtocol.rawValue, forKey: Keys.networkProxyProtocol)
+            onNetworkProxyChanged?()
+        }
+    }
+
+    var networkProxyHost: String {
+        didSet {
+            guard networkProxyHost != oldValue else { return }
+            defaults.set(networkProxyHost, forKey: Keys.networkProxyHost)
+            onNetworkProxyChanged?()
+        }
+    }
+
+    var networkProxyPort: Int {
+        didSet {
+            guard networkProxyPort != oldValue else { return }
+            defaults.set(networkProxyPort, forKey: Keys.networkProxyPort)
+            onNetworkProxyChanged?()
         }
     }
 
@@ -618,6 +654,7 @@ final class AppSettingsStore {
     var onNotchDisplayTargetChanged: ((NotchDisplayTarget) -> Void)?
     var onNotchDraggingEnabledChanged: ((Bool) -> Void)?
     var onNotchDisplayOffsetsChanged: (() -> Void)?
+    var onNetworkProxyChanged: (() -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
@@ -633,6 +670,11 @@ final class AppSettingsStore {
         launchAtLoginEnabled = Self.isLaunchAtLoginRegistered
         launchAtLoginErrorMessage = nil
         silentLaunchEnabled = defaults.object(forKey: Keys.silentLaunchEnabled) as? Bool ?? false
+        networkProxyEnabled = defaults.bool(forKey: Keys.networkProxyEnabled)
+        networkProxyProtocol = defaults.string(forKey: Keys.networkProxyProtocol)
+            .flatMap(AppNetworkProxyProtocol.init(rawValue:)) ?? .socks5h
+        networkProxyHost = defaults.string(forKey: Keys.networkProxyHost) ?? "127.0.0.1"
+        networkProxyPort = defaults.object(forKey: Keys.networkProxyPort) as? Int ?? 7897
 
         if let raw = defaults.string(forKey: Keys.theme),
            let saved = AppThemePreference(rawValue: raw) {

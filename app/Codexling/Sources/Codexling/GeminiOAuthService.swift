@@ -206,14 +206,15 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         "https://www.googleapis.com/auth/experimentsandconfigs"
     ]
 
-    private let session: URLSession
+    private let session: URLSession?
+    private var networkSession: URLSession { session ?? .codexlingExternal }
     private let userAgent: String
     private var activeCallbackServer: GoogleOAuthCallbackServer?
     private var cancellationRequested = false
 
     init(
         configuration: GeminiOAuthConfiguration = .load(),
-        session: URLSession = .shared
+        session: URLSession? = nil
     ) {
         clientID = configuration.clientID
         legacyClientSecret = configuration.legacyClientSecret
@@ -314,7 +315,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw GeminiOAuthError.unavailable
         }
@@ -363,7 +364,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw GeminiOAuthError.unavailable
         }
@@ -380,7 +381,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         var request = URLRequest(url: userInfoURL)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw GeminiOAuthError.unauthorized
         }
@@ -542,7 +543,7 @@ final class GeminiOAuthService: GeminiOAuthServicing, @unchecked Sendable {
         request.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw GeminiOAuthError.unavailable }
         switch http.statusCode {
         case 200...299:

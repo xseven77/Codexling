@@ -135,7 +135,8 @@ public final class GatewaySupervisor {
             let tokenToUse = localToken.isEmpty ? settings.authToken : localToken
             self.localToken = tokenToUse
             proc.arguments = ["--host", bindHost, "--port", "58349", "--token", tokenToUse, "--auto-check"]
-            var environment = ProcessInfo.processInfo.environment
+            var environment = AppNetworkProxyConfiguration.load()
+                .applying(to: ProcessInfo.processInfo.environment)
             let geminiOAuth = GeminiOAuthConfiguration.load()
             if geminiOAuth.isConfigured {
                 // The helper refreshes the user-owned OAuth token when needed.

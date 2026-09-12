@@ -293,9 +293,10 @@ struct DeepSeekBalanceService: DeepSeekBalanceFetching {
         }
     }
 
-    let session: URLSession
+    let session: URLSession?
+    private var networkSession: URLSession { session ?? .codexlingExternal }
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession? = nil) {
         self.session = session
     }
 
@@ -303,7 +304,7 @@ struct DeepSeekBalanceService: DeepSeekBalanceFetching {
         var request = URLRequest(url: URL(string: "https://api.deepseek.com/user/balance")!)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw DeepSeekBalanceError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw DeepSeekBalanceError.unauthorized }
         guard (200..<300).contains(http.statusCode) else { throw DeepSeekBalanceError.invalidResponse }
@@ -411,9 +412,10 @@ struct DeepSeekModelsService: DeepSeekModelsFetching {
         struct Model: Decodable { let id: String }
     }
 
-    let session: URLSession
+    let session: URLSession?
+    private var networkSession: URLSession { session ?? .codexlingExternal }
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession? = nil) {
         self.session = session
     }
 
@@ -421,7 +423,7 @@ struct DeepSeekModelsService: DeepSeekModelsFetching {
         var request = URLRequest(url: URL(string: "https://api.deepseek.com/models")!)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw DeepSeekValidationError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw DeepSeekValidationError.unauthorized }
         if http.statusCode == 429 || http.statusCode >= 500 { throw DeepSeekValidationError.unavailable }
@@ -452,9 +454,10 @@ struct OpenCodeModelsService: OpenCodeModelsFetching {
         struct Model: Decodable { let id: String }
     }
 
-    let session: URLSession
+    let session: URLSession?
+    private var networkSession: URLSession { session ?? .codexlingExternal }
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession? = nil) {
         self.session = session
     }
 
@@ -466,7 +469,7 @@ struct OpenCodeModelsService: OpenCodeModelsFetching {
         var request = URLRequest(url: URL(string: urlString)!)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw OpenCodeValidationError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw OpenCodeValidationError.unauthorized }
         if http.statusCode == 429 || http.statusCode >= 500 { throw OpenCodeValidationError.unavailable }

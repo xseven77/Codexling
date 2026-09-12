@@ -485,6 +485,80 @@ mod tests {
     }
 
     #[test]
+    fn gemini_upstream_error_summary_includes_google_error_details() {
+        let summary = GatewayServer::gemini_upstream_error_summary(
+            br#"{
+                "error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Model is not available for this project",
+                    "details": [
+                        {"reason": "MODEL_NOT_FOUND"},
+                        {"violations": [{"description": "Model access is disabled"}]},
+                        {"retryDelay": "30s"}
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(summary.contains("HTTP 400"));
+        assert!(summary.contains("INVALID_ARGUMENT"));
+        assert!(summary.contains("Model is not available for this project"));
+        assert!(summary.contains("MODEL_NOT_FOUND"));
+        assert!(summary.contains("Model access is disabled"));
+        assert!(summary.contains("30s"));
+    }
+
+    #[test]
+    fn gemini_upstream_error_summary_handles_oauth_style_and_html_errors() {
+        let oauth = GatewayServer::gemini_upstream_error_summary(
+            br#"{"error":"invalid_grant","error_description":"expired"}"#,
+        )
+        .unwrap();
+        assert!(oauth.contains("invalid_grant"));
+        assert!(oauth.contains("expired"));
+
+        let proxy = GatewayServer::gemini_upstream_error_summary(
+            b"<html><title>Bad Request</title><body>Proxy rejected CONNECT</body></html>",
+        )
+        .unwrap();
+        assert!(proxy.contains("Bad Request"));
+        assert!(proxy.contains("Proxy rejected CONNECT"));
+        assert!(!proxy.contains("<html>"));
+    }
+
+    #[test]
+    fn diagnostic_excerpt_normalizes_and_truncates_messages() {
+        assert_eq!(
+            GatewayServer::diagnostic_excerpt(" one\n two\tthree ", 80),
+            "one two three"
+        );
+        assert_eq!(GatewayServer::diagnostic_excerpt("abcdef", 4), "abcd…");
+        assert_eq!(
+            GatewayServer::diagnostic_excerpt(
+                "Authorization: Bearer secret-token access_token=also-secret",
+                200,
+            ),
+            "Authorization: [REDACTED] access_token=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn gemini_proxy_validation_prefers_remote_dns_for_socks() {
+        assert_eq!(
+            GatewayServer::validated_proxy_url("socks5://127.0.0.1:7892", true).as_deref(),
+            Some("socks5h://127.0.0.1:7892")
+        );
+        assert_eq!(
+            GatewayServer::validated_proxy_url("socks5h://127.0.0.1:7892", true).as_deref(),
+            Some("socks5h://127.0.0.1:7892")
+        );
+        assert!(GatewayServer::validated_proxy_url("http://127.0.0.1:7892", true).is_none());
+        assert!(GatewayServer::validated_proxy_url("--proxy evil", false).is_none());
+    }
+
+    #[test]
     fn gateway_settings_loads_default_and_from_disk() {
         let home = temporary_home();
         let support = home.join("Library/Application Support/Codexling");
@@ -4017,7 +4091,7 @@ impl GatewayServer {
                     Ok(direct_output) if direct_output.status.success() => direct_output,
                     Ok(direct_output) => {
                         let message = format!(
-                            "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{}）",
+                            "Gemini OAuth 上游请求失败（配置网络：{configured_route_error}；直连：{}）",
                             Self::curl_failure_message(&direct_output)
                         );
                         Self::log_gateway_error(&message);
@@ -4035,7 +4109,7 @@ impl GatewayServer {
                     }
                     Err(error) => {
                         let message = format!(
-                            "Gemini OAuth 上游连接失败（配置网络：{configured_route_error}；直连：{error}）"
+                            "Gemini OAuth 上游请求失败（配置网络：{configured_route_error}；直连：{error}）"
                         );
                         Self::log_gateway_error(&message);
                         if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
@@ -4056,7 +4130,7 @@ impl GatewayServer {
                 Ok(direct_output) if direct_output.status.success() => direct_output,
                 Ok(direct_output) => {
                     let message = format!(
-                        "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{}）",
+                        "Gemini OAuth 上游请求失败（配置网络：{error}；直连：{}）",
                         Self::curl_failure_message(&direct_output)
                     );
                     Self::log_gateway_error(&message);
@@ -4074,7 +4148,7 @@ impl GatewayServer {
                 }
                 Err(direct_error) => {
                     let message = format!(
-                        "Gemini OAuth 上游连接失败（配置网络：{error}；直连：{direct_error}）"
+                        "Gemini OAuth 上游请求失败（配置网络：{error}；直连：{direct_error}）"
                     );
                     Self::log_gateway_error(&message);
                     if upstream.routing_mode == "consolidated" || upstream.routing_mode == "pinned" {
@@ -4495,6 +4569,8 @@ impl GatewayServer {
             .stderr(std::process::Stdio::piped());
         if bypass_proxy {
             command.arg("--noproxy").arg("*");
+        } else if let Some(proxy) = Self::gemini_proxy_override() {
+            command.arg("--proxy").arg(proxy);
         }
         for (name, value) in &upstream.extra_headers {
             command.arg("-H").arg(format!("{name}: {value}"));
@@ -4513,12 +4589,195 @@ impl GatewayServer {
 
     fn curl_failure_message(output: &std::process::Output) -> String {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr.trim();
-        if message.is_empty() {
-            format!("curl 退出码 {:?}", output.status.code())
-        } else {
-            message.chars().take(400).collect()
+        let transport = stderr.trim();
+        let upstream = Self::gemini_upstream_error_summary(&output.stdout);
+        match (upstream, transport.is_empty()) {
+            (Some(upstream), false) => format!(
+                "{upstream}；传输详情：{}",
+                Self::diagnostic_excerpt(transport, 240)
+            ),
+            (Some(upstream), true) => upstream,
+            (None, false) => Self::diagnostic_excerpt(transport, 400),
+            (None, true) => format!("curl 退出码 {:?}", output.status.code()),
         }
+    }
+
+    /// A provider-specific route avoids forcing every GUI application onto
+    /// SOCKS just because one Google endpoint is unstable over HTTP CONNECT.
+    fn gemini_proxy_override() -> Option<String> {
+        if let Some(proxy) = std::env::var("CODEXLING_GEMINI_PROXY")
+            .ok()
+            .and_then(|value| Self::validated_proxy_url(&value, false))
+        {
+            return Some(proxy);
+        }
+
+        // A SOCKS proxy advertised by the host is safer for Cloud Code when
+        // its DNS is resolved by the proxy. Curl otherwise prefers HTTPS_PROXY
+        // (HTTP CONNECT), which is unreliable for some local proxy clients.
+        for key in ["all_proxy", "ALL_PROXY"] {
+            if let Some(proxy) = std::env::var(key)
+                .ok()
+                .and_then(|value| Self::validated_proxy_url(&value, true))
+            {
+                return Some(proxy);
+            }
+        }
+
+        None
+    }
+
+    fn validated_proxy_url(value: &str, prefer_remote_dns: bool) -> Option<String> {
+        let value = value.trim();
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            return None;
+        }
+        if prefer_remote_dns {
+            if let Some(address) = value.strip_prefix("socks5://") {
+                return Some(format!("socks5h://{address}"));
+            }
+            if value.starts_with("socks5h://") {
+                return Some(value.to_string());
+            }
+            return None;
+        }
+        ["http://", "https://", "socks5://", "socks5h://"]
+            .iter()
+            .any(|scheme| value.starts_with(scheme))
+            .then(|| value.to_string())
+    }
+
+    /// Extracts the useful, non-secret portion of Google's error response.
+    /// OAuth credentials live in request headers and must never be copied into
+    /// diagnostics, so only known error fields are read from JSON responses.
+    fn gemini_upstream_error_summary(stdout: &[u8]) -> Option<String> {
+        let body = String::from_utf8_lossy(stdout);
+        let body = body.trim();
+        if body.is_empty() {
+            return None;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+            // Reverse proxies sometimes return a short plain-text/HTML error.
+            // Strip markup to make it readable while keeping the excerpt small.
+            let mut text = String::with_capacity(body.len().min(320));
+            let mut inside_tag = false;
+            for character in body.chars() {
+                match character {
+                    '<' => inside_tag = true,
+                    '>' => inside_tag = false,
+                    _ if !inside_tag => text.push(character),
+                    _ => {}
+                }
+            }
+            let excerpt = Self::diagnostic_excerpt(&text, 280);
+            return (!excerpt.is_empty()).then(|| format!("上游响应：{excerpt}"));
+        };
+
+        let error = value.get("error").unwrap_or(&value);
+        let mut fields = Vec::new();
+        if let Some(code) = error.get("code").and_then(|item| item.as_i64()) {
+            fields.push(format!("HTTP {code}"));
+        }
+        if let Some(status) = error.get("status").and_then(|item| item.as_str()) {
+            fields.push(Self::diagnostic_excerpt(status, 80));
+        }
+        if let Some(message) = error
+            .get("message")
+            .and_then(|item| item.as_str())
+            .or_else(|| error.as_str())
+        {
+            fields.push(Self::diagnostic_excerpt(message, 360));
+        }
+        if let Some(description) = value
+            .get("error_description")
+            .and_then(|item| item.as_str())
+        {
+            fields.push(Self::diagnostic_excerpt(description, 240));
+        }
+
+        let mut reasons = Vec::new();
+        if let Some(details) = error.get("details").and_then(|item| item.as_array()) {
+            for detail in details {
+                for key in ["reason", "status", "message", "description", "retryDelay"] {
+                    if let Some(item) = detail.get(key).and_then(|item| item.as_str()) {
+                        let item = Self::diagnostic_excerpt(item, 160);
+                        if !item.is_empty() && !reasons.contains(&item) {
+                            reasons.push(item);
+                        }
+                    }
+                }
+                if let Some(violations) = detail.get("violations").and_then(|item| item.as_array()) {
+                    for violation in violations {
+                        if let Some(description) = violation
+                            .get("description")
+                            .and_then(|item| item.as_str())
+                        {
+                            let description = Self::diagnostic_excerpt(description, 200);
+                            if !description.is_empty() && !reasons.contains(&description) {
+                                reasons.push(description);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !reasons.is_empty() {
+            fields.push(format!("原因：{}", reasons.join(" / ")));
+        }
+
+        if fields.is_empty() {
+            Some("上游返回了 JSON 错误，但未包含标准 error/message 字段".into())
+        } else {
+            Some(format!("上游响应：{}", fields.join(" · ")))
+        }
+    }
+
+    fn diagnostic_excerpt(value: &str, limit: usize) -> String {
+        let words = value.split_whitespace().collect::<Vec<_>>();
+        let mut safe_words: Vec<String> = Vec::with_capacity(words.len());
+        let mut redact_words = 0usize;
+        for word in words {
+            if redact_words > 0 {
+                redact_words -= 1;
+                continue;
+            }
+            let lower = word.to_ascii_lowercase();
+            if lower == "bearer" {
+                safe_words.push("Bearer [REDACTED]".into());
+                redact_words = 1;
+                continue;
+            }
+            let sensitive_key = [
+                "authorization",
+                "access_token",
+                "refresh_token",
+                "client_secret",
+                "api_key",
+            ]
+            .iter()
+            .any(|key| {
+                lower == *key
+                    || lower == format!("{key}:")
+                    || lower.starts_with(&format!("{key}="))
+            });
+            if sensitive_key {
+                if let Some((key, _)) = word.split_once('=') {
+                    safe_words.push(format!("{key}=[REDACTED]"));
+                } else {
+                    safe_words.push(format!("{word} [REDACTED]"));
+                    redact_words = if lower.starts_with("authorization") { 2 } else { 1 };
+                }
+                continue;
+            }
+            safe_words.push(word.into());
+        }
+        let normalized = safe_words.join(" ");
+        let mut excerpt: String = normalized.chars().take(limit).collect();
+        if normalized.chars().count() > limit {
+            excerpt.push('…');
+        }
+        excerpt
     }
 
     fn log_gateway_error(message: &str) {
@@ -6755,6 +7014,8 @@ impl GatewayServer {
             .arg(format!("refresh_token={refresh_token}"));
         if bypass_proxy {
             command.arg("--noproxy").arg("*");
+        } else if let Some(proxy) = Self::gemini_proxy_override() {
+            command.arg("--proxy").arg(proxy);
         }
         let output = command
             .output()

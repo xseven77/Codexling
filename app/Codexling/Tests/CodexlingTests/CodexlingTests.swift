@@ -241,6 +241,41 @@ final class CodexlingTests: XCTestCase {
         XCTAssertFalse(restored.shouldOpenMainWindowAtLaunch)
     }
 
+    @MainActor
+    func testNetworkProxySettingsPersistAndBuildScopedConfiguration() throws {
+        let suiteName = "CodexlingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        XCTAssertFalse(settings.networkProxyEnabled)
+        XCTAssertEqual(settings.networkProxyProtocol, .socks5h)
+        XCTAssertEqual(settings.networkProxyHost, "127.0.0.1")
+        XCTAssertEqual(settings.networkProxyPort, 7897)
+
+        settings.networkProxyEnabled = true
+        settings.networkProxyProtocol = .http
+        settings.networkProxyPort = 7897
+
+        let restored = AppSettingsStore(defaults: defaults)
+        XCTAssertTrue(restored.networkProxyEnabled)
+        XCTAssertEqual(restored.networkProxyProtocol, .http)
+        XCTAssertEqual(restored.networkProxyPort, 7897)
+
+        let proxy = AppNetworkProxyConfiguration.load(from: defaults)
+        XCTAssertEqual(proxy.proxyURL, "http://127.0.0.1:7897")
+        let environment = proxy.applying(to: ["KEEP": "value"])
+        XCTAssertEqual(environment["HTTPS_PROXY"], proxy.proxyURL)
+        XCTAssertEqual(environment["CODEXLING_GEMINI_PROXY"], proxy.proxyURL)
+        XCTAssertEqual(
+            environment["NO_PROXY"],
+            "localhost,127.0.0.1,::1,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16"
+        )
+        XCTAssertEqual(proxy.urlSessionProxyDictionary["ExcludeSimpleHostnames"] as? Int, 1)
+        XCTAssertTrue((proxy.urlSessionProxyDictionary["ExceptionsList"] as? [String])?.contains("172.16.0.0/12") == true)
+        XCTAssertEqual(environment["KEEP"], "value")
+    }
+
     func testConnectionCarouselAdvancesWrapsAndRecoversMissingSelection() {
         let keys = ["codex.first", "codex.second", "deepseek.first"]
 
