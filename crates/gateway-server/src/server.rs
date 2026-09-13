@@ -2110,6 +2110,24 @@ mod tests {
     }
 
     #[test]
+    fn wraps_non_object_tool_results_for_gemini_function_response() {
+        let object = serde_json::json!({"path": "README.md", "found": true});
+        assert_eq!(
+            GatewayServer::gemini_function_response_object(object.clone()),
+            object
+        );
+
+        assert_eq!(
+            GatewayServer::gemini_function_response_object(serde_json::json!([{"name": "a"}])),
+            serde_json::json!({"result": [{"name": "a"}]})
+        );
+        assert_eq!(
+            GatewayServer::gemini_function_response_object(serde_json::json!("done")),
+            serde_json::json!({"result": "done"})
+        );
+    }
+
+    #[test]
     fn restores_gemini_thought_signature_when_client_rewrites_tool_call_id() {
         let server = GatewayServer::new("test-token");
         let response = serde_json::json!({"response":{"candidates":[{"content":{"parts":[{
@@ -4005,6 +4023,7 @@ impl GatewayServer {
                 let response = Self::message_text(message.get("content"))
                     .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
                     .unwrap_or_else(|| serde_json::json!({"result": Self::message_text(message.get("content")).unwrap_or_default()}));
+                let response = Self::gemini_function_response_object(response);
                 parts.push(
                     serde_json::json!({"functionResponse": {"name": name, "response": response}}),
                 );
@@ -4374,6 +4393,19 @@ impl GatewayServer {
             .collect::<Vec<_>>();
         (!declarations.is_empty())
             .then(|| serde_json::json!([{"functionDeclarations": declarations}]))
+    }
+
+    /// Gemini's `FunctionResponse.response` is a protobuf Struct, so its
+    /// top-level value must be a JSON object. OpenAI-compatible clients such
+    /// as DSH can legitimately return an array, string, number or boolean as
+    /// a tool result. Keep that value intact under `result` instead of sending
+    /// an invalid protobuf payload upstream.
+    fn gemini_function_response_object(response: serde_json::Value) -> serde_json::Value {
+        if response.is_object() {
+            response
+        } else {
+            serde_json::json!({"result": response})
+        }
     }
 
     /// Hermes can expose third-party custom tools with OpenAI-flavoured schema
