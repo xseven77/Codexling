@@ -38,7 +38,7 @@ public struct GatewayAutomationView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             // 全量/单账号巡检实时横幅
-            modelCheckActiveBanner
+            GatewayModelCheckBanner(store: store, onToast: onToast)
 
             // 顶栏操作区与启动配置条
             headerBar
@@ -86,80 +86,6 @@ public struct GatewayAutomationView: View {
                     320,
                     (availableWindowHeight ?? GatewayWindowController.minWindowHeight) - 48
                 )
-            )
-        }
-    }
-
-    // MARK: - 巡检实时横幅
-    @ViewBuilder
-    private var modelCheckActiveBanner: some View {
-        if store.isModelCheckRunning {
-            let status = store.modelCheckStatus
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(status?.scope == "all" ? "正在执行全量模型健康巡检" : "正在执行账号模型健康巡检")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.codexInk)
-
-                        if let status, status.total > 0 {
-                            Text("(\(status.done)/\(status.total))")
-                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Color.accentColor)
-                        } else {
-                            Text("正在启动巡检...")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.codexMuted)
-                        }
-                    }
-
-                    if let status, !status.current.isEmpty {
-                        HStack(spacing: 4) {
-                            Text("当前正在探测: \(status.current)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.codexMuted)
-                                .lineLimit(1)
-                            Text("· 最多等待 8s")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.codexMuted.opacity(0.8))
-                        }
-                    }
-                }
-
-                Spacer()
-
-                if let startedAt = status?.startedAt, startedAt > 0 {
-                    ModelCheckElapsedTimeView(startedAtEpoch: startedAt)
-                }
-
-                Button {
-                    Task {
-                        let res = await store.cancelModelCheck()
-                        toast(res.message, systemImage: res.success ? "stop.circle" : "exclamationmark.triangle", isSuccess: res.success)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle.fill")
-                        Text(store.isCancellingModelCheck ? "正在取消..." : "取消巡检")
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.codexLine.opacity(0.2), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(Color.codexInk)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isCancellingModelCheck)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 1)
             )
         }
     }

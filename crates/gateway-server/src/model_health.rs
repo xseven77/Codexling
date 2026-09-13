@@ -91,11 +91,24 @@ pub struct JobInfo {
     pub done: usize,
     pub total: usize,
     pub current: String,
+    #[serde(default)]
+    pub results: Vec<JobProbeResult>,
     pub started_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_finished_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_summary: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobProbeResult {
+    pub scoped_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +329,7 @@ impl ModelHealthEngine {
         job.done = 0;
         job.total = initial_total;
         job.current = if initial_total > 0 { "正在启动探测...".to_string() } else { String::new() };
+        job.results.clear();
         job.started_at = Self::now_epoch_secs();
 
         // 阶段缓冲：检查过程中保留历史数据对客户端的可见性与路由，
@@ -376,6 +390,29 @@ impl ModelHealthEngine {
         job.current = current.to_string();
     }
 
+    fn record_job_result(&self, scoped_id: &str, outcome: &ProbeOutcome) {
+        let (status, reason, latency_ms) = match outcome {
+            ProbeOutcome::Available { latency_ms } => ("available", None, Some(*latency_ms)),
+            ProbeOutcome::HardFail { reason, latency_ms } => {
+                ("unavailable", Some(reason.clone()), Some(*latency_ms))
+            }
+            ProbeOutcome::Transient { reason, latency_ms } => {
+                ("error", Some(reason.clone()), Some(*latency_ms))
+            }
+            ProbeOutcome::Skipped { reason } => ("skipped", Some(reason.clone()), None),
+        };
+        let mut job = match self.job.lock() {
+            Ok(j) => j,
+            Err(p) => p.into_inner(),
+        };
+        job.results.push(JobProbeResult {
+            scoped_id: scoped_id.to_string(),
+            status: status.to_string(),
+            reason,
+            latency_ms,
+        });
+    }
+
     pub fn finish_job(&self, summary: Value) {
         let now = Self::now_epoch_secs();
         let mut job = match self.job.lock() {
@@ -434,6 +471,7 @@ impl ModelHealthEngine {
             "done": job.done,
             "total": job.total,
             "current": job.current,
+            "results": job.results,
             "startedAt": job.started_at,
             "lastFinishedAt": job.last_finished_at,
             "lastSummary": job.last_summary,
@@ -970,6 +1008,12 @@ impl ModelHealthEngine {
                     },
                     0,
                 );
+                self.record_job_result(
+                    &scoped_model_id,
+                    &ProbeOutcome::Skipped {
+                        reason: "IDE completion model skipped".into(),
+                    },
+                );
                 skipped_count += 1;
                 self.update_job_progress(idx + 1, total, &scoped_model_id);
                 continue;
@@ -1054,6 +1098,7 @@ impl ModelHealthEngine {
                 &final_outcome,
                 retried,
             );
+            self.record_job_result(&scoped_model_id, &final_outcome);
 
             // 记录该模型探测完成，推进进度到 idx+1
             self.update_job_progress(idx + 1, total, &scoped_model_id);
@@ -1843,6 +1888,31 @@ mod tests {
                 "Inspection results must commit after job finishes"
             );
         }
+    }
+
+    #[test]
+    fn job_status_reports_each_completed_probe_result() {
+        let engine = ModelHealthEngine::new_with_path(None);
+        assert!(engine.try_start_job("all", 2).is_ok());
+        engine.update_job_progress(0, 2, "google/gemini-pro@example");
+        engine.record_job_result(
+            "google/gemini-pro@example",
+            &ProbeOutcome::Available { latency_ms: 84 },
+        );
+
+        let payload = engine.job_status_payload();
+        let results = payload["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["scopedId"], "google/gemini-pro@example");
+        assert_eq!(results[0]["status"], "available");
+        assert_eq!(results[0]["latencyMs"], 84);
+
+        engine.finish_job(json!({"total": 2, "cancelled": false}));
+        assert!(engine.try_start_job("all", 1).is_ok());
+        assert!(engine.job_status_payload()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

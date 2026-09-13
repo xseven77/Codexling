@@ -23,7 +23,7 @@ struct GatewayConnectView: View {
             heroControlCard
 
             // 全局/账号巡检进行中横幅
-            modelCheckActiveBanner
+            GatewayModelCheckBanner(store: store, onToast: onToast)
 
             // 顶部通用标准接入配置
             universalConnectionBar
@@ -79,80 +79,6 @@ struct GatewayConnectView: View {
             }
         } message: {
             Text("更新后将生成高强度随机复杂码，有效防止局域网滥用。已一键接入的本地 Agent（Hermes、Pi 等）将自动平滑同步更新新凭证。")
-        }
-    }
-
-    // MARK: - 全局/单账号巡检实时横幅
-    @ViewBuilder
-    private var modelCheckActiveBanner: some View {
-        if store.isModelCheckRunning {
-            let status = store.modelCheckStatus
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(status?.scope == "all" ? "正在执行全量模型健康巡检" : "正在执行账号模型健康巡检")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.codexInk)
-
-                        if let status, status.total > 0 {
-                            Text("(\(status.done)/\(status.total))")
-                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Color.accentColor)
-                        } else {
-                            Text("正在启动巡检...")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.codexMuted)
-                        }
-                    }
-
-                    if let status, !status.current.isEmpty {
-                        HStack(spacing: 4) {
-                            Text("当前正在探测: \(status.current)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.codexMuted)
-                                .lineLimit(1)
-                            Text("· 最多等待 8s")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.codexMuted.opacity(0.8))
-                        }
-                    }
-                }
-
-                Spacer()
-
-                if let startedAt = status?.startedAt, startedAt > 0 {
-                    ModelCheckElapsedTimeView(startedAtEpoch: startedAt)
-                }
-
-                Button {
-                    Task {
-                        let res = await store.cancelModelCheck()
-                        onToast(res.message, res.success ? "stop.circle" : "exclamationmark.triangle", res.success)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle.fill")
-                        Text(store.isCancellingModelCheck ? "正在取消..." : "取消巡检")
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.codexLine.opacity(0.2), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(Color.codexInk)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isCancellingModelCheck)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 1)
-            )
         }
     }
 
@@ -2329,26 +2255,4 @@ private struct GatewayAccountModelsDrawer: View {
         }
     }
 
-}
-
-struct ModelCheckElapsedTimeView: View {
-    let startedAtEpoch: Int64
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let elapsed = max(0, Int64(timeline.date.timeIntervalSince1970) - startedAtEpoch)
-            let m = elapsed / 60
-            let s = elapsed % 60
-            HStack(spacing: 3.5) {
-                Image(systemName: "stopwatch")
-                    .font(.system(size: 9.5))
-                Text(String(format: "已用时 %02d:%02d", m, s))
-                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-            }
-            .foregroundStyle(Color.codexMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2.5)
-            .background(Color.codexLine.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-        }
-    }
 }

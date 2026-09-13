@@ -71,12 +71,21 @@ public struct GatewayAccountHealth: Codable, Identifiable, Sendable {
     public let models: [GatewayModelHealthItem]
 }
 
+public struct GatewayModelCheckResult: Codable, Identifiable, Sendable {
+    public var id: String { scopedId }
+    public let scopedId: String
+    public let status: String
+    public let reason: String?
+    public let latencyMs: UInt64?
+}
+
 public struct GatewayModelCheckJobStatus: Codable, Sendable {
     public let running: Bool
     public let scope: String
     public let done: Int
     public let total: Int
     public let current: String
+    public let results: [GatewayModelCheckResult]
     public let startedAt: Int64
     public let lastFinishedAt: Int64?
     public let lastSummary: GatewayModelHealthSummary?
@@ -87,6 +96,7 @@ public struct GatewayModelCheckJobStatus: Codable, Sendable {
         done: Int,
         total: Int,
         current: String,
+        results: [GatewayModelCheckResult] = [],
         startedAt: Int64,
         lastFinishedAt: Int64? = nil,
         lastSummary: GatewayModelHealthSummary? = nil
@@ -96,9 +106,27 @@ public struct GatewayModelCheckJobStatus: Codable, Sendable {
         self.done = done
         self.total = total
         self.current = current
+        self.results = results
         self.startedAt = startedAt
         self.lastFinishedAt = lastFinishedAt
         self.lastSummary = lastSummary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case running, scope, done, total, current, results, startedAt, lastFinishedAt, lastSummary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        running = try container.decode(Bool.self, forKey: .running)
+        scope = try container.decode(String.self, forKey: .scope)
+        done = try container.decode(Int.self, forKey: .done)
+        total = try container.decode(Int.self, forKey: .total)
+        current = try container.decode(String.self, forKey: .current)
+        results = try container.decodeIfPresent([GatewayModelCheckResult].self, forKey: .results) ?? []
+        startedAt = try container.decode(Int64.self, forKey: .startedAt)
+        lastFinishedAt = try container.decodeIfPresent(Int64.self, forKey: .lastFinishedAt)
+        lastSummary = try container.decodeIfPresent(GatewayModelHealthSummary.self, forKey: .lastSummary)
     }
 }
 

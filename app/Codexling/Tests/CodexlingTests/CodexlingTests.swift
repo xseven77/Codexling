@@ -1076,6 +1076,41 @@ final class CodexlingTests: XCTestCase {
         XCTAssertNotEqual(quota.geminiWeeklyReset, quota.geminiFiveHourReset)
     }
 
+    func testModelCheckStatusDecodesLiveResultsAndSupportsLegacyPayloads() throws {
+        let liveData = Data(#"""
+        {
+          "running": true,
+          "scope": "all",
+          "done": 1,
+          "total": 2,
+          "current": "google/gemini-pro@example",
+          "results": [{
+            "scopedId": "google/gemini-pro@example",
+            "status": "available",
+            "latencyMs": 84
+          }],
+          "startedAt": 1800000000
+        }
+        """#.utf8)
+        let live = try JSONDecoder().decode(GatewayModelCheckJobStatus.self, from: liveData)
+        XCTAssertEqual(live.results.count, 1)
+        XCTAssertEqual(live.results[0].status, "available")
+        XCTAssertEqual(live.results[0].latencyMs, 84)
+
+        let legacyData = Data(#"""
+        {
+          "running": true,
+          "scope": "all",
+          "done": 0,
+          "total": 2,
+          "current": "正在启动探测...",
+          "startedAt": 1800000000
+        }
+        """#.utf8)
+        let legacy = try JSONDecoder().decode(GatewayModelCheckJobStatus.self, from: legacyData)
+        XCTAssertTrue(legacy.results.isEmpty)
+    }
+
     func testCodexNotchQuotaSegmentsUseIndependentHealthColors() throws {
         var snapshot = CodexUsageSnapshot.preview
         snapshot.weekly = UsageWindow(label: "周额度", remaining: 70, total: 100, resetsAt: "")
