@@ -5,6 +5,7 @@ public struct GatewayAutomationView: View {
     @Bindable var store: GatewayStore
     var supervisor: GatewaySupervisor = .shared
     var settingsStore: MultiAgentSettingsStore?
+    var availableWindowHeight: CGFloat?
     var onToast: GatewayToastHandler
 
     @State private var isCreatingTask = false
@@ -16,11 +17,13 @@ public struct GatewayAutomationView: View {
         store: GatewayStore,
         supervisor: GatewaySupervisor = .shared,
         settingsStore: MultiAgentSettingsStore? = nil,
+        availableWindowHeight: CGFloat? = nil,
         onToast: @escaping GatewayToastHandler
     ) {
         self.store = store
         self.supervisor = supervisor
         self.settingsStore = settingsStore
+        self.availableWindowHeight = availableWindowHeight
         self.onToast = onToast
     }
 
@@ -76,7 +79,14 @@ public struct GatewayAutomationView: View {
             )
         }
         .sheet(item: $logForTask) { task in
-            AutomationRunLogSheet(task: task, store: store)
+            AutomationRunLogSheet(
+                task: task,
+                store: store,
+                maximumHeight: max(
+                    320,
+                    (availableWindowHeight ?? GatewayWindowController.minWindowHeight) - 48
+                )
+            )
         }
     }
 
@@ -1256,12 +1266,22 @@ struct FlowLayout: Layout {
 struct AutomationRunLogSheet: View {
     let task: GatewayAutomationTask
     let store: GatewayStore
+    let maximumHeight: CGFloat
     @Environment(\.dismiss) private var dismiss
     @State private var logs: [GatewayAutomationRunLog] = []
     @State private var isRunningNow = false
+    @State private var currentPage = 1
+
+    private let pageSize = 20
 
     private var successCount: Int { logs.filter { $0.isSuccess == true }.count }
     private var failCount: Int { logs.filter { $0.isSuccess == false }.count }
+    private var totalPages: Int { max(1, (logs.count + pageSize - 1) / pageSize) }
+    private var pageStartIndex: Int { min((currentPage - 1) * pageSize, logs.count) }
+    private var pageEndIndex: Int { min(pageStartIndex + pageSize, logs.count) }
+    private var pagedLogs: ArraySlice<GatewayAutomationRunLog> {
+        logs[pageStartIndex..<pageEndIndex]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1272,20 +1292,28 @@ struct AutomationRunLogSheet: View {
                 emptyState
             } else {
                 summaryStrip
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 4) {
-                        ForEach(logs, id: \.id) { log in
+                        ForEach(pagedLogs, id: \.id) { log in
                             logRow(log)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
                     .padding(.bottom, 4)
                 }
+                .id(currentPage)
+                .scrollIndicators(.hidden)
+                .background(ScrollIndicatorHider())
+
+                Divider().overlay(Color.codexLine.opacity(0.2))
+                paginationBar
             }
         }
         .background(Color.codexCard)
-        .frame(minWidth: 520, idealWidth: 560, minHeight: 320, maxHeight: 520)
+        .frame(minWidth: 520, idealWidth: 560)
+        .frame(height: maximumHeight)
         .onAppear {
             reload()
         }
@@ -1384,6 +1412,59 @@ struct AutomationRunLogSheet: View {
         .disabled(isRunningNow || store.isModelCheckRunning)
     }
 
+    private var paginationBar: some View {
+        HStack(spacing: 10) {
+            Text("\(pageStartIndex + 1)–\(pageEndIndex) / \(logs.count) 条")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(Color.codexMuted)
+
+            Spacer(minLength: 8)
+
+            Text("第 \(currentPage) / \(totalPages) 页")
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+
+            HStack(spacing: 4) {
+                paginationButton(
+                    systemName: "chevron.left",
+                    help: "上一页",
+                    isDisabled: currentPage <= 1
+                ) {
+                    currentPage -= 1
+                }
+
+                paginationButton(
+                    systemName: "chevron.right",
+                    help: "下一页",
+                    isDisabled: currentPage >= totalPages
+                ) {
+                    currentPage += 1
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 42)
+        .background(Color.codexCard)
+    }
+
+    private func paginationButton(
+        systemName: String,
+        help: String,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 26, height: 24)
+                .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isDisabled ? Color.codexMuted.opacity(0.35) : Color.codexInk)
+        .disabled(isDisabled)
+        .help(help)
+    }
+
     // 空态: 居中、紧凑、带主操作
     private var emptyState: some View {
         VStack(spacing: 12) {
@@ -1429,6 +1510,7 @@ struct AutomationRunLogSheet: View {
         logs = store.gatewaySettings.automationRunLogs
             .filter { $0.taskId == task.id }
             .sorted { $0.startedAt > $1.startedAt }
+        currentPage = min(currentPage, totalPages)
     }
 
     private func logRow(_ log: GatewayAutomationRunLog) -> some View {
@@ -1476,6 +1558,7 @@ struct AutomationRunLogSheet: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)

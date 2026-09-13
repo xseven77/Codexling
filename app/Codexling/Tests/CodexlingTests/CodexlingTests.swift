@@ -1040,6 +1040,42 @@ final class CodexlingTests: XCTestCase {
         }
     }
 
+    func testGeminiQuotaPrefersIndependentAbsoluteResetTimesWhenFiveHourQuotaIsExhausted() throws {
+        let response: [String: Any] = [
+            "groups": [[
+                "displayName": "Gemini Models",
+                "buckets": [
+                    [
+                        "bucketId": "gemini-weekly",
+                        "displayName": "Weekly Limit Remaining",
+                        "window": "weekly",
+                        "remainingFraction": 0.81,
+                        // Reproduces the transient upstream description mix-up.
+                        "description": "It will fully refresh in 34 minutes.",
+                        "resetTime": "2026-09-17T18:21:26Z"
+                    ],
+                    [
+                        "bucketId": "gemini-5h",
+                        "displayName": "Five Hour Limit Remaining",
+                        "window": "5h",
+                        "remainingFraction": 0.0,
+                        "description": "It will fully refresh in 34 minutes.",
+                        "resetTime": "2026-09-13T05:35:00Z"
+                    ]
+                ]
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: response)
+
+        let quota = try AntigravityRemoteQuota.parse(data: data)
+
+        XCTAssertEqual(quota.geminiWeekly, 0.81)
+        XCTAssertEqual(quota.geminiWeeklyReset, "2026-09-17T18:21:26Z")
+        XCTAssertEqual(quota.geminiFiveHour, 0.0)
+        XCTAssertEqual(quota.geminiFiveHourReset, "2026-09-13T05:35:00Z")
+        XCTAssertNotEqual(quota.geminiWeeklyReset, quota.geminiFiveHourReset)
+    }
+
     func testCodexNotchQuotaSegmentsUseIndependentHealthColors() throws {
         var snapshot = CodexUsageSnapshot.preview
         snapshot.weekly = UsageWindow(label: "周额度", remaining: 70, total: 100, resetsAt: "")

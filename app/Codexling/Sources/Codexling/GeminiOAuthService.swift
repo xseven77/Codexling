@@ -669,7 +669,7 @@ private struct AntigravityAvailableModelsResponse: Decodable {
     }
 }
 
-private struct AntigravityRemoteQuota {
+struct AntigravityRemoteQuota {
     var geminiWeekly: Double?
     var geminiWeeklyReset: String?
     var geminiFiveHour: Double?
@@ -699,7 +699,11 @@ private struct AntigravityRemoteQuota {
                     string(bucket, keys: ["window"])
                 ].joined(separator: " ").lowercased()
                 guard let remaining = remainingFraction(bucket) else { continue }
-                let reset = string(bucket, keys: ["description", "resetTime", "reset_time"])
+                // Prefer the bucket's authoritative absolute timestamp. The
+                // human-readable description can temporarily be stale or
+                // copied from the exhausted 5-hour bucket while the weekly
+                // quota itself is still available.
+                let reset = string(bucket, keys: ["resetTime", "reset_time", "description"])
                 let isWeekly = identity.contains("weekly") || identity.contains("week") || identity.contains("周")
                 let isFiveHour = identity.contains("5h") || identity.contains("5 hour")
                     || identity.contains("session") || identity.contains("5小时")
@@ -740,7 +744,10 @@ private struct AntigravityRemoteQuota {
 
     private static func string(_ dictionary: [String: Any], keys: [String]) -> String {
         for key in keys {
-            if let value = dictionary[key] as? String { return value }
+            if let value = dictionary[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
         }
         return ""
     }

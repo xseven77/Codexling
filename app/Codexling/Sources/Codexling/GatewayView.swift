@@ -47,6 +47,7 @@ public struct GatewayView: View {
                                 store: store,
                                 supervisor: supervisor,
                                 settingsStore: settingsStore,
+                                availableWindowHeight: contentGeometry.size.height,
                                 onToast: showToast
                             )
                         case .agents:
