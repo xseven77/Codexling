@@ -151,13 +151,14 @@ fn main() -> std::io::Result<()> {
                         finished_at: None,
                         is_success: None,
                         summary: None,
+                        cancelled: None,
                     });
                     let _ = start_settings.save_for_home(&home);
 
                     health_engine.run_check(&home, scope);
 
                     let finished_at = model_health::ModelHealthEngine::now_epoch_secs();
-                    let (is_success, summary_text) = summarize_job_result(&health_engine);
+                    let (is_success, summary_text, is_cancelled) = summarize_job_result(&health_engine);
 
                     let mut end_settings = GatewaySettings::load_for_home(&home);
                     if let Some(entry) = end_settings
@@ -165,8 +166,16 @@ fn main() -> std::io::Result<()> {
                         .iter_mut()
                         .find(|entry| entry.id == task_id)
                     {
-                        entry.last_run_status =
-                            Some(if is_success { "success" } else { "failed" }.to_string());
+                        entry.last_run_status = Some(
+                            if is_cancelled {
+                                "cancelled"
+                            } else if is_success {
+                                "success"
+                            } else {
+                                "failed"
+                            }
+                            .to_string(),
+                        );
                         entry.last_run_summary = Some(summary_text.clone());
                     }
                     end_settings.finish_automation_run_log(
@@ -174,6 +183,7 @@ fn main() -> std::io::Result<()> {
                         finished_at,
                         is_success,
                         &summary_text,
+                        is_cancelled,
                     );
                     let _ = end_settings.save_for_home(&home);
                 }
@@ -187,7 +197,10 @@ fn main() -> std::io::Result<()> {
 }
 
 /// 汇总一次巡检的结果，文案与 App 端 `GatewayStore.pollModelCheckStatus` 保持一致。
-fn summarize_job_result(engine: &model_health::ModelHealthEngine) -> (bool, String) {
+///
+/// 返回 `(is_success, summary, is_cancelled)`：取消的巡检必须与失败区分，
+/// 否则执行日志会把「用户取消」显示成「失败」，任务状态也会被误判。
+fn summarize_job_result(engine: &model_health::ModelHealthEngine) -> (bool, String, bool) {
     let summary = {
         let job = match engine.job.lock() {
             Ok(job) => job,
@@ -213,9 +226,13 @@ fn summarize_job_result(engine: &model_health::ModelHealthEngine) -> (bool, Stri
         .unwrap_or(false);
 
     if cancelled {
-        return (false, format!("已取消 · 可用 {available} · 异常 {error}"));
+        return (false, format!("已取消 · 可用 {available} · 异常 {error}"), true);
     }
 
     let is_success = available > 0 || error == 0;
-    (is_success, format!("可用 {available} · 异常 {error}"))
+    (
+        is_success,
+        format!("可用 {available} · 异常 {error}"),
+        false,
+    )
 }

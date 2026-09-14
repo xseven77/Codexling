@@ -6,6 +6,8 @@ struct GatewayModelCheckBanner: View {
     var onToast: GatewayToastHandler
 
     @State private var isExpanded = false
+    /// 点击展开的巡检记录（按列表下标定位），用于查看单条探测的成功/错误详情。
+    @State private var expandedResultIndices: Set<Int> = []
 
     var body: some View {
         Group {
@@ -212,37 +214,116 @@ struct GatewayModelCheckBanner: View {
     }
 
     private func completedRow(index: Int, result: GatewayModelCheckResult) -> some View {
-        HStack(spacing: 8) {
-            Text("\(index)")
-                .font(.system(size: 9.5, design: .monospaced))
-                .foregroundStyle(Color.codexMuted.opacity(0.7))
-                .frame(width: 28, alignment: .trailing)
+        let isExpanded = expandedResultIndices.contains(index)
 
-            statusIcon(result: result, isRunning: false)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isExpanded {
+                        expandedResultIndices.remove(index)
+                    } else {
+                        expandedResultIndices.insert(index)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("\(index)")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted.opacity(0.7))
+                        .frame(width: 28, alignment: .trailing)
 
-            Text(result.scopedId)
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(Color.codexInk)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                    statusIcon(result: result, isRunning: false)
 
-            Spacer(minLength: 8)
+                    Text(result.scopedId)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-            if let latencyMs = result.latencyMs {
-                Text("\(latencyMs)ms")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(Color.codexMuted)
+                    Spacer(minLength: 8)
+
+                    if let latencyMs = result.latencyMs {
+                        Text("\(latencyMs)ms")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+
+                    Text(statusLabel(result.status))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(statusColor(result.status))
+                        .frame(width: 38, alignment: .leading)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted.opacity(0.75))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "收起该条探测详情" : "点击展开该条探测的成功/错误详情")
 
-            Text(statusLabel(result.status))
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(statusColor(result.status))
-                .frame(width: 38, alignment: .leading)
+            if isExpanded {
+                probeDetail(result: result)
+                    .padding(.horizontal, 9)
+                    .padding(.bottom, 8)
+            }
         }
-        .padding(.horizontal, 9)
-        .frame(height: 30)
         .background(Color.codexCard.opacity(0.75), in: RoundedRectangle(cornerRadius: 6))
-        .help(result.reason ?? result.scopedId)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    isExpanded ? statusColor(result.status).opacity(0.35) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    /// 单条探测记录的成功/错误详情（点击行展开）。
+    private func probeDetail(result: GatewayModelCheckResult) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Divider()
+                .overlay(Color.codexLine.opacity(0.25))
+                .padding(.bottom, 3)
+
+            detailLine(label: "模型", value: result.scopedId)
+            detailLine(label: "结果", value: "\(statusLabel(result.status)) · \(result.status)")
+            detailLine(label: "耗时", value: result.latencyMs.map { "\($0)ms" } ?? "—")
+            detailLine(label: detailReasonLabel(for: result.status), value: detailReason(for: result))
+        }
+        .textSelection(.enabled)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func detailLine(label: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
+                .frame(width: 30, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func detailReasonLabel(for status: String) -> String {
+        status == "available" ? "详情" : "原因"
+    }
+
+    private func detailReason(for result: GatewayModelCheckResult) -> String {
+        if let reason = result.reason, !reason.isEmpty { return reason }
+        switch result.status {
+        case "available": return "探测成功，网关未返回附加信息"
+        case "skipped": return "已跳过：网关未返回跳过原因（通常是账号不可用或额度耗尽）"
+        default: return "网关未返回失败原因"
+        }
     }
 
     private func activeRow(index: Int, scopedId: String) -> some View {

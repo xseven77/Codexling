@@ -359,6 +359,11 @@ public final class GatewayStore {
     /// 与网关进程 `MAX_AUTOMATION_RUN_LOGS` 保持一致。
     public static let maxAutomationRunLogs = 300
 
+    /// 网关已空闲多久之后，仍未结束的执行记录才算「丢失了结束事件」。
+    ///
+    /// 留出宽限时间，避免刚发起巡检、网关还没来得及上报 running 时被误收尾成「已取消」。
+    public static let staleAutomationRunGraceSeconds: TimeInterval = 90
+
     /// 落盘前先与磁盘合并。
     ///
     /// `codexling-gateway` 进程与 App 写的是同一个 `gateway-settings.json`，定时巡检的
@@ -543,25 +548,75 @@ public final class GatewayStore {
         return res
     }
 
-    /// 记录一次自动化任务开始执行（新建一条进行中的 RunLog）
-    public func recordAutomationRunStart(taskId: String, taskName: String, taskType: AutomationTaskType, startedAt: Int64) {
+    /// 记录一次自动化任务开始执行（新建一条进行中的 RunLog），返回该记录的 id。
+    @discardableResult
+    public func recordAutomationRunStart(taskId: String, taskName: String, taskType: AutomationTaskType, startedAt: Int64) -> String {
         var logs = gatewaySettings.automationRunLogs
-        logs.append(GatewayAutomationRunLog(taskId: taskId, taskName: taskName, taskType: taskType, startedAt: startedAt))
+        let log = GatewayAutomationRunLog(taskId: taskId, taskName: taskName, taskType: taskType, startedAt: startedAt)
+        logs.append(log)
         // 最多保留最近 300 条，避免设置无限膨胀
         if logs.count > Self.maxAutomationRunLogs {
             logs = Array(logs.suffix(Self.maxAutomationRunLogs))
         }
         gatewaySettings.automationRunLogs = logs
+        return log.id
     }
 
-    /// 结束一次自动化任务（按 taskId 补全最近一条进行中的 RunLog 的结束时点、结果与摘要）
-    public func finishAutomationRun(taskId: String, finishedAt: Int64, isSuccess: Bool?, summary: String?) {
+    /// 结束一次自动化任务（按 taskId 补全最近一条进行中的 RunLog 的结束时点、结果与摘要）。
+    ///
+    /// - Parameter cancelled: 用户主动取消。取消不算失败，但同样必须写入结束时点，
+    ///   否则执行日志会永远停在「进行中」。
+    public func finishAutomationRun(
+        taskId: String,
+        finishedAt: Int64,
+        isSuccess: Bool?,
+        summary: String?,
+        cancelled: Bool = false
+    ) {
         var logs = gatewaySettings.automationRunLogs
-        guard let idx = logs.lastIndex(where: { $0.taskId == taskId && $0.finishedAt == nil }) else { return }
+        guard let idx = logs.lastIndex(where: { $0.taskId == taskId && $0.isUnfinished }) else { return }
         logs[idx].finishedAt = finishedAt
         logs[idx].isSuccess = isSuccess
         logs[idx].summary = summary
+        logs[idx].cancelled = cancelled ? true : nil
         gatewaySettings.automationRunLogs = logs
+    }
+
+    /// 把仍停在「进行中」的执行记录统一收尾（用于取消巡检与历史遗留记录清理）。
+    ///
+    /// 取消巡检时网关可能还会上报一段时间的 `running`，而 App 退出、进程被杀等情况
+    /// 根本收不到结束事件：只要记录没有结束时点，它就会永远显示「进行中」。
+    ///
+    /// - Parameter minimumAge: 只收尾开始时间早于 `now - minimumAge` 的记录，
+    ///   避免刚发起、网关还没来得及上报 running 的巡检被误判为已取消。
+    @discardableResult
+    public func markUnfinishedAutomationRunsCancelled(
+        summary: String = "已取消",
+        minimumAge: TimeInterval = 0
+    ) -> Int {
+        var logs = gatewaySettings.automationRunLogs
+        let now = Int64(Date().timeIntervalSince1970)
+        var cancelledTaskIds: Set<String> = []
+        var count = 0
+
+        for idx in logs.indices where logs[idx].isUnfinished {
+            if minimumAge > 0, Double(now - logs[idx].startedAt) < minimumAge { continue }
+            logs[idx].finishedAt = max(now, logs[idx].startedAt)
+            logs[idx].isSuccess = false
+            logs[idx].cancelled = true
+            logs[idx].summary = summary
+            cancelledTaskIds.insert(logs[idx].taskId)
+            count += 1
+        }
+
+        guard count > 0 else { return 0 }
+        gatewaySettings.automationRunLogs = logs
+        for idx in gatewaySettings.automationTasks.indices
+        where cancelledTaskIds.contains(gatewaySettings.automationTasks[idx].id) {
+            gatewaySettings.automationTasks[idx].lastRunStatus = "cancelled"
+            gatewaySettings.automationTasks[idx].lastRunSummary = summary
+        }
+        return count
     }
 
     // Agent status is discovered off the main actor when the Agents page is
@@ -1278,14 +1333,8 @@ public final class GatewayStore {
                 self.modelHealthResponse = resp
                 self.persistModelHealth(resp)
                 if let job = resp.job {
-                    self.modelCheckStatus = job
-                    self.isModelCheckRunning = job.running
-                    if job.running {
-                        self.checkingAccountScopes = [job.scope]
-                        self.startPollingModelCheckStatus()
-                    } else {
-                        self.checkingAccountScopes.removeAll()
-                    }
+                    // 被动刷新不弹「完成/已取消」提示，但仍要收尾残留的「进行中」记录。
+                    self.applyModelCheckJobStatus(job, allowFinishFeedback: false)
                 }
                 // When health state refreshes, sync any configured agents (Hermes/Pi) so broken models are removed
                 await self.syncConfiguredAgentCatalogsIfNeeded()
@@ -1309,37 +1358,7 @@ public final class GatewayStore {
             if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                 let decoder = JSONDecoder()
                 let status = try decoder.decode(GatewayModelCheckJobStatus.self, from: data)
-                self.modelCheckStatus = status
-                let wasRunning = self.isModelCheckRunning
-                self.isModelCheckRunning = status.running
-
-                if status.running {
-                    self.checkingAccountScopes = [status.scope]
-                } else {
-                    self.checkingAccountScopes.removeAll()
-                    if wasRunning {
-                        self.emitModelCheckFinishMessage(status)
-                        // 若有自动化任务之前被标记为 running，更新其最终运行状态
-                        for idx in self.gatewaySettings.automationTasks.indices {
-                            if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
-                                let finalStatus: String
-                                let finalSummary: String?
-                                if let summary = status.lastSummary {
-                                    finalStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
-                                    finalSummary = "可用 \(summary.available) · 异常 \(summary.error)"
-                                } else {
-                                    finalStatus = "success"
-                                    finalSummary = nil
-                                }
-                                self.gatewaySettings.automationTasks[idx].lastRunStatus = finalStatus
-                                self.gatewaySettings.automationTasks[idx].lastRunSummary = finalSummary
-                                self.finishAutomationRun(taskId: self.gatewaySettings.automationTasks[idx].id, finishedAt: status.lastFinishedAt ?? Int64(Date().timeIntervalSince1970), isSuccess: finalStatus == "success", summary: finalSummary)
-                            }
-                        }
-                        // 巡检刚结束，立即刷新全量模型健康状态
-                        await self.refreshModelHealth()
-                    }
-                }
+                self.applyModelCheckJobStatus(status)
             }
         } catch {
             print("[GatewayStore] pollModelCheckStatus error: \(error)")
@@ -1351,6 +1370,20 @@ public final class GatewayStore {
               let status = try? JSONDecoder().decode(GatewayModelCheckJobStatus.self, from: data) else {
             return
         }
+        self.applyModelCheckJobStatus(status)
+    }
+
+    /// 巡检状态的唯一入口：HTTP 轮询与网关指标推送都汇聚到这里。
+    ///
+    /// 历史上这两条路径各写一份收尾逻辑，取消巡检时其中一条把本地状态提前置为 idle，
+    /// 于是收尾代码再也没被执行 —— 执行日志里的记录就永远停在「进行中」。
+    ///
+    /// - Parameter allowFinishFeedback: 是否允许弹出「巡检完成/已取消」提示。
+    ///   被动刷新（进入页面同步状态）不弹，避免莫名出现提示。
+    private func applyModelCheckJobStatus(
+        _ status: GatewayModelCheckJobStatus,
+        allowFinishFeedback: Bool = true
+    ) {
         self.modelCheckStatus = status
         let wasRunning = self.isModelCheckRunning
         self.isModelCheckRunning = status.running
@@ -1360,40 +1393,81 @@ public final class GatewayStore {
             if modelCheckPollingTask == nil {
                 self.startPollingModelCheckStatus()
             }
-        } else {
-            self.checkingAccountScopes.removeAll()
-            if wasRunning {
-                self.emitModelCheckFinishMessage(status)
-                // 若有自动化任务之前被标记为 running，更新其最终运行状态
-                for idx in self.gatewaySettings.automationTasks.indices {
-                    if self.gatewaySettings.automationTasks[idx].lastRunStatus == "running" {
-                        let finalStatus: String
-                        let finalSummary: String?
-                        if let summary = status.lastSummary {
-                            finalStatus = summary.available > 0 ? "success" : (summary.error > 0 ? "failed" : "success")
-                            finalSummary = "可用 \(summary.available) · 异常 \(summary.error)"
-                        } else {
-                            finalStatus = "success"
-                            finalSummary = nil
-                        }
-                        self.gatewaySettings.automationTasks[idx].lastRunStatus = finalStatus
-                        self.gatewaySettings.automationTasks[idx].lastRunSummary = finalSummary
-                        self.finishAutomationRun(taskId: self.gatewaySettings.automationTasks[idx].id, finishedAt: status.lastFinishedAt ?? Int64(Date().timeIntervalSince1970), isSuccess: finalStatus == "success", summary: finalSummary)
-                    }
-                }
-                Task { [weak self] in
-                    await self?.refreshModelHealth()
-                }
-            }
+            return
         }
+
+        self.checkingAccountScopes.removeAll()
+
+        // 网关已确认空闲：收尾所有还没结束的执行记录。
+        if wasRunning {
+            self.settleAutomationRunsForFinishedJob(status)
+        }
+        self.repairStaleAutomationRuns()
+
+        guard wasRunning, allowFinishFeedback else { return }
+
+        self.emitModelCheckFinishMessage(status)
+        Task { [weak self] in
+            await self?.refreshModelHealth()
+        }
+    }
+
+    /// 巡检刚结束时收尾执行记录与自动化任务状态（含「已取消」）。
+    private func settleAutomationRunsForFinishedJob(_ status: GatewayModelCheckJobStatus) {
+        let summary = status.lastSummary
+        let isCancelled = summary?.cancelled == true
+        let finishedAt = status.lastFinishedAt ?? Int64(Date().timeIntervalSince1970)
+
+        let finalStatus: String
+        let finalSummary: String?
+        if let summary {
+            if isCancelled {
+                finalStatus = "cancelled"
+                finalSummary = "\(GatewayAutomationRunLog.cancelledSummaryPrefix) · 可用 \(summary.available) · 异常 \(summary.error)"
+            } else {
+                // 与网关 `summarize_job_result` 保持一致
+                finalStatus = (summary.available > 0 || summary.error == 0) ? "success" : "failed"
+                finalSummary = "可用 \(summary.available) · 异常 \(summary.error)"
+            }
+        } else {
+            finalStatus = "success"
+            finalSummary = nil
+        }
+
+        // 若有自动化任务之前被标记为 running，更新其最终运行状态
+        for idx in gatewaySettings.automationTasks.indices {
+            guard gatewaySettings.automationTasks[idx].lastRunStatus == "running" else { continue }
+            gatewaySettings.automationTasks[idx].lastRunStatus = finalStatus
+            gatewaySettings.automationTasks[idx].lastRunSummary = finalSummary
+            finishAutomationRun(
+                taskId: gatewaySettings.automationTasks[idx].id,
+                finishedAt: finishedAt,
+                isSuccess: finalStatus == "success",
+                summary: finalSummary,
+                cancelled: isCancelled
+            )
+        }
+    }
+
+    /// 网关空闲却仍停在「进行中」的执行记录，属于丢失了结束事件的历史数据。
+    ///
+    /// 触发场景：取消巡检后 App 被关闭、网关重启、状态推送丢失；以及修复前遗留的旧记录。
+    /// 这些记录永远不会再收到结束事件，因此在网关确认空闲且超过宽限期后按「已取消」收尾，
+    /// 否则执行日志会一直显示「进行中」。
+    private func repairStaleAutomationRuns() {
+        markUnfinishedAutomationRunsCancelled(
+            summary: "\(GatewayAutomationRunLog.cancelledSummaryPrefix) · 未记录到结束事件",
+            minimumAge: Self.staleAutomationRunGraceSeconds
+        )
     }
 
     /// 巡检结束反馈：生成完成/取消提示，交由视图消费。
     private func emitModelCheckFinishMessage(_ status: GatewayModelCheckJobStatus) {
         let summary = status.lastSummary
+        // 网关在取消的巡检摘要里写明 cancelled；只有拿不到摘要时才退回「进度未跑满」的粗略判断。
+        let isCancelled = summary?.cancelled == true || (summary == nil && status.done < status.total)
         if status.scope == "all" {
-            if status.done < status.total {
-                // 被取消
+            if isCancelled {
                 guard let summary else {
                     self.modelCheckFinishMessage = "巡检已取消"
                     self.modelCheckFinishSuccess = false
@@ -1410,7 +1484,7 @@ public final class GatewayStore {
                 self.modelCheckFinishSuccess = true
             }
         } else {
-            if status.done < status.total {
+            if isCancelled {
                 self.modelCheckFinishMessage = "该账号巡检已取消"
                 self.modelCheckFinishSuccess = false
             } else if let summary {
@@ -1546,11 +1620,28 @@ public final class GatewayStore {
                 if http.statusCode == 200 {
                     let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                     let isAlreadyIdle = (dict?["alreadyIdle"] as? Bool) ?? false
-                    self.isModelCheckRunning = false
-                    self.checkingAccountScopes.removeAll()
-                    await self.pollModelCheckStatus()
-                    await self.refreshModelHealth()
-                    return (true, isAlreadyIdle ? "巡检未在运行或已结束" : "已取消巡检任务")
+                    if isAlreadyIdle {
+                        // 网关其实已经没有在跑的任务：按真实状态收尾，不标成「已取消」。
+                        self.isModelCheckRunning = false
+                        self.checkingAccountScopes.removeAll()
+                        await self.pollModelCheckStatus()
+                        await self.refreshModelHealth()
+                        return (true, "巡检未在运行或已结束")
+                    }
+
+                    // 取消已受理：立刻把这次巡检记为「已取消」。
+                    //
+                    // 不能只把本地状态置为 idle —— 网关真正停下前仍会继续上报 running，
+                    // 而轮询循环一旦提前退出，执行日志就再也等不到结束事件，永远停在「进行中」。
+                    self.markUnfinishedAutomationRunsCancelled(
+                        summary: "\(GatewayAutomationRunLog.cancelledSummaryPrefix) · 可用 \(self.liveCheckedAvailableCount) · 异常 \(self.liveCheckedErrorCount)"
+                    )
+                    self.startPollingModelCheckStatus()
+                    let stopped = await self.awaitModelCheckStopped()
+                    if stopped {
+                        await self.refreshModelHealth()
+                    }
+                    return (true, "已取消巡检任务")
                 } else {
                     let errStr = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
                     // 若收到 400（无任务进行中），同样同步清理本地乐观状态
@@ -1569,6 +1660,32 @@ public final class GatewayStore {
             self.checkingAccountScopes.removeAll()
             return (false, "请求失败: \(error.localizedDescription)")
         }
+    }
+
+    /// 本次巡检已探测出的可用/异常数量（文案与网关 `summarize_job_result` 一致）。
+    private var liveCheckedAvailableCount: Int {
+        modelCheckStatus?.results.filter { $0.status == "available" }.count ?? 0
+    }
+
+    private var liveCheckedErrorCount: Int {
+        modelCheckStatus?.results.filter { $0.status == "error" }.count ?? 0
+    }
+
+    /// 等待网关把当前巡检真正停下，避免横幅一直停在「正在取消…」，返回是否已停下。
+    ///
+    /// 超时后按本地状态收尾：用户已经取消，UI 不能无限期停留在「巡检中」。
+    private func awaitModelCheckStopped(timeout: TimeInterval = 8) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while self.isModelCheckRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            await self.pollModelCheckStatus()
+        }
+        guard self.isModelCheckRunning else { return true }
+        self.isModelCheckRunning = false
+        self.checkingAccountScopes.removeAll()
+        self.modelCheckPollingTask?.cancel()
+        self.modelCheckPollingTask = nil
+        return false
     }
 
     // MARK: - 用量分析 (Analytics) 数据聚合与计算

@@ -136,6 +136,9 @@ pub struct GatewayAutomationRunLog {
     pub is_success: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// 本次巡检是否被用户取消。取消不是失败：App 端据此展示「已取消」而不是「失败」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<bool>,
 }
 
 /// 与 App 端 `GatewayStore.maxAutomationRunLogs` 保持一致。
@@ -402,6 +405,7 @@ impl GatewaySettings {
         finished_at: i64,
         is_success: bool,
         summary: &str,
+        cancelled: bool,
     ) {
         if let Some(log) = self
             .automation_run_logs
@@ -412,6 +416,7 @@ impl GatewaySettings {
             log.finished_at = Some(finished_at);
             log.is_success = Some(is_success);
             log.summary = Some(summary.to_string());
+            log.cancelled = if cancelled { Some(true) } else { None };
         }
     }
 
@@ -738,6 +743,7 @@ mod tests {
             finished_at: None,
             is_success: None,
             summary: None,
+            cancelled: None,
         });
         settings.save_for_home(home).unwrap();
 
@@ -745,7 +751,13 @@ mod tests {
         assert_eq!(settings.automation_run_logs.len(), 2);
         assert!(settings.automation_run_logs[1].finished_at.is_none());
 
-        settings.finish_automation_run_log("task-1-1789030000", 1789030120, true, "可用 60 · 异常 4");
+        settings.finish_automation_run_log(
+            "task-1-1789030000",
+            1789030120,
+            true,
+            "可用 60 · 异常 4",
+            false,
+        );
         settings.save_for_home(home).unwrap();
 
         // 未知键必须被保留，否则 App 端字段会被网关的整份覆盖抹掉
@@ -760,6 +772,42 @@ mod tests {
         assert_eq!(finished.finished_at, Some(1789030120));
         assert_eq!(finished.is_success, Some(true));
         assert_eq!(finished.summary.as_deref(), Some("可用 60 · 异常 4"));
+        assert_eq!(finished.cancelled, None);
+
+        // 取消的巡检：结果标记为 cancelled，且往返磁盘后仍保留（App 端据此显示「已取消」）
+        let mut settings = settings;
+        settings.push_automation_run_log(super::GatewayAutomationRunLog {
+            id: "task-1-1789030200".to_string(),
+            task_id: "task-1".to_string(),
+            task_name: "5小时额度对齐巡检".to_string(),
+            task_type: "modelHealthCheck".to_string(),
+            started_at: 1789030200,
+            finished_at: None,
+            is_success: None,
+            summary: None,
+            cancelled: None,
+        });
+        settings.finish_automation_run_log(
+            "task-1-1789030200",
+            1789030210,
+            false,
+            "已取消 · 可用 12 · 异常 3",
+            true,
+        );
+        settings.save_for_home(home).unwrap();
+
+        let settings = super::GatewaySettings::load_for_home(home);
+        let cancelled = settings
+            .automation_run_logs
+            .iter()
+            .find(|log| log.id == "task-1-1789030200")
+            .expect("cancelled run log must survive the disk round trip");
+        assert_eq!(cancelled.cancelled, Some(true));
+        assert_eq!(cancelled.is_success, Some(false));
+        assert_eq!(
+            cancelled.summary.as_deref(),
+            Some("已取消 · 可用 12 · 异常 3")
+        );
 
         // 容量上限：只保留最近 MAX_AUTOMATION_RUN_LOGS 条
         let mut settings = settings;
@@ -773,6 +821,7 @@ mod tests {
                 finished_at: None,
                 is_success: None,
                 summary: None,
+                cancelled: None,
             });
         }
         assert_eq!(settings.automation_run_logs.len(), super::MAX_AUTOMATION_RUN_LOGS);

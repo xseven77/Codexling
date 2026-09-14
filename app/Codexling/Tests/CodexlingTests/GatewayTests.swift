@@ -863,6 +863,226 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(afterManualRun.automationRunLogs.contains { $0.startedAt == 1789030500 })
     }
 
+    /// 取消巡检后，这次巡检的执行日志必须收尾为「已取消」，并且要能落盘再读回来。
+    ///
+    /// 复现的 bug：`cancelModelCheck` 曾把本地 `isModelCheckRunning` 提前置为 false，
+    /// 收尾逻辑（写 finishedAt / 更新任务状态）被整段跳过，日志永远停在「进行中」。
+    func testCancelledModelCheckSettlesRunLogAsCancelled() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-cancelled-runlog-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let task = GatewayAutomationTask(name: "5小时额度对齐巡检", hours: [5, 10, 15, 20])
+        store.addAutomationTask(task)
+
+        // 手动「立即运行一次」：先写入进行中的任务态与一条没有结束时间的记录
+        let startedAt = Int64(Date().timeIntervalSince1970) - 30
+        store.recordAutomationRunStart(
+            taskId: task.id,
+            taskName: task.name,
+            taskType: .modelHealthCheck,
+            startedAt: startedAt
+        )
+        let taskIdx = try XCTUnwrap(store.gatewaySettings.automationTasks.firstIndex { $0.id == task.id })
+        store.gatewaySettings.automationTasks[taskIdx].lastRunStatus = "running"
+
+        let running = try XCTUnwrap(store.gatewaySettings.automationRunLogs.first)
+        XCTAssertTrue(running.isUnfinished)
+        XCTAssertEqual(running.outcome, .running)
+        XCTAssertEqual(running.outcome.label, "进行中")
+
+        // 用户点了「取消巡检」
+        let marked = store.markUnfinishedAutomationRunsCancelled(summary: "已取消 · 可用 9 · 异常 83")
+        XCTAssertEqual(marked, 1)
+
+        let cancelled = try XCTUnwrap(store.gatewaySettings.automationRunLogs.first)
+        XCTAssertFalse(cancelled.isUnfinished, "取消后必须写入结束时点，否则执行日志永远停在「进行中」")
+        XCTAssertEqual(cancelled.outcome, .cancelled)
+        XCTAssertEqual(cancelled.outcome.label, "已取消")
+        XCTAssertEqual(cancelled.cancelled, true)
+        XCTAssertEqual(cancelled.isSuccess, false)
+        XCTAssertEqual(cancelled.summary, "已取消 · 可用 9 · 异常 83")
+        XCTAssertEqual(store.automationTasks.first?.lastRunStatus, "cancelled")
+
+        // 落盘 → 读回：`cancelled` 必须能穿过 App 的 settings 读写
+        store.allowLanAccess = true
+        let reloaded = storage.load()
+        XCTAssertEqual(reloaded.automationRunLogs.first?.cancelled, true)
+        XCTAssertEqual(reloaded.automationRunLogs.first?.outcome, .cancelled)
+        XCTAssertEqual(reloaded.automationRunLogs.first?.finishedAt, cancelled.finishedAt)
+
+        // 新的 GatewayStore 冷启动读盘后，旧记录仍应是「已取消」而不是「进行中」
+        let reopened = GatewayStore(settingsStorage: storage)
+        reopened.reloadAutomationStateFromDisk()
+        XCTAssertEqual(reopened.gatewaySettings.automationRunLogs.first?.outcome, .cancelled)
+    }
+
+    /// 网关从「运行中」切到空闲时，App 必须收尾这次巡检并按摘要里的 cancelled 记为「已取消」。
+    ///
+    /// 旧逻辑只按 `available > 0` 判断结果，被取消的巡检（可用 > 0）会被错记成「成功」。
+    func testModelCheckIdleAfterCancelSettlesRunLogAsCancelled() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-idle-cancel-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let store = GatewayStore(settingsStorage: GatewaySettingsStorage(fileURL: settingsURL))
+
+        let task = GatewayAutomationTask(name: "账号模型健康巡检", hours: [9])
+        store.addAutomationTask(task)
+        store.recordAutomationRunStart(
+            taskId: task.id,
+            taskName: task.name,
+            taskType: .modelHealthCheck,
+            startedAt: Int64(Date().timeIntervalSince1970) - 30
+        )
+        let taskIdx = try XCTUnwrap(store.gatewaySettings.automationTasks.firstIndex { $0.id == task.id })
+        store.gatewaySettings.automationTasks[taskIdx].lastRunStatus = "running"
+
+        // App 认为巡检在跑，网关随后上报空闲 + 被取消的摘要
+        store.isModelCheckRunning = true
+        store.updateModelCheckJobStatus(from: [
+            "running": false,
+            "scope": "all",
+            "done": 92,
+            "total": 154,
+            "current": "",
+            "startedAt": Int64(Date().timeIntervalSince1970) - 30,
+            "lastFinishedAt": Int64(Date().timeIntervalSince1970),
+            "lastSummary": [
+                "total": 154, "available": 9, "unavailable": 0,
+                "error": 83, "unchecked": 0, "skipped": 62, "cancelled": true,
+            ],
+        ])
+
+        XCTAssertFalse(store.isModelCheckRunning)
+        let log = try XCTUnwrap(store.gatewaySettings.automationRunLogs.first)
+        XCTAssertEqual(log.outcome, .cancelled, "取消的巡检不能被记成成功/失败")
+        XCTAssertNotNil(log.finishedAt)
+        XCTAssertEqual(log.summary, "已取消 · 可用 9 · 异常 83")
+        XCTAssertEqual(store.automationTasks.first?.lastRunStatus, "cancelled")
+        XCTAssertEqual(store.automationTasks.first?.lastRunSummary, "已取消 · 可用 9 · 异常 83")
+    }
+
+    /// 正常跑完的巡检仍要记为「成功」，不能被取消逻辑误伤。
+    func testModelCheckIdleWithoutCancelSettlesRunLogAsSuccess() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-idle-success-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let store = GatewayStore(settingsStorage: GatewaySettingsStorage(fileURL: settingsURL))
+
+        let task = GatewayAutomationTask(name: "账号模型健康巡检", hours: [9])
+        store.addAutomationTask(task)
+        store.recordAutomationRunStart(
+            taskId: task.id,
+            taskName: task.name,
+            taskType: .modelHealthCheck,
+            startedAt: Int64(Date().timeIntervalSince1970) - 30
+        )
+        let taskIdx = try XCTUnwrap(store.gatewaySettings.automationTasks.firstIndex { $0.id == task.id })
+        store.gatewaySettings.automationTasks[taskIdx].lastRunStatus = "running"
+
+        store.isModelCheckRunning = true
+        store.updateModelCheckJobStatus(from: [
+            "running": false,
+            "scope": "all",
+            "done": 154,
+            "total": 154,
+            "current": "",
+            "startedAt": Int64(Date().timeIntervalSince1970) - 30,
+            "lastFinishedAt": Int64(Date().timeIntervalSince1970),
+            "lastSummary": [
+                "total": 154, "available": 60, "unavailable": 0,
+                "error": 4, "unchecked": 0, "skipped": 90, "cancelled": false,
+            ],
+        ])
+
+        let log = try XCTUnwrap(store.gatewaySettings.automationRunLogs.first)
+        XCTAssertEqual(log.outcome, .success)
+        XCTAssertNotNil(log.finishedAt)
+        XCTAssertEqual(log.cancelled, nil)
+        XCTAssertEqual(log.summary, "可用 60 · 异常 4")
+        XCTAssertEqual(store.automationTasks.first?.lastRunStatus, "success")
+    }
+
+    /// 网关空闲但记录仍停在「进行中」（App 被杀、推送丢失等历史遗留）要能自动收尾。
+    func testStaleUnfinishedRunLogIsRepairedWhenGatewayIsIdle() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-stale-runlog-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let task = GatewayAutomationTask(name: "5小时额度对齐巡检", hours: [5, 10, 15, 20])
+        store.addAutomationTask(task)
+
+        // 一条两小时前开始、永远没有结束时间的遗留记录
+        let staleStart = Int64(Date().timeIntervalSince1970) - 7200
+        store.recordAutomationRunStart(
+            taskId: task.id, taskName: task.name, taskType: .modelHealthCheck, startedAt: staleStart
+        )
+        XCTAssertEqual(store.gatewaySettings.automationRunLogs.first?.outcome, .running)
+
+        // 网关空闲上报：宽限期已过，遗留记录按「已取消」收尾
+        store.updateModelCheckJobStatus(from: [
+            "running": false,
+            "scope": "all",
+            "done": 0,
+            "total": 0,
+            "current": "",
+            "startedAt": staleStart,
+        ])
+
+        let log = try XCTUnwrap(store.gatewaySettings.automationRunLogs.first)
+        XCTAssertEqual(log.outcome, .cancelled)
+        let finishedAt = try XCTUnwrap(log.finishedAt)
+        XCTAssertGreaterThanOrEqual(finishedAt, staleStart, "结束时间不能早于开始时间")
+    }
+
+    /// 刚发起、网关还没来得及上报 running 的巡检，不能被宽限期内的清理误判为「已取消」。
+    func testFreshUnfinishedRunLogIsNotSweptByStaleRepair() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-fresh-runlog-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let store = GatewayStore(settingsStorage: GatewaySettingsStorage(fileURL: settingsURL))
+
+        let task = GatewayAutomationTask(name: "账号模型健康巡检", hours: [9])
+        store.addAutomationTask(task)
+        store.recordAutomationRunStart(
+            taskId: task.id,
+            taskName: task.name,
+            taskType: .modelHealthCheck,
+            startedAt: Int64(Date().timeIntervalSince1970)
+        )
+
+        store.updateModelCheckJobStatus(from: [
+            "running": false,
+            "scope": "all",
+            "done": 0,
+            "total": 0,
+            "current": "",
+            "startedAt": Int64(Date().timeIntervalSince1970),
+        ])
+
+        XCTAssertEqual(store.gatewaySettings.automationRunLogs.first?.outcome, .running)
+        XCTAssertTrue(store.gatewaySettings.automationRunLogs.first?.isUnfinished == true)
+    }
+
     /// 模拟网关进程（Rust）直接改写 settings 文件：追加执行日志并更新任务运行态。
     private func simulateGatewaySettingsWrite(
         at url: URL,
@@ -1069,7 +1289,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(initialToken.hasPrefix("cdx_"))
 
         let result = await store.rotateAuthToken()
-        XCTAssertTrue(result.success)
+        XCTAssertTrue(result.success, "rotateAuthToken 失败：\(result.message)")
         XCTAssertNotEqual(store.localToken, initialToken)
         XCTAssertTrue(store.localToken.hasPrefix("cdx_"))
         XCTAssertEqual(GatewaySupervisor.shared.localToken, store.localToken)

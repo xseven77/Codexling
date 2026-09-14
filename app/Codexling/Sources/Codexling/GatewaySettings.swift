@@ -127,6 +127,26 @@ public struct GatewayAutomationTask: Codable, Identifiable, Equatable, Sendable 
     }
 }
 
+/// 一次自动化巡检的最终结果。
+///
+/// `cancelled` 必须与「失败」区分：用户主动取消巡检不代表模型不可用，
+/// 若把它记成失败会污染成功率统计（历史 bug：取消后记录还会停在「进行中」）。
+public enum GatewayAutomationRunOutcome: String, Sendable {
+    case running
+    case success
+    case failed
+    case cancelled
+
+    public var label: String {
+        switch self {
+        case .running: "进行中"
+        case .success: "成功"
+        case .failed: "失败"
+        case .cancelled: "已取消"
+        }
+    }
+}
+
 public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var taskId: String
@@ -136,6 +156,13 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
     public var finishedAt: Int64?
     public var isSuccess: Bool?
     public var summary: String?
+    /// 本次巡检是否由用户取消。与 `isSuccess == false` 并存：取消同样不算成功，
+    /// 但展示为「已取消」而不是「失败」。旧记录与网关进程可能没有该字段。
+    public var cancelled: Bool?
+
+    /// 网关进程（Rust）为取消的巡检写的摘要前缀，App 与网关共用同一份文案。
+    /// 即使取消标记在跨进程写回时丢失，也能靠摘要认出「已取消」。
+    public static let cancelledSummaryPrefix = "已取消"
 
     public var idGenerator: String { id }
 
@@ -147,7 +174,8 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         startedAt: Int64,
         finishedAt: Int64? = nil,
         isSuccess: Bool? = nil,
-        summary: String? = nil
+        summary: String? = nil,
+        cancelled: Bool? = nil
     ) {
         self.id = id
         self.taskId = taskId
@@ -157,11 +185,23 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         self.finishedAt = finishedAt
         self.isSuccess = isSuccess
         self.summary = summary
+        self.cancelled = cancelled
     }
 
     public var durationMs: Int64? {
         guard let finishedAt else { return nil }
         return max(0, finishedAt - startedAt)
+    }
+
+    /// 记录是否还停在「进行中」（没有结束时点）。
+    public var isUnfinished: Bool { finishedAt == nil }
+
+    /// 展示用结果：取消优先于成功/失败，避免取消被记成失败或成功。
+    public var outcome: GatewayAutomationRunOutcome {
+        guard finishedAt != nil else { return .running }
+        if cancelled == true { return .cancelled }
+        if let summary, summary.hasPrefix(Self.cancelledSummaryPrefix) { return .cancelled }
+        return isSuccess == true ? .success : .failed
     }
 
     /// 容错解码：执行日志由网关进程（Rust）与 App 共同写入同一个文件，
@@ -177,6 +217,7 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         finishedAt = try container.decodeIfPresent(Int64.self, forKey: .finishedAt)
         isSuccess = try container.decodeIfPresent(Bool.self, forKey: .isSuccess)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        cancelled = try container.decodeIfPresent(Bool.self, forKey: .cancelled)
     }
 
     public var durationText: String {

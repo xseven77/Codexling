@@ -7,14 +7,26 @@ public struct GatewayModelHealthSummary: Codable, Sendable {
     public let error: Int
     public let unchecked: Int
     public let skipped: Int
+    /// 巡检是否被用户取消。网关（Rust）在 `finish_job` 写入的摘要里带该字段，
+    /// 仅靠 `done < total` 猜取消会误判，因此这里显式解码。
+    public let cancelled: Bool
 
-    public init(total: Int = 0, available: Int = 0, unavailable: Int = 0, error: Int = 0, unchecked: Int = 0, skipped: Int = 0) {
+    public init(
+        total: Int = 0,
+        available: Int = 0,
+        unavailable: Int = 0,
+        error: Int = 0,
+        unchecked: Int = 0,
+        skipped: Int = 0,
+        cancelled: Bool = false
+    ) {
         self.total = total
         self.available = available
         self.unavailable = unavailable
         self.error = error
         self.unchecked = unchecked
         self.skipped = skipped
+        self.cancelled = cancelled
     }
 
     public init(from decoder: Decoder) throws {
@@ -25,6 +37,7 @@ public struct GatewayModelHealthSummary: Codable, Sendable {
         self.error = (try? container.decode(Int.self, forKey: .error)) ?? 0
         self.unchecked = (try? container.decode(Int.self, forKey: .unchecked)) ?? 0
         self.skipped = (try? container.decode(Int.self, forKey: .skipped)) ?? 0
+        self.cancelled = (try? container.decode(Bool.self, forKey: .cancelled)) ?? false
     }
 }
 

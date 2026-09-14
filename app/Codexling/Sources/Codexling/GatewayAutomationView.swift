@@ -654,6 +654,13 @@ public struct GatewayAutomationView: View {
                 Text("执行失败")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Color.red)
+            } else if task.lastRunStatus == "cancelled" {
+                Image(systemName: "slash.circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.codexMuted)
+                Text("已取消")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.codexMuted)
             } else {
                 Text("等待下个周期")
                     .font(.system(size: 10))
@@ -1197,11 +1204,15 @@ struct AutomationRunLogSheet: View {
     @State private var logs: [GatewayAutomationRunLog] = []
     @State private var isRunningNow = false
     @State private var currentPage = 1
+    /// 点击展开的执行记录 id，用于查看该次执行的成功/错误详情。
+    @State private var expandedLogIDs: Set<String> = []
 
     private let pageSize = 20
 
-    private var successCount: Int { logs.filter { $0.isSuccess == true }.count }
-    private var failCount: Int { logs.filter { $0.isSuccess == false }.count }
+    private var successCount: Int { logs.filter { $0.outcome == .success }.count }
+    private var failCount: Int { logs.filter { $0.outcome == .failed }.count }
+    private var cancelledCount: Int { logs.filter { $0.outcome == .cancelled }.count }
+    private var runningCount: Int { logs.filter { $0.outcome == .running }.count }
     private var totalPages: Int { max(1, (logs.count + pageSize - 1) / pageSize) }
     private var pageStartIndex: Int { min((currentPage - 1) * pageSize, logs.count) }
     private var pageEndIndex: Int { min(pageStartIndex + pageSize, logs.count) }
@@ -1242,6 +1253,15 @@ struct AutomationRunLogSheet: View {
         .frame(height: maximumHeight)
         .onAppear {
             reload()
+        }
+        .task {
+            // 弹窗打开期间持续同步：巡检被取消/跑完后，停在「进行中」的那条记录
+            // 必须立刻变成「已取消/成功/失败」，否则用户看到的就还是「进行中」。
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                reload()
+            }
         }
     }
 
@@ -1305,6 +1325,22 @@ struct AutomationRunLogSheet: View {
                 Text("失败 \(failCount)")
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(Color.codexMuted)
+            }
+            if cancelledCount > 0 {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.codexMuted).frame(width: 6, height: 6)
+                    Text("已取消 \(cancelledCount)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted)
+                }
+            }
+            if runningCount > 0 {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.orange.opacity(0.85)).frame(width: 6, height: 6)
+                    Text("进行中 \(runningCount)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted)
+                }
             }
 
             Spacer()
@@ -1440,65 +1476,240 @@ struct AutomationRunLogSheet: View {
     }
 
     private func logRow(_ log: GatewayAutomationRunLog) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            // 状态圆点
-            Circle()
-                .fill(color(for: log))
-                .frame(width: 7, height: 7)
+        let isExpanded = expandedLogIDs.contains(log.id)
 
-            // 开始时间
-            Text(log.startDate.formatted(date: .numeric, time: .standard))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color.codexInk)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .frame(width: 148, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isExpanded {
+                        expandedLogIDs.remove(log.id)
+                    } else {
+                        expandedLogIDs.insert(log.id)
+                    }
+                }
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    // 状态圆点
+                    Circle()
+                        .fill(color(for: log))
+                        .frame(width: 7, height: 7)
 
-            // 耗时胶囊
-            Text(log.durationText)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.codexMuted)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .lineLimit(1)
-                .frame(width: 74, alignment: .leading)
+                    // 开始时间
+                    Text(log.startDate.formatted(date: .numeric, time: .standard))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(width: 148, alignment: .leading)
 
-            // 结果标签
-            Text(resultLabel(for: log))
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(color(for: log))
-                .frame(width: 50, alignment: .leading)
-                .lineLimit(1)
+                    // 耗时胶囊
+                    Text(log.durationText)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .lineLimit(1)
+                        .frame(width: 74, alignment: .leading)
 
-            // 摘要
-            if let summary = log.summary, !summary.isEmpty {
-                Text(summary)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.codexMuted)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            } else {
-                Spacer(minLength: 0)
+                    // 结果标签
+                    Text(resultLabel(for: log))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(color(for: log))
+                        .frame(width: 50, alignment: .leading)
+                        .lineLimit(1)
+
+                    // 摘要
+                    if let summary = log.summary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.codexMuted)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted.opacity(0.7))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "收起该次执行详情" : "点击展开该次执行的成功/错误详情")
+
+            if isExpanded {
+                logDetail(log)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.6)
+                .stroke(
+                    isExpanded ? color(for: log).opacity(0.4) : Color.codexLine.opacity(0.25),
+                    lineWidth: 0.6
+                )
         )
     }
 
+    /// 单次执行的详情：精确时点、完整摘要，以及「巡检中」记录正在进行的逐条探测结果。
+    private func logDetail(_ log: GatewayAutomationRunLog) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .overlay(Color.codexLine.opacity(0.25))
+                .padding(.top, 2)
+
+            HStack(alignment: .top, spacing: 6) {
+                Text("开始")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 34, alignment: .leading)
+                Text(log.startDate.formatted(date: .numeric, time: .standard))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+            }
+
+            HStack(alignment: .top, spacing: 6) {
+                Text("结束")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 34, alignment: .leading)
+                Text(log.finishedAt.map { Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .numeric, time: .standard) } ?? "尚未结束")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(log.isUnfinished ? Color.orange : Color.codexInk)
+            }
+
+            HStack(alignment: .top, spacing: 6) {
+                Text("结果")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 34, alignment: .leading)
+                Text("\(resultLabel(for: log)) · 耗时 \(log.durationText)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(color(for: log))
+            }
+
+            HStack(alignment: .top, spacing: 6) {
+                Text("摘要")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.codexMuted)
+                    .frame(width: 34, alignment: .leading)
+                Text(log.summary?.isEmpty == false ? log.summary! : (log.isUnfinished ? "巡检进行中，尚未生成摘要" : "网关未返回摘要"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if log.isUnfinished {
+                liveProbeDetail
+            }
+        }
+        .textSelection(.enabled)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.codexCard.opacity(0.7), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    /// 「巡检中」记录展开后展示正在进行的逐条探测结果（成功/失败/异常 + 原因）。
+    @ViewBuilder
+    private var liveProbeDetail: some View {
+        let status = store.modelCheckStatus
+        if store.isModelCheckRunning, let status, !status.results.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("本次巡检实时探测结果")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+                    Text("成功 \(status.results.filter { $0.status == "available" }.count)")
+                        .foregroundStyle(Color.green)
+                    Text("失败 \(status.results.filter { $0.status == "unavailable" || $0.status == "error" }.count)")
+                        .foregroundStyle(Color.red)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10, design: .monospaced))
+
+                ForEach(Array(status.results.suffix(50).enumerated()), id: \.offset) { _, result in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(probeStatusLabel(result.status))
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(probeStatusColor(result.status))
+                            .frame(width: 30, alignment: .leading)
+                        Text(result.scopedId)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Color.codexInk)
+                        if let latencyMs = result.latencyMs {
+                            Text("\(latencyMs)ms")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                        Spacer(minLength: 6)
+                        if let reason = result.reason, !reason.isEmpty {
+                            Text(reason)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: 190, alignment: .trailing)
+                        }
+                    }
+                }
+
+                if status.results.count > 50 {
+                    Text("仅展示最近 50 条，共 \(status.results.count) 条")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Color.codexMuted)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.codexMist.opacity(0.45), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            Text("等待网关返回本次巡检的逐条探测结果…")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.codexMuted)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.codexMist.opacity(0.45), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+    }
+
+    private func probeStatusLabel(_ status: String) -> String {
+        switch status {
+        case "available": "成功"
+        case "unavailable": "失败"
+        case "error": "异常"
+        case "skipped": "跳过"
+        default: "未知"
+        }
+    }
+
+    private func probeStatusColor(_ status: String) -> Color {
+        switch status {
+        case "available": Color.green
+        case "unavailable": Color.red
+        case "error": Color.orange
+        default: Color.codexMuted
+        }
+    }
+
     private func resultLabel(for log: GatewayAutomationRunLog) -> String {
-        guard let isSuccess = log.isSuccess else { return "进行中" }
-        return isSuccess ? "成功" : "失败"
+        log.outcome.label
     }
 
     private func color(for log: GatewayAutomationRunLog) -> Color {
-        guard let isSuccess = log.isSuccess else { return Color.orange.opacity(0.85) }
-        return isSuccess ? Color.green.opacity(0.85) : Color.red.opacity(0.85)
+        switch log.outcome {
+        case .running: Color.orange.opacity(0.85)
+        case .success: Color.green.opacity(0.85)
+        case .failed: Color.red.opacity(0.85)
+        case .cancelled: Color.codexMuted
+        }
     }
 }

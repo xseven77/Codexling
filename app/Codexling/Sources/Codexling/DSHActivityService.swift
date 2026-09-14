@@ -1,9 +1,14 @@
 import CZSTD
 import Foundation
 
-/// 读取 Deepseek Harness 的会话日志（~/.dsh/sessions/<workspace>/<session>/session.jsonl.zstd），
+/// 读取 Deepseek Harness 的会话日志（`~/.dsh/sessions/<workspace>/<session>/session.vN.jsonl.zstd`），
 /// 把最近会话的事件映射成 Codex 活动快照。DSH 会话是 zstd 压缩的 JSONL，逐帧追加写入，
 /// 这里只解压末尾少量帧来推断当前状态，避免每次解压整份日志。
+///
+/// 日志名带 DSH 的**会话格式 generation**：v0 沿用 `session.jsonl`，其后每一代在
+/// `.jsonl` 前插入小写 `.vN`（当前为 `session.v3.jsonl.zstd`）。DSH 自己的运行时按
+/// “数值最高的 generation”选择日志，本服务必须用同一规则发现文件：写死某个文件名会在
+/// DSH 换代后静默只看到已停写的旧会话，表现为「DSH 明明有任务，App 却一直空闲」。
 struct DSHActivityService: Sendable {
     let sessionsRoot: URL
 
@@ -67,10 +72,70 @@ struct DSHActivityService: Sendable {
         let url: URL
         let sessionID: String
         let modifiedAt: Date
+        /// DSH 会话格式 generation：0 = `session.jsonl`，N = `session.vN.jsonl`。
+        let formatVersion: Int
+    }
+
+    /// 解析一份 DSH 会话日志的文件名，返回它的 generation。
+    ///
+    /// 规范名由 DSH 自己生成（`sessionFormatLogFilename`）：v0 是 `session.jsonl`，
+    /// 其后每代在 `.jsonl` 前插入小写 `.vN`；压缩后缀为 `.zstd` 或空。其他文件
+    /// （`session.lock`、迁移临时文件等）返回 nil。
+    static func logGeneration(ofFileName name: String) -> Int? {
+        let stem: String
+        if name.hasSuffix(".jsonl.zstd") {
+            stem = String(name.dropLast(".jsonl.zstd".count))
+        } else if name.hasSuffix(".jsonl") {
+            stem = String(name.dropLast(".jsonl".count))
+        } else {
+            return nil
+        }
+        if stem == "session" { return 0 }
+        guard stem.hasPrefix("session.v") else { return nil }
+        let digits = stem.dropFirst("session.v".count)
+        guard !digits.isEmpty,
+              digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let version = Int(digits),
+              // 拒绝 `v01` 这类非规范名，避免与 DSH 的选择规则分叉。
+              String(version) == digits
+        else { return nil }
+        return version
+    }
+
+    /// 一个会话目录中数值最高的那一代日志。
+    ///
+    /// 格式迁移可能在同目录留下旧代与新代两份文件；只有最高代记录着会话的当前内容。
+    /// 同一代同时存在压缩与未压缩两份是 DSH 明令禁止的（一个 root 只属于一种编码），
+    /// 真遇到时优先压缩版，保证结果与遍历顺序无关。
+    func sessionLogFile(in sessionDir: URL) -> (url: URL, formatVersion: Int, modifiedAt: Date)? {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: sessionDir,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        var best: (url: URL, formatVersion: Int, modifiedAt: Date)?
+        for entry in entries {
+            guard let version = Self.logGeneration(ofFileName: entry.lastPathComponent) else { continue }
+            let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            guard let current = best else {
+                best = (entry, version, modified)
+                continue
+            }
+            let isNewerGeneration = version > current.formatVersion
+            let winsTie = version == current.formatVersion
+                && entry.lastPathComponent.hasSuffix(".zstd")
+                && !current.url.lastPathComponent.hasSuffix(".zstd")
+            if isNewerGeneration || winsTie {
+                best = (entry, version, modified)
+            }
+        }
+        return best
     }
 
     func latestSessionFile(now: Date = Date()) -> SessionFile? {
-        var candidates: [SessionFile] = []
+        var latest: SessionFile?
         let workspaceDirs = (try? FileManager.default.contentsOfDirectory(
             at: sessionsRoot,
             includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
@@ -84,19 +149,19 @@ struct DSHActivityService: Sendable {
                 options: [.skipsHiddenFiles]
             )) ?? []
             for sessionDir in sessionDirs {
-                let file = sessionDir.appendingPathComponent("session.jsonl.zstd")
-                guard FileManager.default.fileExists(atPath: file.path) else { continue }
-                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                candidates.append(SessionFile(
-                    url: file,
+                guard let log = sessionLogFile(in: sessionDir) else { continue }
+                let candidate = SessionFile(
+                    url: log.url,
                     sessionID: sessionDir.lastPathComponent,
-                    modifiedAt: modified
-                ))
+                    modifiedAt: log.modifiedAt,
+                    formatVersion: log.formatVersion
+                )
+                if latest == nil || candidate.modifiedAt > latest!.modifiedAt {
+                    latest = candidate
+                }
             }
         }
-
-        return candidates.max { $0.modifiedAt < $1.modifiedAt }
+        return latest
     }
 
     func countTodaySessions(now: Date = Date(), calendar: Calendar = .current) -> Int {
@@ -114,11 +179,8 @@ struct DSHActivityService: Sendable {
                 options: [.skipsHiddenFiles]
             )) ?? []
             for sessionDir in sessionDirs {
-                let file = sessionDir.appendingPathComponent("session.jsonl.zstd")
-                guard FileManager.default.fileExists(atPath: file.path) else { continue }
-                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                if calendar.isDateInToday(modified) {
+                guard let log = sessionLogFile(in: sessionDir) else { continue }
+                if calendar.isDateInToday(log.modifiedAt) {
                     count += 1
                 }
             }
@@ -129,21 +191,32 @@ struct DSHActivityService: Sendable {
     // MARK: - zstd tail decompression
 
     func decompressedTailText(of url: URL, maxFrames: Int = 64) -> String? {
-        guard let data = try? Data(contentsOf: url),
-              let tail = decompressedTail(from: data, maxFrames: maxFrames),
-              let text = String(data: tail, encoding: .utf8) else {
-            return nil
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let tail = decompressedTail(from: data, maxFrames: maxFrames),
+           let text = String(data: tail, encoding: .utf8) {
+            return text
         }
-        return text
+        // `compression: 'none'` 的日志是纯文本行，没有 zstd 帧可解。
+        return plainText(data, selecting: { Array($0.suffix(maxFrames)) })
     }
 
     func decompressedHeadText(of url: URL, maxFrames: Int = 32) -> String? {
-        guard let data = try? Data(contentsOf: url),
-              let head = decompressedHead(from: data, maxFrames: maxFrames),
-              let text = String(data: head, encoding: .utf8) else {
-            return nil
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let head = decompressedHead(from: data, maxFrames: maxFrames),
+           let text = String(data: head, encoding: .utf8) {
+            return text
         }
-        return text
+        return plainText(data, selecting: { Array($0.prefix(maxFrames)) })
+    }
+
+    /// 未压缩日志的回退读取：按行取头/尾若干行。
+    private func plainText(_ data: Data, selecting: ([String]) -> [String]) -> String? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let lines = text
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+        let selected = selecting(lines)
+        return selected.isEmpty ? nil : selected.joined(separator: "\n")
     }
 
     func decompressedTail(from data: Data, maxFrames: Int = 64) -> Data? {
