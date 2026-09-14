@@ -303,7 +303,10 @@ public final class GatewayStore {
         didSet {
             if oldValue != selectedTab {
                 if selectedTab == .connect {
-                    Task { await refreshModelHealth() }
+                    Task {
+                        await refreshModelHealth()
+                        await fetchV1Models()
+                    }
                 } else if selectedTab == .overview {
                     Task { await refreshTelemetryAnalytics() }
                 } else if selectedTab == .analytics {
@@ -693,6 +696,12 @@ public final class GatewayStore {
     public var modelCheckFinishToken: UUID?
     private var modelCheckPollingTask: Task<Void, Never>?
 
+    // 最终 /v1/models 接口已发布模型列表
+    public var v1Models: [GatewayV1ModelItem] = []
+    public var isV1ModelsLoading: Bool = false
+    public var v1ModelsErrorMessage: String? = nil
+    public var v1ModelsLastFetchedAt: Date? = nil
+
     // 分页状态管理
     public var requestsCurrentPage: Int = 1 {
         didSet {
@@ -840,6 +849,7 @@ public final class GatewayStore {
         self.dshConfigurator = DSHGatewayConfigurator()
         loadCustomModels()
         loadCachedModelHealth()
+        loadCachedV1Models()
         registerAgentStatusObserver()
         if modelHealthResponse != nil {
             Task { [weak self] in
@@ -865,6 +875,7 @@ public final class GatewayStore {
         self.gatewaySettings = settingsStorage.load()
         loadCustomModels()
         loadCachedModelHealth()
+        loadCachedV1Models()
         registerAgentStatusObserver()
         if modelHealthResponse != nil {
             Task { [weak self] in
@@ -1182,6 +1193,71 @@ public final class GatewayStore {
         }
     }
 
+    // MARK: - /v1/models 缓存持久化与动态拉取
+    public static var v1ModelsCacheURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/gateway-v1-models-cache.json")
+    }
+
+    public func loadCachedV1Models() {
+        let url = Self.v1ModelsCacheURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let resp = try decoder.decode(GatewayV1ModelsResponse.self, from: data)
+            self.v1Models = resp.data
+        } catch {
+            print("[GatewayStore] loadCachedV1Models error: \(error)")
+        }
+    }
+
+    public func persistV1Models(_ items: [GatewayV1ModelItem]) {
+        let url = Self.v1ModelsCacheURL
+        do {
+            let resp = GatewayV1ModelsResponse(object: "list", data: items)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted]
+            let data = try encoder.encode(resp)
+            let parent = url.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[GatewayStore] persistV1Models error: \(error)")
+        }
+    }
+
+    public func fetchV1Models() async {
+        guard let base = GatewaySupervisor.shared.endpoint else { return }
+        let localToken = GatewaySupervisor.shared.localToken
+        let url = base.appendingPathComponent("v1/models")
+        var req = URLRequest(url: url)
+        if !localToken.isEmpty {
+            req.setValue("Bearer \(localToken)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = 6
+
+        isV1ModelsLoading = true
+        defer { isV1ModelsLoading = false }
+
+        do {
+            let (data, response) = try await URLSession.loopbackDirect.data(for: req)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                let decoder = JSONDecoder()
+                let resp = try decoder.decode(GatewayV1ModelsResponse.self, from: data)
+                self.v1Models = resp.data
+                self.v1ModelsErrorMessage = nil
+                self.v1ModelsLastFetchedAt = Date()
+                self.persistV1Models(resp.data)
+            } else if let http = response as? HTTPURLResponse {
+                self.v1ModelsErrorMessage = "HTTP \(http.statusCode)"
+            }
+        } catch {
+            print("[GatewayStore] fetchV1Models error: \(error)")
+            self.v1ModelsErrorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - 模型健康巡检 (Model Health Check)
     public func refreshModelHealth() async {
         guard let base = GatewaySupervisor.shared.endpoint else { return }
@@ -1213,6 +1289,7 @@ public final class GatewayStore {
                 }
                 // When health state refreshes, sync any configured agents (Hermes/Pi) so broken models are removed
                 await self.syncConfiguredAgentCatalogsIfNeeded()
+                await self.fetchV1Models()
             }
         } catch {
             print("[GatewayStore] refreshModelHealth error: \(error)")

@@ -54,6 +54,7 @@ struct GatewayConnectView: View {
         }
         .task {
             await store.refreshModelHealth()
+            await store.fetchV1Models()
             await store.pollModelCheckStatus()
             if store.isModelCheckRunning {
                 store.startPollingModelCheckStatus()
@@ -64,6 +65,9 @@ struct GatewayConnectView: View {
             onToast(message, store.modelCheckFinishSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle", store.modelCheckFinishSuccess)
             store.modelCheckFinishMessage = nil
             store.modelCheckFinishToken = nil
+            Task {
+                await store.fetchV1Models()
+            }
         }
         .alert("确认重新生成 Gateway 访问 Token？", isPresented: $showRotateTokenConfirm) {
             Button("取消", role: .cancel) {}
@@ -362,6 +366,9 @@ struct GatewayConnectView: View {
                         .stroke(Color.accentColor.opacity(0.2), lineWidth: 0.8)
                 )
             }
+
+            // 最终 /v1/models 可访问模型列表（默认折叠，点击展开）
+            GatewayV1ModelsCollapsibleSection(store: store, onToast: onToast)
 
             // Minimal dynamic pass-through footer
             HStack(spacing: 6) {
@@ -2254,5 +2261,349 @@ private struct GatewayAccountModelsDrawer: View {
             )
         }
     }
+}
 
+// MARK: - 最终 /v1/models 可访问模型列表（默认折叠组件）
+
+@MainActor
+private struct GatewayV1ModelsCollapsibleSection: View {
+    @Bindable var store: GatewayStore
+    let onToast: (String, String, Bool) -> Void
+
+    @State private var isExpanded: Bool = false
+    @State private var searchText: String = ""
+    @State private var copiedModelId: String? = nil
+    @State private var copiedAllIDs: Bool = false
+
+    private var displayModels: [GatewayV1ModelItem] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.isEmpty {
+            return store.v1Models
+        }
+        return store.v1Models.filter { item in
+            item.id.lowercased().contains(trimmed) ||
+            item.effectiveDisplayName.lowercased().contains(trimmed) ||
+            item.effectiveProvider.lowercased().contains(trimmed) ||
+            (item.account?.lowercased().contains(trimmed) ?? false) ||
+            (item.description?.lowercased().contains(trimmed) ?? false)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 折叠条头部
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        isExpanded.toggle()
+                    }
+                    if isExpanded && store.v1Models.isEmpty {
+                        Task {
+                            await store.fetchV1Models()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "list.bullet.rectangle.portrait.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.accentColor)
+
+                        Text("最终 /v1/models 可访问模型列表")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.codexInk)
+
+                        if store.isV1ModelsLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.7)
+                        } else {
+                            Text("\(store.v1Models.count) 款可用")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(store.v1Models.isEmpty ? Color.codexMuted : Color.green)
+                                .padding(.horizontal, 5.5)
+                                .padding(.vertical, 1.5)
+                                .background(
+                                    (store.v1Models.isEmpty ? Color.codexLine.opacity(0.15) : Color.green.opacity(0.12)),
+                                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                )
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Text(isExpanded ? "收起" : "展开查看")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.codexMuted)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.codexMuted)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                // 快捷操作：刷新 & 复制全部
+                HStack(spacing: 6) {
+                    Divider()
+                        .frame(height: 12)
+                        .overlay(Color.codexLine.opacity(0.3))
+
+                    Button {
+                        Task {
+                            await store.fetchV1Models()
+                            onToast("已拉取 /v1/models 最新模型列表", "arrow.clockwise", true)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(store.isV1ModelsLoading ? Color.accentColor : Color.codexMuted)
+                            .rotationEffect(.degrees(store.isV1ModelsLoading ? 360 : 0))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isV1ModelsLoading)
+                    .help("重新请求网关 /v1/models 接口刷新列表")
+
+                    Button {
+                        let allIDs = store.v1Models.map(\.id).joined(separator: ", ")
+                        guard !allIDs.isEmpty else {
+                            onToast("暂无可复制的模型 ID", "exclamationmark.triangle", false)
+                            return
+                        }
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(allIDs, forType: .string)
+                        copiedAllIDs = true
+                        onToast("已复制全部 /v1/models 模型 ID", "checkmark.circle.fill", true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            copiedAllIDs = false
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: copiedAllIDs ? "checkmark" : "doc.on.doc")
+                            Text(copiedAllIDs ? "已复制" : "复制全部 ID")
+                        }
+                        .font(.system(size: 9.5, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .foregroundStyle(copiedAllIDs ? Color.green : Color.codexInk)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .stroke(Color.codexLine.opacity(0.3), lineWidth: 0.6)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("复制所有 /v1/models 接口导出的模型调用标识 (逗号分隔)")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.codexBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.8)
+            )
+
+            // 展开内容
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    // 搜索过滤栏与说明
+                    HStack(spacing: 8) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.codexMuted)
+                            TextField("搜索模型 ID、提供方、账号...", text: $searchText)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 10.5))
+                            if !searchText.isEmpty {
+                                Button {
+                                    searchText = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.codexMuted)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.codexBackground.opacity(0.8), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.codexLine.opacity(0.25), lineWidth: 0.6)
+                        )
+
+                        Spacer()
+
+                        Text("此列表与 GET /v1/models 端点响应严格保持一致")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+
+                    // 表头
+                    HStack(spacing: 8) {
+                        Text("模型 ID (实际调用标识)")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("所属供应商 / 账号来源")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("额度 / 调度特性")
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                        Text("操作")
+                            .frame(width: 76, alignment: .trailing)
+                    }
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.codexMist.opacity(0.4), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+                    // 模型清单滚动区
+                    if displayModels.isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: store.isV1ModelsLoading ? "arrow.triangle.2.circlepath" : "tray")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Color.codexMuted)
+                            Text(
+                                store.isV1ModelsLoading
+                                    ? "正在从 /v1/models 端点拉取最新模型..."
+                                    : (searchText.isEmpty ? "当前 /v1/models 未返回模型数据（网关未运行或尚无就绪账号）" : "未匹配到相关模型")
+                            )
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.codexMuted)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 3) {
+                                ForEach(displayModels) { model in
+                                    let isCopied = copiedModelId == model.id
+                                    HStack(spacing: 8) {
+                                        // 1. 模型 ID
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "cube.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundStyle(Color(nsColor: model.providerColor))
+
+                                            Text(model.id)
+                                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                                .foregroundStyle(Color.codexInk)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                                        .help(model.id)
+
+                                        // 2. 所属供应商 / 账号来源
+                                        HStack(spacing: 4) {
+                                            Text(model.effectiveProvider)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundStyle(Color.codexInk)
+                                                .lineLimit(1)
+
+                                            if let acc = model.account, !acc.isEmpty {
+                                                Text("(\(acc))")
+                                                    .font(.system(size: 9.5))
+                                                    .foregroundStyle(Color.codexMuted)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                                        // 3. 额度 / 特性
+                                        HStack(spacing: 4) {
+                                            if let quota = model.quotaRemaining, !quota.isEmpty {
+                                                Text(quota)
+                                                    .font(.system(size: 9.5, weight: .medium))
+                                                    .foregroundStyle(Color.green)
+                                                    .lineLimit(1)
+                                            } else if let tier = model.permissionTier, !tier.isEmpty {
+                                                Text(tier)
+                                                    .font(.system(size: 9.5))
+                                                    .foregroundStyle(Color.codexMuted)
+                                                    .lineLimit(1)
+                                            } else {
+                                                Text("可用")
+                                                    .font(.system(size: 9.5))
+                                                    .foregroundStyle(Color.green)
+                                            }
+                                        }
+                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                                        // 4. 操作按钮
+                                        Button {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(model.id, forType: .string)
+                                            copiedModelId = model.id
+                                            onToast("已复制模型 ID: \(model.id)", "checkmark", true)
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                                if copiedModelId == model.id {
+                                                    copiedModelId = nil
+                                                }
+                                            }
+                                        } label: {
+                                            HStack(spacing: 3) {
+                                                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                                Text(isCopied ? "已复制" : "复制 ID")
+                                            }
+                                            .font(.system(size: 9.5, weight: .medium))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 3)
+                                            .background(isCopied ? Color.green.opacity(0.15) : Color.codexMist, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                            .foregroundStyle(isCopied ? Color.green : Color.codexInk)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                    .stroke(isCopied ? Color.green.opacity(0.4) : Color.codexLine.opacity(0.2), lineWidth: 0.6)
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .frame(width: 76, alignment: .trailing)
+                                    }
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 4.5)
+                                    .background(Color.codexBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                        .frame(maxHeight: 250)
+                    }
+
+                    // 展开底部状态栏
+                    HStack(spacing: 8) {
+                        Text("共 \(displayModels.count) 款可用模型")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(Color.codexMuted)
+
+                        if let last = store.v1ModelsLastFetchedAt {
+                            Text("· 同步时间: \(last.formatted(date: .omitted, time: .standard))")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(Color.codexMuted.opacity(0.7))
+                        }
+
+                        Spacer()
+
+                        if let firstID = displayModels.first?.id {
+                            Text("客户端请求样例: \"model\": \"\(firstID)\"")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                .padding(10)
+                .background(Color.accentColor.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.2), lineWidth: 0.8)
+                )
+            }
+        }
+    }
 }
