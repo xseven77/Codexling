@@ -130,8 +130,14 @@ public protocol MobileSyncDataProvider: AnyObject, Sendable {
 public final class MobileSyncServer: @unchecked Sendable {
     public static let defaultPort: UInt16 = 58350
 
+    public static var defaultPluginDirectoryURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codexling/Plugins/mobile-web")
+    }
+
     public let port: NWEndpoint.Port
     public let token: String
+    public let pluginDirectoryURL: URL
     private let dataProvider: any MobileSyncDataProvider
     private let queue = DispatchQueue(label: "com.qiizo.Codexling.mobile-sync", qos: .userInitiated)
 
@@ -143,10 +149,12 @@ public final class MobileSyncServer: @unchecked Sendable {
     public init(
         port: UInt16 = MobileSyncServer.defaultPort,
         token: String,
+        pluginDirectoryURL: URL = MobileSyncServer.defaultPluginDirectoryURL,
         dataProvider: any MobileSyncDataProvider
     ) {
         self.port = NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: 58350)!
         self.token = token
+        self.pluginDirectoryURL = pluginDirectoryURL
         self.dataProvider = dataProvider
     }
 
@@ -240,7 +248,12 @@ public final class MobileSyncServer: @unchecked Sendable {
         }
 
         let method = String(parts[0])
-        let path = String(parts[1])
+        let rawPath = String(parts[1])
+
+        // Parse path and query parameters
+        let pathComponents = rawPath.components(separatedBy: "?")
+        let requestPath = pathComponents[0]
+        let queryParams = parseQuery(pathComponents.count > 1 ? pathComponents[1] : nil)
 
         var headers: [String: String] = [:]
         for line in lines.dropFirst() {
@@ -253,54 +266,145 @@ public final class MobileSyncServer: @unchecked Sendable {
             }
         }
 
-        // Public health check
-        if path == "/health" {
+        // 1. Public health check
+        if requestPath == "/health" {
             sendJSONResponse(status: 200, object: ["status": "ok"], on: connection)
             return
         }
 
-        // Bearer Token Authentication
-        guard validateAuth(headers: headers) else {
-            sendJSONResponse(status: 401, object: ["error": "unauthorized"], on: connection)
-            return
-        }
+        // 2. Mobile API Endpoints (Bearer Token or Query Token)
+        if requestPath.hasPrefix("/mobile/") {
+            guard validateAuth(headers: headers, queryParams: queryParams) else {
+                sendJSONResponse(status: 401, object: ["error": "unauthorized"], on: connection)
+                return
+            }
 
-        switch (method, path) {
-        case ("GET", "/mobile/snapshot"):
-            Task {
-                let snapshot = await self.dataProvider.makeSnapshot()
+            switch (method, requestPath) {
+            case ("GET", "/mobile/snapshot"):
+                Task {
+                    let snapshot = await self.dataProvider.makeSnapshot()
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    if let data = try? encoder.encode(snapshot),
+                       let jsonString = String(data: data, encoding: .utf8) {
+                        self.sendResponse(status: 200, headers: ["Content-Type": "application/json"], body: jsonString, on: connection)
+                    } else {
+                        self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
+                    }
+                }
+
+            case ("GET", "/mobile/pets"):
+                let pets = self.dataProvider.availablePets()
                 let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                if let data = try? encoder.encode(snapshot),
+                if let data = try? encoder.encode(pets),
                    let jsonString = String(data: data, encoding: .utf8) {
                     self.sendResponse(status: 200, headers: ["Content-Type": "application/json"], body: jsonString, on: connection)
                 } else {
                     self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
                 }
+
+            case ("GET", "/mobile/events"):
+                startSSEStream(on: connection)
+
+            default:
+                sendResponse(status: 404, headers: [:], body: "Not Found", on: connection)
             }
-
-        case ("GET", "/mobile/pets"):
-            let pets = self.dataProvider.availablePets()
-            let encoder = JSONEncoder()
-            if let data = try? encoder.encode(pets),
-               let jsonString = String(data: data, encoding: .utf8) {
-                self.sendResponse(status: 200, headers: ["Content-Type": "application/json"], body: jsonString, on: connection)
-            } else {
-                self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
-            }
-
-        case ("GET", "/mobile/events"):
-            startSSEStream(on: connection)
-
-        default:
-            sendResponse(status: 404, headers: [:], body: "Not Found", on: connection)
+            return
         }
+
+        // 3. Desktop Plugin Static Web Hosting (GET / or static files)
+        if method == "GET" {
+            servePluginStaticContent(path: requestPath, on: connection)
+            return
+        }
+
+        sendResponse(status: 404, headers: [:], body: "Not Found", on: connection)
     }
 
-    private func validateAuth(headers: [String: String]) -> Bool {
-        guard let auth = headers["authorization"] else { return false }
-        let expected = "Bearer \(token)"
-        return auth == expected
+    private func servePluginStaticContent(path: String, on connection: NWConnection) {
+        let relativePath = (path == "/" || path.isEmpty) ? "index.html" : String(path.dropFirst())
+        let fileURL = pluginDirectoryURL.appendingPathComponent(relativePath)
+
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            if let fileData = try? Data(contentsOf: fileURL) {
+                let mime = mimeType(for: fileURL.pathExtension)
+                sendRawResponse(status: 200, headers: ["Content-Type": mime], data: fileData, on: connection)
+                return
+            }
+        }
+
+        // Fallback: If root is requested but plugin not installed, serve friendly status page
+        if path == "/" || path == "/index.html" {
+            let fallbackHTML = """
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>Codexling Mobile Web</title>
+              <style>
+                body { background: #121214; color: #e4e4e7; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; box-sizing: border-box; }
+                .card { max-width: 440px; background: #18181b; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 32px; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+                h1 { color: #f59e0b; font-size: 20px; margin-top: 0; letter-spacing: -0.02em; }
+                p { color: #a1a1aa; font-size: 14px; line-height: 1.6; margin: 12px 0; }
+                .badge { display: inline-block; background: rgba(16,185,129,0.15); color: #10b981; padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 500; margin-top: 16px; }
+                .path { font-family: ui-monospace, monospace; background: #27272a; padding: 3px 8px; border-radius: 6px; font-size: 12px; color: #e4e4e7; word-break: break-all; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>Codexling Mobile Web</h1>
+                <p>Web 伴生前端插件尚未安装或尚未启用。</p>
+                <p>请将 <span class="path">mobile-web</span> 插件包导入至桌面端插件目录。</p>
+                <div class="badge">● 局域网 API 广播服务正常运行中 (端口: 58350)</div>
+              </div>
+            </body>
+            </html>
+            """
+            sendResponse(status: 200, headers: ["Content-Type": "text/html; charset=utf-8"], body: fallbackHTML, on: connection)
+            return
+        }
+
+        sendResponse(status: 404, headers: [:], body: "Not Found", on: connection)
+    }
+
+    private func parseQuery(_ query: String?) -> [String: String] {
+        guard let query else { return [:] }
+        var dict: [String: String] = [:]
+        for item in query.components(separatedBy: "&") {
+            let pair = item.components(separatedBy: "=")
+            if pair.count == 2 {
+                dict[pair[0]] = pair[1].removingPercentEncoding ?? pair[1]
+            }
+        }
+        return dict
+    }
+
+    private func validateAuth(headers: [String: String], queryParams: [String: String]) -> Bool {
+        if let auth = headers["authorization"] {
+            let expected = "Bearer \(token)"
+            if auth == expected { return true }
+        }
+        if let queryToken = queryParams["token"], queryToken == token {
+            return true
+        }
+        return false
+    }
+
+    private func mimeType(for ext: String) -> String {
+        switch ext.lowercased() {
+        case "html", "htm": "text/html; charset=utf-8"
+        case "js", "mjs": "application/javascript; charset=utf-8"
+        case "css": "text/css; charset=utf-8"
+        case "json": "application/json; charset=utf-8"
+        case "webp": "image/webp"
+        case "png": "image/png"
+        case "jpg", "jpeg": "image/jpeg"
+        case "svg": "image/svg+xml"
+        case "ico": "image/x-icon"
+        case "woff2": "font/woff2"
+        default: "application/octet-stream"
+        }
     }
 
     private func sendResponse(
@@ -309,22 +413,32 @@ public final class MobileSyncServer: @unchecked Sendable {
         body: String,
         on connection: NWConnection
     ) {
+        let bodyData = body.data(using: .utf8) ?? Data()
+        sendRawResponse(status: status, headers: headers, data: bodyData, on: connection)
+    }
+
+    private func sendRawResponse(
+        status: Int,
+        headers: [String: String],
+        data: Data,
+        on connection: NWConnection
+    ) {
         var response = "HTTP/1.1 \(status) \(statusMessage(for: status))\r\n"
         var finalHeaders = headers
-        let bodyData = body.data(using: .utf8) ?? Data()
-        finalHeaders["Content-Length"] = "\(bodyData.count)"
+        finalHeaders["Content-Length"] = "\(data.count)"
         finalHeaders["Connection"] = "close"
 
         for (k, v) in finalHeaders {
             response += "\(k): \(v)\r\n"
         }
-        response += "\r\n\(body)"
+        response += "\r\n"
 
-        if let data = response.data(using: .utf8) {
-            connection.send(content: data, completion: .contentProcessed({ _ in
-                connection.cancel()
-            }))
-        }
+        var fullData = response.data(using: .utf8) ?? Data()
+        fullData.append(data)
+
+        connection.send(content: fullData, completion: .contentProcessed({ _ in
+            connection.cancel()
+        }))
     }
 
     private func sendJSONResponse(status: Int, object: Any, on connection: NWConnection) {

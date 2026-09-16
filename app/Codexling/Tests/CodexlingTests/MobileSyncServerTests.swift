@@ -117,4 +117,10 @@ struct MobileSyncServerTests {
         try server.start()
         server.stop()
     }
+
+    @Test("MobileSyncServer default plugin directory points to Application Support")
+    func testPluginDirectoryDefault() {
+        let defaultURL = MobileSyncServer.defaultPluginDirectoryURL
+        #expect(defaultURL.path.contains("Plugins/mobile-web"))
+    }
 }
