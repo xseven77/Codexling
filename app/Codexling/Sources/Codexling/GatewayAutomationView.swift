@@ -1206,6 +1206,10 @@ struct AutomationRunLogSheet: View {
     @State private var currentPage = 1
     /// 点击展开的执行记录 id，用于查看该次执行的成功/错误详情。
     @State private var expandedLogIDs: Set<String> = []
+    /// 点击展开的单条模型探测详情 key（"\(log.id)-\(index)-\(result.scopedId)"）。
+    @State private var expandedProbeKeys: Set<String> = []
+    /// 展开记录内部的模型筛选状态（"all", "success", "fail", "skipped"），以 log.id 为键。
+    @State private var probeFilters: [String: String] = [:]
 
     private let pageSize = 20
 
@@ -1249,7 +1253,7 @@ struct AutomationRunLogSheet: View {
             }
         }
         .background(Color.codexCard)
-        .frame(minWidth: 520, idealWidth: 560)
+        .frame(minWidth: 560, idealWidth: 620)
         .frame(height: maximumHeight)
         .onAppear {
             reload()
@@ -1526,9 +1530,9 @@ struct AutomationRunLogSheet: View {
                             .foregroundStyle(Color.codexMuted)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                    } else {
-                        Spacer(minLength: 0)
                     }
+
+                    Spacer(minLength: 8)
 
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
@@ -1559,7 +1563,7 @@ struct AutomationRunLogSheet: View {
         )
     }
 
-    /// 单次执行的详情：精确时点、完整摘要，以及「巡检中」记录正在进行的逐条探测结果。
+    /// 单次执行的详情：精确时点、完整摘要，以及该次巡检的模型列表与探测详情。
     private func logDetail(_ log: GatewayAutomationRunLog) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()
@@ -1608,9 +1612,8 @@ struct AutomationRunLogSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if log.isUnfinished {
-                liveProbeDetail
-            }
+            // 模型巡检完整列表
+            modelResultsSection(for: log)
         }
         .textSelection(.enabled)
         .padding(10)
@@ -1618,66 +1621,330 @@ struct AutomationRunLogSheet: View {
         .background(Color.codexCard.opacity(0.7), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    /// 「巡检中」记录展开后展示正在进行的逐条探测结果（成功/失败/异常 + 原因）。
+    // MARK: - 单次执行的模型巡检完整列表
     @ViewBuilder
-    private var liveProbeDetail: some View {
-        let status = store.modelCheckStatus
-        if store.isModelCheckRunning, let status, !status.results.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text("本次巡检实时探测结果")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.codexInk)
-                    Text("成功 \(status.results.filter { $0.status == "available" }.count)")
-                        .foregroundStyle(Color.green)
-                    Text("失败 \(status.results.filter { $0.status == "unavailable" || $0.status == "error" }.count)")
-                        .foregroundStyle(Color.red)
-                    Spacer(minLength: 0)
-                }
-                .font(.system(size: 10, design: .monospaced))
+    private func modelResultsSection(for log: GatewayAutomationRunLog) -> some View {
+        let results = resolveProbeResults(for: log)
+        let currentFilter = probeFilters[log.id] ?? "all"
 
-                ForEach(Array(status.results.suffix(50).enumerated()), id: \.offset) { _, result in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(probeStatusLabel(result.status))
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(probeStatusColor(result.status))
-                            .frame(width: 30, alignment: .leading)
-                        Text(result.scopedId)
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(Color.codexInk)
-                        if let latencyMs = result.latencyMs {
-                            Text("\(latencyMs)ms")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(Color.codexMuted)
+        let filteredResults: [GatewayModelCheckResult] = {
+            switch currentFilter {
+            case "success":
+                return results.filter { $0.status == "available" }
+            case "fail":
+                return results.filter { $0.status == "unavailable" || $0.status == "error" }
+            case "skipped":
+                return results.filter { $0.status == "skipped" }
+            default:
+                return results
+            }
+        }()
+
+        let successCount = results.filter { $0.status == "available" }.count
+        let failCount = results.filter { $0.status == "unavailable" || $0.status == "error" }.count
+        let skippedCount = results.filter { $0.status == "skipped" }.count
+
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+                .overlay(Color.codexLine.opacity(0.25))
+                .padding(.top, 4)
+
+            HStack(spacing: 8) {
+                Text("模型巡检列表")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.codexInk)
+
+                if !results.isEmpty {
+                    Text("共 \(results.count) 个")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted)
+                }
+
+                Spacer()
+
+                if !results.isEmpty {
+                    HStack(spacing: 4) {
+                        filterChip(title: "全部 \(results.count)", isSelected: currentFilter == "all") {
+                            probeFilters[log.id] = "all"
                         }
-                        Spacer(minLength: 6)
-                        if let reason = result.reason, !reason.isEmpty {
-                            Text(reason)
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(Color.codexMuted)
-                                .lineLimit(2)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: 190, alignment: .trailing)
+                        if successCount > 0 {
+                            filterChip(title: "成功 \(successCount)", color: .green, isSelected: currentFilter == "success") {
+                                probeFilters[log.id] = "success"
+                            }
+                        }
+                        if failCount > 0 {
+                            filterChip(title: "失败 \(failCount)", color: .red, isSelected: currentFilter == "fail") {
+                                probeFilters[log.id] = "fail"
+                            }
+                        }
+                        if skippedCount > 0 {
+                            filterChip(title: "跳过 \(skippedCount)", color: .codexMuted, isSelected: currentFilter == "skipped") {
+                                probeFilters[log.id] = "skipped"
+                            }
                         }
                     }
                 }
-
-                if status.results.count > 50 {
-                    Text("仅展示最近 50 条，共 \(status.results.count) 条")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Color.codexMuted)
-                }
             }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.codexMist.opacity(0.45), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-        } else {
-            Text("等待网关返回本次巡检的逐条探测结果…")
+
+            if results.isEmpty {
+                if log.isUnfinished && store.isModelCheckRunning {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini).scaleEffect(0.7)
+                        Text("正在启动巡检并探测模型…")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.codexMist.opacity(0.45), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.codexMuted)
+                        Text("该次历史记录未保存逐个模型探测详情")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+            } else if filteredResults.isEmpty {
+                Text("无符合当前筛选条件的模型")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.codexMuted)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .background(Color.codexMist.opacity(0.35), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            } else {
+                ScrollView(showsIndicators: true) {
+                    LazyVStack(spacing: 5) {
+                        ForEach(Array(filteredResults.enumerated()), id: \.offset) { index, result in
+                            modelProbeRow(logId: log.id, index: index + 1, result: result)
+                        }
+
+                        if log.isUnfinished,
+                           store.isModelCheckRunning,
+                           let status = store.modelCheckStatus,
+                           !status.current.isEmpty,
+                           status.results.last(where: { $0.scopedId == status.current }) == nil,
+                           currentFilter == "all"
+                        {
+                            activeModelRow(index: filteredResults.count + 1, scopedId: status.current)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 1)
+                }
+                .frame(maxHeight: 280)
+            }
+        }
+    }
+
+    private func modelProbeRow(
+        logId: String,
+        index: Int,
+        result: GatewayModelCheckResult
+    ) -> some View {
+        let probeKey = "\(logId)-\(index)-\(result.scopedId)"
+        let isProbeExpanded = expandedProbeKeys.contains(probeKey)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isProbeExpanded {
+                        expandedProbeKeys.remove(probeKey)
+                    } else {
+                        expandedProbeKeys.insert(probeKey)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("\(index)")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(Color.codexMuted.opacity(0.7))
+                        .frame(width: 28, alignment: .trailing)
+
+                    probeStatusIcon(result.status)
+
+                    Text(result.scopedId)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 8)
+
+                    if let latencyMs = result.latencyMs {
+                        Text("\(latencyMs)ms")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+
+                    Text(probeStatusLabel(result.status))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(probeStatusColor(result.status))
+                        .frame(width: 38, alignment: .leading)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(Color.codexMuted.opacity(0.75))
+                        .rotationEffect(.degrees(isProbeExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isProbeExpanded ? "收起该条探测详情" : "点击展开该条探测详情")
+
+            if isProbeExpanded {
+                probeDetail(result: result)
+                    .padding(.horizontal, 9)
+                    .padding(.bottom, 8)
+            }
+        }
+        .background(Color.codexMist.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    isProbeExpanded ? probeStatusColor(result.status).opacity(0.4) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    private func activeModelRow(index: Int, scopedId: String) -> some View {
+        HStack(spacing: 8) {
+            Text("\(index)")
+                .font(.system(size: 9.5, design: .monospaced))
+                .foregroundStyle(Color.codexMuted.opacity(0.7))
+                .frame(width: 28, alignment: .trailing)
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 10, height: 10)
+            Text(scopedId)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Text("探测中")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 38, alignment: .leading)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 30)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func probeDetail(result: GatewayModelCheckResult) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Divider()
+                .overlay(Color.codexLine.opacity(0.25))
+                .padding(.bottom, 3)
+
+            detailLine(label: "模型", value: result.scopedId)
+            detailLine(label: "结果", value: "\(probeStatusLabel(result.status)) · \(result.status)")
+            detailLine(label: "耗时", value: result.latencyMs.map { "\($0)ms" } ?? "—")
+            detailLine(label: result.status == "available" ? "详情" : "原因", value: detailReason(for: result))
+        }
+        .textSelection(.enabled)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.codexCard.opacity(0.8), in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func detailLine(label: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(Color.codexMuted)
-                .padding(8)
+                .frame(width: 30, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.codexMist.opacity(0.45), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+    }
+
+    private func detailReason(for result: GatewayModelCheckResult) -> String {
+        if let reason = result.reason, !reason.isEmpty { return reason }
+        switch result.status {
+        case "available": return "探测成功，网关未返回附加信息"
+        case "skipped": return "已跳过：网关未返回跳过原因（通常是账号不可用或额度耗尽）"
+        default: return "网关未返回失败原因"
+        }
+    }
+
+    private func filterChip(
+        title: String,
+        color: Color = Color.codexInk,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 9.5, weight: isSelected ? .semibold : .regular, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    isSelected ? color.opacity(0.15) : Color.codexMist.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                )
+                .foregroundStyle(isSelected ? color : Color.codexMuted)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func resolveProbeResults(for log: GatewayAutomationRunLog) -> [GatewayModelCheckResult] {
+        if let results = log.results, !results.isEmpty {
+            return results
+        }
+        if log.isUnfinished, store.isModelCheckRunning, let status = store.modelCheckStatus, !status.results.isEmpty {
+            return status.results
+        }
+        if let status = store.modelCheckStatus, !status.results.isEmpty {
+            if status.startedAt == log.startedAt || (status.lastFinishedAt != nil && status.lastFinishedAt == log.finishedAt) {
+                return status.results
+            }
+        }
+        if let resp = store.modelHealthResponse {
+            let all = resp.accounts.flatMap { acc in
+                acc.models.map { m in
+                    GatewayModelCheckResult(
+                        scopedId: m.scopedId,
+                        status: m.status,
+                        reason: m.reason,
+                        latencyMs: m.latencyMs
+                    )
+                }
+            }
+            if !all.isEmpty && (log.id == logs.first?.id || (resp.lastFullCheckAt != nil && abs(resp.lastFullCheckAt! - (log.finishedAt ?? log.startedAt)) < 600)) {
+                return all
+            }
+        }
+        return []
+    }
+
+    @ViewBuilder
+    private func probeStatusIcon(_ status: String) -> some View {
+        Image(systemName: probeStatusIconName(status))
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(probeStatusColor(status))
+            .frame(width: 10)
+    }
+
+    private func probeStatusIconName(_ status: String) -> String {
+        switch status {
+        case "available": "checkmark.circle.fill"
+        case "unavailable": "xmark.circle.fill"
+        case "error": "exclamationmark.triangle.fill"
+        case "skipped": "arrow.forward.circle.fill"
+        default: "questionmark.circle"
         }
     }
 
@@ -1696,6 +1963,7 @@ struct AutomationRunLogSheet: View {
         case "available": Color.green
         case "unavailable": Color.red
         case "error": Color.orange
+        case "skipped": Color.codexMuted
         default: Color.codexMuted
         }
     }

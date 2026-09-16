@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Observation
+import Combine
 
 /// 独立 Pet 吸附的屏幕边缘（含四角）。
 enum StandalonePetEdge: String, CaseIterable, Identifiable, Sendable {

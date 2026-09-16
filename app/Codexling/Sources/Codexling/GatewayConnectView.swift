@@ -1554,25 +1554,38 @@ private struct GatewayProviderRoutingBar: View {
 
                 Spacer()
 
-                // 3 Options Segmented Control
-                Picker("", selection: Binding(
-                    get: { currentMode },
-                    set: { newMode in
-                        let targetPinnedId: String? = {
-                            if newMode == .pinnedAccount {
-                                return pinnedAccountId ?? accountGroups.first?.connectionID?.rawValue.uuidString
-                            }
-                            return pinnedAccountId
-                        }()
-                        onChangeMode(newMode, targetPinnedId)
-                    }
-                )) {
+                // 调度策略紧凑分段选择器（短 Tab + 项目强调色）
+                HStack(spacing: 2) {
                     ForEach(ProviderRoutingMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                        let isSel = currentMode == mode
+                        Button {
+                            let targetPinnedId: String? = {
+                                if mode == .pinnedAccount {
+                                    return pinnedAccountId ?? accountGroups.first?.connectionID?.rawValue.uuidString
+                                }
+                                return pinnedAccountId
+                            }()
+                            onChangeMode(mode, targetPinnedId)
+                        } label: {
+                            Text(mode.title)
+                                .font(.system(size: 10.5, weight: isSel ? .semibold : .medium))
+                                .padding(.horizontal, 9)
+                                .frame(height: 22)
+                                .foregroundStyle(isSel ? Color.codexOnPrimary : Color.codexMuted)
+                                .background(
+                                    isSel ? Color.codexPrimary : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
+                .padding(2)
+                .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.7)
+                )
 
                 // If pinnedAccount is active, show account dropdown menu
                 if currentMode == .pinnedAccount && !accountGroups.isEmpty {

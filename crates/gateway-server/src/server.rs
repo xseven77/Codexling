@@ -139,6 +139,9 @@ pub struct GatewayAutomationRunLog {
     /// 本次巡检是否被用户取消。取消不是失败：App 端据此展示「已取消」而不是「失败」。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<bool>,
+    /// 单次巡检的逐个模型探测结果。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub results: Option<Vec<crate::model_health::JobProbeResult>>,
 }
 
 /// 与 App 端 `GatewayStore.maxAutomationRunLogs` 保持一致。
@@ -398,7 +401,7 @@ impl GatewaySettings {
         }
     }
 
-    /// 按 id 补全一条执行记录的结束时点、结果与摘要。
+    /// 按 id 补全一条执行记录的结束时点、结果、摘要与探测结果。
     pub fn finish_automation_run_log(
         &mut self,
         log_id: &str,
@@ -406,6 +409,7 @@ impl GatewaySettings {
         is_success: bool,
         summary: &str,
         cancelled: bool,
+        results: Option<Vec<crate::model_health::JobProbeResult>>,
     ) {
         if let Some(log) = self
             .automation_run_logs
@@ -417,6 +421,9 @@ impl GatewaySettings {
             log.is_success = Some(is_success);
             log.summary = Some(summary.to_string());
             log.cancelled = if cancelled { Some(true) } else { None };
+            if results.is_some() {
+                log.results = results;
+            }
         }
     }
 
@@ -744,6 +751,7 @@ mod tests {
             is_success: None,
             summary: None,
             cancelled: None,
+            results: None,
         });
         settings.save_for_home(home).unwrap();
 
@@ -757,6 +765,7 @@ mod tests {
             true,
             "可用 60 · 异常 4",
             false,
+            None,
         );
         settings.save_for_home(home).unwrap();
 
@@ -786,6 +795,7 @@ mod tests {
             is_success: None,
             summary: None,
             cancelled: None,
+            results: None,
         });
         settings.finish_automation_run_log(
             "task-1-1789030200",
@@ -793,6 +803,7 @@ mod tests {
             false,
             "已取消 · 可用 12 · 异常 3",
             true,
+            None,
         );
         settings.save_for_home(home).unwrap();
 
@@ -822,6 +833,7 @@ mod tests {
                 is_success: None,
                 summary: None,
                 cancelled: None,
+                results: None,
             });
         }
         assert_eq!(settings.automation_run_logs.len(), super::MAX_AUTOMATION_RUN_LOGS);

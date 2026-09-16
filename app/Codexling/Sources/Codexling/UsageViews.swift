@@ -737,6 +737,7 @@ struct CodexMaterialWaveLayer: View {
 }
 
 /// 只认「按下到抬起几乎没有位移」的点击，避免拖动窗口时误触发。
+@MainActor
 func codexMaterialTapGesture(
     in space: String,
     maximumTravel: CGFloat = 10,

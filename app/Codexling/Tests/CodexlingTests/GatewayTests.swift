@@ -863,6 +863,38 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(afterManualRun.automationRunLogs.contains { $0.startedAt == 1789030500 })
     }
 
+    /// 执行日志的模型探测明细结果必须能够落盘并完整读回。
+    func testAutomationRunLogsModelResultsPersistence() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gateway-automation-results-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settingsURL = tempDir.appendingPathComponent("gateway-settings.json")
+        let storage = GatewaySettingsStorage(fileURL: settingsURL)
+        let store = GatewayStore(settingsStorage: storage)
+
+        let task = GatewayAutomationTask(name: "健康巡检测试", hours: [5])
+        store.addAutomationTask(task)
+
+        let probeResults = [
+            GatewayModelCheckResult(scopedId: "openai/gpt-4o@acc1", status: "available", reason: nil, latencyMs: 320),
+            GatewayModelCheckResult(scopedId: "anthropic/claude-3-5-sonnet@acc2", status: "unavailable", reason: "404 Not Found", latencyMs: 150)
+        ]
+
+        store.recordAutomationRunStart(taskId: task.id, taskName: task.name, taskType: .modelHealthCheck, startedAt: 1789030000)
+        store.finishAutomationRun(taskId: task.id, finishedAt: 1789030100, isSuccess: true, summary: "可用 1 · 异常 1", results: probeResults)
+
+        // 落盘验证
+        let loaded = storage.load()
+        let log = try XCTUnwrap(loaded.automationRunLogs.first)
+        XCTAssertEqual(log.results?.count, 2)
+        XCTAssertEqual(log.results?[0].scopedId, "openai/gpt-4o@acc1")
+        XCTAssertEqual(log.results?[0].status, "available")
+        XCTAssertEqual(log.results?[1].scopedId, "anthropic/claude-3-5-sonnet@acc2")
+        XCTAssertEqual(log.results?[1].reason, "404 Not Found")
+    }
+
     /// 取消巡检后，这次巡检的执行日志必须收尾为「已取消」，并且要能落盘再读回来。
     ///
     /// 复现的 bug：`cancelModelCheck` 曾把本地 `isModelCheckRunning` 提前置为 false，

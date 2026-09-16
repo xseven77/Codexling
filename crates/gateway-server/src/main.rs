@@ -152,6 +152,7 @@ fn main() -> std::io::Result<()> {
                         is_success: None,
                         summary: None,
                         cancelled: None,
+                        results: None,
                     });
                     let _ = start_settings.save_for_home(&home);
 
@@ -159,6 +160,17 @@ fn main() -> std::io::Result<()> {
 
                     let finished_at = model_health::ModelHealthEngine::now_epoch_secs();
                     let (is_success, summary_text, is_cancelled) = summarize_job_result(&health_engine);
+                    let probe_results = {
+                        let job = match health_engine.job.lock() {
+                            Ok(job) => job,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if job.results.is_empty() {
+                            None
+                        } else {
+                            Some(job.results.clone())
+                        }
+                    };
 
                     let mut end_settings = GatewaySettings::load_for_home(&home);
                     if let Some(entry) = end_settings
@@ -184,6 +196,7 @@ fn main() -> std::io::Result<()> {
                         is_success,
                         &summary_text,
                         is_cancelled,
+                        probe_results,
                     );
                     let _ = end_settings.save_for_home(&home);
                 }

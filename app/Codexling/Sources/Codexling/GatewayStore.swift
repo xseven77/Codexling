@@ -374,11 +374,29 @@ public final class GatewayStore {
         let onDisk = settingsStorage.load()
 
         if !onDisk.automationRunLogs.isEmpty {
-            var seen = Set(merged.automationRunLogs.map(\.id))
-            var logs = merged.automationRunLogs
-            for log in onDisk.automationRunLogs where seen.insert(log.id).inserted {
-                logs.append(log)
+            var logMap: [String: GatewayAutomationRunLog] = [:]
+            for log in merged.automationRunLogs {
+                logMap[log.id] = log
             }
+            for diskLog in onDisk.automationRunLogs {
+                if let existing = logMap[diskLog.id] {
+                    var mergedLog = existing
+                    if diskLog.finishedAt != nil && existing.finishedAt == nil {
+                        mergedLog.finishedAt = diskLog.finishedAt
+                        mergedLog.isSuccess = diskLog.isSuccess
+                        mergedLog.summary = diskLog.summary
+                        mergedLog.cancelled = diskLog.cancelled
+                    }
+                    if (mergedLog.results == nil || mergedLog.results?.isEmpty == true), let diskResults = diskLog.results, !diskResults.isEmpty {
+                        mergedLog.results = diskResults
+                    }
+                    logMap[diskLog.id] = mergedLog
+                } else {
+                    logMap[diskLog.id] = diskLog
+                }
+            }
+            var logs = Array(logMap.values)
+            logs.sort { $0.startedAt < $1.startedAt }
             if logs.count > Self.maxAutomationRunLogs {
                 logs = Array(logs.suffix(Self.maxAutomationRunLogs))
             }
@@ -406,11 +424,28 @@ public final class GatewayStore {
         var updated = gatewaySettings
 
         if !onDisk.automationRunLogs.isEmpty {
-            var seen = Set(updated.automationRunLogs.map(\.id))
-            var logs = updated.automationRunLogs
-            for log in onDisk.automationRunLogs where seen.insert(log.id).inserted {
-                logs.append(log)
+            var logMap: [String: GatewayAutomationRunLog] = [:]
+            for log in updated.automationRunLogs {
+                logMap[log.id] = log
             }
+            for diskLog in onDisk.automationRunLogs {
+                if let existing = logMap[diskLog.id] {
+                    var mergedLog = existing
+                    if diskLog.finishedAt != nil && existing.finishedAt == nil {
+                        mergedLog.finishedAt = diskLog.finishedAt
+                        mergedLog.isSuccess = diskLog.isSuccess
+                        mergedLog.summary = diskLog.summary
+                        mergedLog.cancelled = diskLog.cancelled
+                    }
+                    if (mergedLog.results == nil || mergedLog.results?.isEmpty == true), let diskResults = diskLog.results, !diskResults.isEmpty {
+                        mergedLog.results = diskResults
+                    }
+                    logMap[diskLog.id] = mergedLog
+                } else {
+                    logMap[diskLog.id] = diskLog
+                }
+            }
+            var logs = Array(logMap.values)
             logs.sort { $0.startedAt < $1.startedAt }
             if logs.count > Self.maxAutomationRunLogs {
                 logs = Array(logs.suffix(Self.maxAutomationRunLogs))
@@ -571,7 +606,8 @@ public final class GatewayStore {
         finishedAt: Int64,
         isSuccess: Bool?,
         summary: String?,
-        cancelled: Bool = false
+        cancelled: Bool = false,
+        results: [GatewayModelCheckResult]? = nil
     ) {
         var logs = gatewaySettings.automationRunLogs
         guard let idx = logs.lastIndex(where: { $0.taskId == taskId && $0.isUnfinished }) else { return }
@@ -579,6 +615,9 @@ public final class GatewayStore {
         logs[idx].isSuccess = isSuccess
         logs[idx].summary = summary
         logs[idx].cancelled = cancelled ? true : nil
+        if let results, !results.isEmpty {
+            logs[idx].results = results
+        }
         gatewaySettings.automationRunLogs = logs
     }
 
@@ -1444,7 +1483,8 @@ public final class GatewayStore {
                 finishedAt: finishedAt,
                 isSuccess: finalStatus == "success",
                 summary: finalSummary,
-                cancelled: isCancelled
+                cancelled: isCancelled,
+                results: status.results.isEmpty ? nil : status.results
             )
         }
     }

@@ -84,7 +84,7 @@ public struct GatewayAccountHealth: Codable, Identifiable, Sendable {
     public let models: [GatewayModelHealthItem]
 }
 
-public struct GatewayModelCheckResult: Codable, Identifiable, Sendable {
+public struct GatewayModelCheckResult: Codable, Identifiable, Equatable, Sendable {
     public var id: String { scopedId }
     public let scopedId: String
     public let status: String

@@ -159,6 +159,8 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
     /// 本次巡检是否由用户取消。与 `isSuccess == false` 并存：取消同样不算成功，
     /// 但展示为「已取消」而不是「失败」。旧记录与网关进程可能没有该字段。
     public var cancelled: Bool?
+    /// 单次巡检的逐个模型探测明细结果。
+    public var results: [GatewayModelCheckResult]?
 
     /// 网关进程（Rust）为取消的巡检写的摘要前缀，App 与网关共用同一份文案。
     /// 即使取消标记在跨进程写回时丢失，也能靠摘要认出「已取消」。
@@ -175,7 +177,8 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         finishedAt: Int64? = nil,
         isSuccess: Bool? = nil,
         summary: String? = nil,
-        cancelled: Bool? = nil
+        cancelled: Bool? = nil,
+        results: [GatewayModelCheckResult]? = nil
     ) {
         self.id = id
         self.taskId = taskId
@@ -186,6 +189,7 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         self.isSuccess = isSuccess
         self.summary = summary
         self.cancelled = cancelled
+        self.results = results
     }
 
     public var durationMs: Int64? {
@@ -204,6 +208,10 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         return isSuccess == true ? .success : .failed
     }
 
+    enum CodingKeys: String, CodingKey {
+        case id, taskId, taskName, taskType, startedAt, finishedAt, isSuccess, summary, cancelled, results
+    }
+
     /// 容错解码：执行日志由网关进程（Rust）与 App 共同写入同一个文件，
     /// 未知的 taskType 不应让整份设置解码失败（那会导致设置被重置为默认值）。
     public init(from decoder: Decoder) throws {
@@ -218,6 +226,7 @@ public struct GatewayAutomationRunLog: Codable, Identifiable, Equatable, Sendabl
         isSuccess = try container.decodeIfPresent(Bool.self, forKey: .isSuccess)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
         cancelled = try container.decodeIfPresent(Bool.self, forKey: .cancelled)
+        results = try container.decodeIfPresent([GatewayModelCheckResult].self, forKey: .results)
     }
 
     public var durationText: String {
