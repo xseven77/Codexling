@@ -2912,7 +2912,7 @@ private struct CompanionAccountRow: View {
     }
 }
 
-/// 竖向布局的额度：330pt 放不下两张并排环卡，改成单行横条。
+/// 竖向布局的额度：有 5h 时双列横向并排（5h 在前），仅单周期时一行显示。
 private struct VerticalQuotaRowsView: View {
     let snapshot: CodexUsageSnapshot
     let isLoggedIn: Bool
@@ -2922,17 +2922,18 @@ private struct VerticalQuotaRowsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 7) {
-            if snapshot.hasShortWindow, let short = snapshot.shortWindow {
+        Group {
+            if snapshot.hasShortWindow, let short = snapshot.shortWindow, snapshot.hasWeeklyWindow {
+                // 有 5h 额度的数据时，显示两个横向布局，5h 在前
+                HStack(spacing: 8) {
+                    CompactVerticalQuotaPill(window: short, tint: primaryHealth.color)
+                    CompactVerticalQuotaPill(window: snapshot.weekly, tint: Color.codexBlue)
+                }
+            } else if snapshot.hasShortWindow, let short = snapshot.shortWindow {
                 VerticalQuotaRow(window: short, tint: primaryHealth.color)
-            }
-            if snapshot.hasWeeklyWindow {
-                VerticalQuotaRow(
-                    window: snapshot.weekly,
-                    tint: snapshot.hasShortWindow ? Color.codexBlue : primaryHealth.color
-                )
-            }
-            if !snapshot.hasShortWindow, !snapshot.hasWeeklyWindow {
+            } else if snapshot.hasWeeklyWindow {
+                VerticalQuotaRow(window: snapshot.weekly, tint: primaryHealth.color)
+            } else {
                 Text("额度暂不可用")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.codexMuted)
@@ -2940,6 +2941,39 @@ private struct VerticalQuotaRowsView: View {
                     .background(Color.codexMist.opacity(0.55), in: RoundedRectangle(cornerRadius: 11))
             }
         }
+    }
+}
+
+private struct CompactVerticalQuotaPill: View {
+    let window: UsageWindow
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 6, height: 6)
+
+            Text(window.label == "周额度" ? "本周" : window.label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Color.codexMuted)
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            Text(window.percentText)
+                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.codexInk)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .background(Color.codexMist.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.codexLine.opacity(0.6), lineWidth: 0.7))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(window.label) 剩余 \(window.percentText)，\(window.amountText)")
     }
 }
 
