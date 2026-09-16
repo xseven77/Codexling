@@ -36,11 +36,11 @@
 
 ## 历史设计稿
 
-以下 HTML 在代码继续演进后不再具备当前规范效力：
+以下 HTML 在代码继续演进后不再具备当前规范效力（现已集中移入 `docs/concepts/`，见该目录的索引 README）：
 
-- `ui-concepts.html`：冻结于 2026-07-23。
-- `settings-concepts.html`：冻结于 2026-07-22。
-- `ui-concepts-companion-backup.html`：早期陪伴概念备份。
+- `docs/concepts/ui-concepts.html`：冻结于 2026-07-23。
+- `docs/concepts/settings-concepts.html`：冻结于 2026-07-22。
+- `docs/concepts/ui-concepts-companion-backup.html`：早期陪伴概念备份。
 
 前两份保留视觉探索并增加显式历史标记；早期备份改为归档说明，完整旧内容仍可从 Git 历史读取。
 
@@ -51,3 +51,17 @@
 3. 打包发布：`app/Codexling/package_app.sh`、`release_app.sh`
 4. Landing：`app/landing/src/`
 5. 当前架构摘要：`PROJECT.md`、`docs/codexling方案.md`
+6. 模块级操作手册：`docs/manual/`
+
+## 2026-09-16 整理轮记录
+
+本轮对根目录积累的历史设计稿与滞后文档进行了集中归档与更新：
+
+1. **历史与方案 HTML 集中归档**：根目录 10 个预览设计稿与 `docs/proposals/` 下的 HTML 全部移入 `docs/concepts/`，并新增索引 README 说明演化历史与落点。
+2. **根目录与杂项清理**：删除误提交的空文件 `2026-08-30`，清理非代码目录与构建遗留。
+3. **操作手册编号整理**：解决 `06` 编号冲突，确立 `06-模型能力与推理强度规范`、`07-菜单栏与窗口`、`08-设置与更新`，同步更新总览索引与文件统计。
+4. **核心文档与状态同步**：
+   - `README.md` 与 `PROJECT.md` 全量对齐 0.7.x 多供应商、五 Agent、本地 LLM 网关现状。
+   - `docs/codexling方案.md` 重写为现行架构摘要。
+   - `docs/liquid-glass-theme.md`、`docs/notch-status-surface.md`、`docs/status-bar-pets.md` 同步修正陈旧状态与承载面声明。
+

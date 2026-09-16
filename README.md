@@ -1,33 +1,44 @@
 # Codexling
 
-Codexling 是一款原生 macOS 菜单栏 App。它把 Codex 的任务状态、Pet 和额度放在
-随时看得见的地方；需要更多信息时，再用悬停卡片或独立窗口查看并行任务、今日陪伴时间、
-重置券，以及可获取的 ChatGPT 订阅周期。
+Codexling 是一款原生 macOS 菜单栏 App。它把多家 AI 供应商的账号额度、多个本地 Coding
+Agent 的任务状态、桌面宠物和本地 LLM 网关放在随时看得见的地方；需要更多信息时，再用
+悬停卡片、刘海面板或独立窗口查看并行任务、今日陪伴时间、重置券、订阅周期与网关遥测。
 
 [下载最新版本](https://github.com/xseven77/Codexling/releases) ·
 [访问 Landing](https://codexling.qiizo.cn) ·
-[查看当前方案](docs/codexling方案.md)
+[查看当前方案](docs/codexling方案.md) ·
+[阅读操作手册](docs/manual/00-总览.md)
 
 ![Codexling 原生 macOS 主窗口](assets/screenshots/codexling-dashboard.png)
 
-> 截图来自 Codexling 0.3.8 发布包。主窗口仅对账号姓名和邮箱做了匿名化处理；
-> 设置与 Pet 选择截图通过调整真实窗口构图避开账号区域，没有重绘界面内容。
+> 截图拍摄于 Codexling 0.3.8 发布包，仅对账号姓名和邮箱做了匿名化处理。0.4+ 版本主窗口
+> 已演进为多账号仪表盘（供应商 logo 轮播、多任务卡），设置页也已重排为五大分区；以实物为准。
 
 ## 主要能力
 
-- 菜单栏圆灯默认显示空闲、思考、工作、检查、等待确认、完成或中止等任务状态，也可切换为额度健康色。
-- 菜单栏文字显示当前有效额度窗口；胶囊使用固定透明中性色，提醒色只作用于文字。
-- 悬停菜单栏胶囊约 120ms 后显示不抢焦点的 Pet 与任务摘要卡片。
-- 独立窗口显示并行任务、工作区、分支、模型、截断状态摘要与今日陪伴时间。
-- 显示主/次级额度、重置时间、重置券，以及可读取的订阅周期。
-- 发现 Codex 内置 Pet 和 `~/.codex/pets` 自定义 Pet，并与 Codex 当前选择同步。
-- 支持主题、自动刷新、活动流光、窗口置顶和 App 内更新。
+- **供应商额度监控**：统一接入 Codex (OpenAI) OAuth、Google Gemini OAuth、DeepSeek 与
+  OpenCode (Go/Zen) API Key，统一刷新、按账号轮播展示额度、余额、重置券与订阅周期。
+- **Agent 活动监测**：被动只读感知 Codex、DeepSeek Harness (DSH)、Hermes、Antigravity、
+  Pi 五家本地 Agent 的会话/状态文件，无需安装任何 hook；任务状态归一为思考、执行、
+  检查、等待确认、完成、中止。
+- **本地 LLM 网关**：内置 Rust 子进程网关（`127.0.0.1:58349`），同时代理 OpenAI Chat
+  Completions、OpenAI Responses 与 Anthropic Messages 三种协议；提供模型健康巡检、
+  严格可用性过滤、多账号路由、密钥托管与用量遥测，可一键接入 Hermes、Pi、DSH。
+- **菜单栏与刘海面板**：菜单栏胶囊用状态圆灯 + 额度文字表达当前局面；刘海（Notch）
+  区域可展开供应商卡片轮播与实时任务面板，支持多屏选择与外接屏拖拽。
+- **桌面宠物**：内置 10 只宠物精灵，随 Agent 活动状态切换动画；支持 `~/.codex/pets`
+  自定义宠物，与 Codex 双向同步选择，可开启独立置顶宠物窗口。
+- **设置中心**：主题、自动刷新、账号轮播、静默启动、登录项、布局方向、活动波浪、
+  刘海目标与 App 内更新。
 
 ## 系统要求
 
 - macOS 14 或更高版本。
 - 查看本地任务和内置 Pet 时，需要安装 Codex/ChatGPT macOS App。
-- 查看额度、重置券和订阅周期时，需要通过 OAuth 登录相应的 OpenAI 账号。
+- 查看各家额度时，需要登录相应供应商账号（OAuth）或填入 API Key。
+- 监测各 Agent 活动需要对应 Agent 已在本机运行过至少一个会话；Codexling 不向它们
+  安装任何 hook 或注入。
+- 从源码构建时需要 Xcode Command Line Tools 与 Rust 工具链（网关为 Rust 工程）。
 
 ## 安装与首次启动
 
@@ -44,26 +55,33 @@ Codexling 是一款原生 macOS 菜单栏 App。它把 Codex 的任务状态、P
 ## 快速开始
 
 1. 点击 macOS 菜单栏中的 Codexling 胶囊，打开主窗口。
-2. 点击“登录并同步额度”。
-3. 在 `auth.openai.com` 页面完成 OAuth PKCE 授权。
-4. 浏览器完成授权后会返回本机
-   `http://localhost:1455/auth/callback`，Codexling 随即同步额度。
-5. 打开 Codex 开始任务；Codexling 会从本机 Codex 数据中只读归并任务状态。
+2. 进入“设置 → 账户池”，按供应商添加账号：
+   - **Codex (OpenAI)**：点击登录，在 `auth.openai.com` 完成 OAuth PKCE 授权，浏览器
+     会回调本机 `http://localhost:1455/auth/callback` 后自动同步额度。
+   - **Google Gemini**：完成 Google OAuth 授权。
+   - **DeepSeek / OpenCode**：直接填入 API Key。
+3. 打开任意一家 Agent 开始任务；Codexling 会从本机会话数据中只读归并任务状态，
+   菜单栏圆灯与主窗口任务卡随之变化。
+4. （可选）打开“设置 → Gateway”或 Gateway 窗口，把本地网关一键接入
+   Hermes、Pi、DSH，获得统一模型接入与用量遥测。
 
 登录完成后可以点击“立即刷新”手动同步，也可以在设置中选择自动刷新间隔。
-授权页最多等待 90 秒；如果回调超时或本机 1455 端口被占用，请关闭占用端口的程序后重试。
+Codex 授权页最多等待 90 秒；如果回调超时或本机 1455 端口被占用，请关闭占用端口的
+程序后重试。
 
 ## 使用手册
 
-### 菜单栏
+> 本节为速览；逐文件、逐设置项的完整说明见[操作手册](docs/manual/00-总览.md)。
+
+### 菜单栏与刘海面板
 
 菜单栏胶囊由三个独立部分组成：
 
 | 部分 | 含义 |
 |---|---|
-| 前置圆灯 | 当前优先级最高的 Codex 任务状态 |
-| 文字 | 任务状态和当前有效额度，例如 `工作中 · 5h 42% · 周 77%` |
-| 胶囊提醒色 | 可固定颜色或跟随额度，只改变文字颜色，不改变中性透明背景 |
+| 前置圆灯 | 当前优先级最高的 Agent 任务状态，也可切换为额度健康色 |
+| 文字 | 任务状态与当前选中账号的额度摘要 |
+| 活动波浪 | 任一 Agent 活动时，胶囊背景出现 30fps 波浪流光（可关闭） |
 
 圆灯颜色和任务状态一一对应：
 
@@ -77,65 +95,78 @@ Codexling 是一款原生 macOS 菜单栏 App。它把 Codex 的任务状态、P
 | 绿色 | 已完成 |
 | 红色 | 已中止 |
 
-圆灯默认表达任务状态，设置页也可改为跟随额度健康度；它和提醒色相互独立。提醒色沿用主窗口
-`QuotaAtAGlanceChip` 的绿、黄、红、灰语义，但只用于纯色文字。
-胶囊在所有状态和主题下使用同一套固定透明中性色，不读取菜单栏壁纸亮度，也不会随
-额度或任务状态改变背景色。
-
-![Codexling 菜单栏额度语义色与任务圆灯矩阵](assets/screenshots/codexling-status-capsule-matrix.png)
-
 常用交互：
 
-- **单击胶囊**：打开或唤起主窗口。
-- **Material wave**：按下时，中性墨水从实际点击位置扩散一次。
-- **悬停约 120ms**：显示当前 Pet、任务标题、状态摘要和活跃任务数，不抢键盘焦点。
-- **活动流光**：开启后，任务活动时会在状态栏与 Pet 状态胶囊显示顺时针边缘流光。
-- **状态圆灯颜色**：可选择跟随任务状态、跟随额度状态或固定单色；**活动流光颜色**可选择跟随任务状态或固定单色。选择器会显示颜色圆点。
+- **单击胶囊**：打开或唤起主窗口；按下时中性墨水从实际点击位置扩散一次。
+- **悬停约 120ms**：显示当前 Pet、任务状态摘要和活跃任务数，不抢键盘焦点。
+- **刘海面板**：在带刘海的屏幕上，胶囊可替换为刘海胶囊；收起态贴合刘海，展开态以
+  弹性动画扩成约 700pt 宽面板，内含供应商卡片轮播（点击选中该账号）与实时任务区。
+- **多屏与拖拽**：刘海目标可选“所有带刘海的屏”或指定显示器；外接屏面板支持水平
+  拖拽并按显示器记忆位置；目标屏没有物理刘海时回退为菜单栏区同款胶囊。
+- 开启刘海面板后，同一屏幕的菜单栏图标自动隐藏，刘海成为该屏唯一表面。
 
 ### 主窗口
 
-主窗口左侧显示账号、可获取的订阅周期、当前 Pet 和今日陪伴时间；右侧显示任务、额度与重置券。
+主窗口是额度、供应商、宠物一体的 Companion 仪表盘，支持横向/竖向布局切换与置顶：
 
-- 任务卡展示状态、thread 名称、工作区、Git 分支、模型和截断后的状态摘要。
-- 多个任务同时运行时，窗口会展示任务数量，并按等待确认、执行、检查、思考等优先级汇总。
-- 点击任务卡可以依次查看每个任务；等待确认的任务会优先显示，Codex 的 subagent
-  不会作为独立任务计入列表。
+- 左侧显示当前账号、可获取的订阅周期、当前 Pet 和今日陪伴时间。
+- 任务卡展示状态、thread 名称、工作区、Git 分支、模型和截断后的状态摘要；多个任务
+  同时运行时按等待确认、执行、检查、思考等优先级汇总，等待确认的任务优先显示。
+- 右侧显示主/次级额度、重置时间、重置券；有多张未过期重置券时，点击券面右侧的
+  票根可依次查看，已过期的券不会显示。
 - 点击 Pet 可以播放一次随机互动动作；任务运行时仍可互动。
-- 有多张未过期重置券时，点击券面右侧的票根可依次查看；已过期的券不会显示。
-- 右上角图钉只控制当前 macOS Space 中的窗口置顶。
-- 底部按钮依次用于设置、打开官方 Usage、退出 App 和立即刷新。
+- 右上角按钮依次用于布局方向切换与窗口置顶；底部按钮用于设置、打开 Gateway 窗口、
+  打开官方 Usage、退出 App 和立即刷新。
 
 “今天一起工作”会累计思考、执行、检查和等待确认的时间。统计每 30 秒写入本机，
 单次结算最多计 90 秒，避免 Mac 休眠后把整段离线时间算进去。
 
-### 切换 Pet
+### 账号与额度
 
-1. 点击主窗口底部的齿轮，进入“设置”。
-2. 找到“当前 Pet”，点击右侧“选择”。
-3. 从“Codex 内置”或“自定义”分组中选择一个 Pet。
-4. Codexling 窗口会切换到新 Pet，并把选择写入 Codex 配置。
-5. 当前正在运行的 Codex 通常不会热刷新 Pet。出现“Codex 重启后生效”提示时，
-   点击“重启 Codex”即可；重启可能中断正在运行或等待确认的任务，请先确认任务状态。
+| 供应商 | 认证模式 | 可读指标 |
+|---|---|---|
+| Codex (OpenAI) | OAuth 2.0 PKCE | 5h/周限流窗口、重置券、订阅到期、可用模型目录 |
+| Google Gemini | Google OAuth 2.0 PKCE | 周度/5h 额度快照（Antigravity 与第三方池） |
+| DeepSeek | API Key | 账户余额（总额/赠送/充值）与币种 |
+| OpenCode (Go / Zen) | API Key + 计划类型 | 模型目录校验 |
 
-<p align="center">
-  <img src="assets/screenshots/codexling-pet-picker.png" width="580" alt="在 Codexling 设置中切换 Pet">
-</p>
+支持同一供应商添加多个账号，全局选中账号在主窗口、菜单栏文字与刘海卡片间保持同步，
+可选按 5 秒至 1 分钟自动轮播全部账号。
 
-Codexling 会监控 Codex 的 Pet 配置变化。如果之后在 Codex 中切换 Pet，Codexling
-也会同步新的选择。
+### Agent 活动监测
 
-### 安装 Codexling Pet
+| Agent | 监测数据来源 |
+|---|---|
+| Codex | `~/.codex` thread 索引 (SQLite) + rollout JSONL 尾部 |
+| DeepSeek Harness (DSH) | `~/.dsh/sessions` zstd 压缩会话（解压读首尾） |
+| Hermes | `~/.hermes/state.db` SQLite |
+| Antigravity | `~/.gemini/antigravity/` 会话 transcript |
+| Pi | `~/.pi/agent/sessions/*.jsonl` 首尾解析 |
 
-如果专属 Codexling Pet 尚未安装，设置页会显示“安装 Codexling Pet”卡片：
+五家 Agent 全部通过读取其本地会话/状态文件被动感知，Codexling 不安装 hook、不注入
+进程。设置页“Agents 与 Hooks”展示每家 Agent 的安装探测状态与官方安装指引。
 
-1. 点击“安装”。
-2. App 将 Pet 安装到 `~/.codex/pets/codexling`。
-3. 安装完成后会重新扫描并自动选择 Codexling Pet。
-4. 按提示重启 Codex，使 Codex 内的 Pet 同步生效。
+### Gateway 网关
 
-### 添加自定义 Pet
+本地网关由 Rust workspace（`crates/`）构建，随 App 以 helper 子进程方式运行：
 
-自定义 Pet 使用 Codex 的标准目录：
+- **监听与鉴权**：默认 `http://127.0.0.1:58349` + 本地 Bearer token；开启局域网访问后
+  绑定 `0.0.0.0`，且非回环来源访问对话与模型端点一律强制鉴权。
+- **三协议代理**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`
+  （Anthropic Messages），把 Codex、Gemini、DeepSeek、OpenCode 等账号统一暴露为模型端点。
+- **模型健康巡检**：定时 + 手动探测各账号模型可用性与时延；`/v1/models` 仅导出验证
+  可用（或瞬时异常）的模型，`/v1/models/all` 提供全量诊断（状态、失败原因、耗时）。
+- **路由策略**：每供应商可选“平滑轮询”（多账号均衡）或“固定特定账号”（遇 429/额度
+  耗尽自动无缝切换到池内健康账号并回写设置）。
+- **一键接入 Agent**：为 Hermes、Pi、DSH 幂等写入网关配置（含模型白名单、容量/模态/
+  思考档位声明），可随时刷新模型列表或移除接入；token 轮换自动同步。
+- **遥测与诊断**：Token 年度热力图、模型时序、延迟/客户端排行、实时请求流、
+  自动化巡检任务编排与 Gateway Doctor 诊断。
+
+### 桌面宠物
+
+App 内置 10 只宠物（BSOD、Codex、Codexling、Dewey、Fireball、Hoots、NullSignal、
+Rocky、Seedy、Stacky），另支持 Codex 标准目录的自定义 Pet：
 
 ```text
 ~/.codex/pets/<pet-id>/
@@ -143,55 +174,41 @@ Codexling 会监控 Codex 的 Pet 配置变化。如果之后在 Codex 中切换
 └── spritesheet.webp
 ```
 
-操作步骤：
-
-1. 在设置页“当前 Pet”区域点击“打开文件夹”。
-2. 把完整的 Pet 目录复制到 `~/.codex/pets`。
-3. 返回 Codexling，点击“重新扫描”。
-4. 点击“选择”，从“自定义”分组中选择新 Pet。
-5. 如果 App 提示重启 Codex，确认没有重要任务运行后再执行。
+- 图集每帧为 `192 × 208` 像素，每行 8 帧，宽度必须为 `1536` 像素；高度必须是 `208`
+  的整数倍且至少 9 行；行数 ≥11 视为 v2（含检查等新增动画行）。
+- 每一行对应一种动画状态（待机、思考/执行、等待确认、检查、完成挥手、失败、点击
+  跳跃等）；Agent 状态变化时先连播 3 遍反应动画，再回落慢速待机循环。
+- 在 Codexling 中选择 Pet 会写入 Codex 的 `config.toml`；在 Codex 中切换也会被文件
+  监控实时同步回来。运行中的 Codex 通常不会热刷新 Pet，出现“Codex 重启后生效”
+  提示时，请先确认没有重要任务运行再重启。
+- 可选开启独立置顶宠物小窗，宠物常驻桌面边缘（位置、缩放可调）。
 
 设置页还提供 [codex-pets.net](https://codex-pets.net/)、[Petdex](https://petdex.dev/)
 和 [Awesome Codex Pet](https://github.com/legeling/awesome-codex-pet) 入口。
 损坏、缺少 manifest 或图集规格不兼容的 Pet 不会进入选择列表。
 
-最小 `pet.json` 示例：
-
-```json
-{
-  "id": "my-pet",
-  "displayName": "My Pet",
-  "description": "可选说明",
-  "spriteVersionNumber": 2,
-  "spritesheetPath": "spritesheet.webp"
-}
-```
-
-图集每帧为 `192 × 208` 像素，每行 8 帧，所以宽度必须为 `1536` 像素；高度必须是
-`208` 的整数倍并至少有 9 行。v2 Pet 通常使用 11 行，即 `1536 × 2288` 像素。
-
 ### 设置
 
-<p align="center">
-  <img src="assets/screenshots/codexling-settings.png" width="580" alt="Codexling 原生设置页">
-</p>
+设置窗口分为通用、账户池、Agents 与 Hooks、Gateway、状态栏与 Pet 五个分区：
 
 | 设置 | 可选项与行为 |
 |---|---|
-| 主题 | 跟随系统、浅色、深色 |
+| 主题 | 跟随系统（默认）、浅色、深色 |
 | 自动刷新 | 30 秒、1 分钟（默认）、2 分钟、5 分钟、10 分钟、关闭 |
-| 胶囊提醒色 | 中性（默认）、跟随额度、绿色、黄色、红色、灰色 |
-| 活动流光 | 控制任务活动时状态栏与 Pet 状态胶囊的顺时针边缘流光 |
-| 状态圆灯颜色 | 选择跟随任务状态、额度状态或紫/蓝/青/橙/绿/红单色 |
-| 活动流光颜色 | 选择跟随任务状态或紫/蓝/青/橙/绿/红单色 |
-| 当前 Pet | 预览、选择、安装、打开自定义目录和重新扫描 |
+| 账号轮播 | 关闭（默认）、5 秒、10 秒、30 秒、1 分钟；主窗口与刘海可分别开关 |
+| 静默启动 | 开启后启动只驻菜单栏，不弹主窗口 |
+| 登录项 | 注册系统登录项（以系统设置为唯一事实来源） |
+| 布局方向 | 主窗口横向（默认）/竖向仪表盘 |
+| 活动波浪 | 任务活动时状态栏与 Pet 状态胶囊的波浪流光及其配色 |
+| 刘海面板 | 显示目标（自动/指定显示器）、外接屏拖拽、重置全部位置 |
+| 独立宠物窗 | 开关、贴靠边缘、缩放与自由位置 |
 | 应用更新 | 检查 GitHub Releases，发现新版本后下载并安装 DMG |
 
-窗口置顶不在设置列表中：请使用主窗口右上角的图钉按钮。
+窗口置顶与布局方向不在设置列表中：请使用主窗口右上角的按钮。
 
 ### 检查和安装更新
 
-1. 打开“设置 → 应用”。
+1. 打开“设置 → 通用”。
 2. 点击“检查更新”。
 3. 如果发现更高版本，按钮会变为“下载并安装”。
 4. Codexling 下载 GitHub Release 中的 DMG，安装完成后自动重新启动。
@@ -201,40 +218,45 @@ Codexling 不会在启动时自动检查版本，需要你在设置中手动触�
 
 ### 退出登录与退出 App
 
-- **退出登录**：位于设置页账号区域。确认后会删除本地 OAuth token；再次查看额度需要重新授权。
-  最近一次额度快照和陪伴统计不会随 token 一起删除。
-- **退出 App**：主窗口底部的电源按钮。确认后 Codexling 完全退出，菜单栏图标也会消失。
+- **断开账号**：设置页“账户池”中按账号断开；确认后删除对应本地凭证，再次查看
+  额度需要重新授权。最近一次额度快照和陪伴统计不会随凭证一起删除。
+- **退出 App**：主窗口底部的电源按钮。确认后 Codexling 完全退出，菜单栏图标也会
+  消失，本地网关子进程随之终止。
 - 关闭普通窗口只会隐藏窗口，不等于退出 App。
 
 ## 本地数据与隐私边界
 
-- OAuth 在 `auth.openai.com` 完成，Codexling 不接收或保存账号密码。
-- OAuth token 保存在
-  `~/Library/Application Support/Codexling/oauth_token.json`，文件权限为 `0600`。
-- 旧版本 Keychain token 仅用于一次性迁移，迁移完成后会删除旧记录。
-- Codexling 会只读查看本机 Codex thread 索引和 rollout 文件末尾；当前解析器只使用任务
-  生命周期事件、工具元数据，以及用户可见 commentary 中可用于展示状态的文字。
-- 界面可能展示 thread 名称、工作区、分支、模型和最多 100 个字符的最近状态摘要；
-  这些任务数据不会由 Codexling 另行上传。
+- OAuth 均在官方授权页完成，Codexling 不接收或保存账号密码。
+- 所有凭证以 `0600` 权限保存在 `~/Library/Application Support/Codexling/` 下的
+  隔离文件中；不读取浏览器 Cookie、MFA code，不绕过 SSO 或组织策略。
+- Agent 活动监测只读本机会话/状态文件（SQLite、JSONL、zstd 会话）；解析器只使用
+  任务生命周期事件、工具元数据和用户可见的状态摘要文字，不会持久化、上传或展示
+  模型 reasoning、完整提示词、工具原始参数、Token 或环境变量。
+- 界面展示的 thread 名称、工作区、分支、模型和摘要只留在本机，不另行上传。
+- 网关默认只绑定回环地址；本地请求使用 Bearer token 鉴权，非回环来源访问对话与
+  模型端点一律强制鉴权，管理端点对所有来源强制鉴权。
 - 最后一次成功的额度快照和陪伴统计缓存在本机，用于启动和暂时离线时展示。
-- 重置券与订阅周期是可选请求；获取失败不会覆盖已经成功的主额度结果。
 
 常用本地路径：
 
 | 数据 | 路径 |
 |---|---|
-| OAuth token | `~/Library/Application Support/Codexling/oauth_token.json` |
+| 连接注册中心 | `~/Library/Application Support/Codexling/connections-v1.json` |
+| Codex OAuth token | `~/Library/Application Support/Codexling/Runtimes/Codex/<UUID>/oauth_token.json` |
+| Gemini OAuth token | `~/Library/Application Support/Codexling/gemini_oauth/<handle>.json` |
+| DeepSeek / OpenCode Key | `~/Library/Application Support/Codexling/{deepseek,opencode}_credentials/<handle>.json` |
+| 网关设置 | `~/Library/Application Support/Codexling/gateway-settings.json` |
 | 最近额度快照 | `~/Library/Application Support/Codexling/latest_snapshot.json` |
 | 今日陪伴统计 | `~/Library/Application Support/Codexling/companion_stats.json` |
-| Codex 内置 Pet 缓存 | `~/Library/Application Support/Codexling/Pets/<Codex 版本>/` |
 | 自定义 Pet | `~/.codex/pets/` |
-| Codex 任务索引 | `~/.codex/state_5.sqlite` 或 `~/.codex/sqlite/state_5.sqlite` |
+| Agent 事件 socket | `~/Library/Application Support/Codexling/agent-events.sock` |
 
 ## 常见问题
 
 ### 菜单栏没有出现 Codexling
 
 重新打开 `Applications/Codexling.app`。Codexling 是菜单栏 App，不要只在 Dock 中寻找。
+若刘海面板已在当前屏幕启用，菜单栏图标会自动隐藏，请查看刘海胶囊。
 
 ### 首次打开被 macOS 阻止
 
@@ -242,28 +264,33 @@ Codexling 不会在启动时自动检查版本，需要你在设置中手动触�
 
 ### 显示“未登录”或额度没有更新
 
-打开主窗口并点击“登录并同步额度”或“立即刷新”。如果授权已失效，重新完成 OAuth。
-如果浏览器停在回调页，请确认授权未超过 90 秒，并检查是否有其他程序占用了本机 1455 端口。
+打开“设置 → 账户池”确认账号已添加并启用，然后点击“立即刷新”。如果 Codex 授权已
+失效，重新完成 OAuth；浏览器停在回调页时，请确认授权未超过 90 秒，并检查是否有
+其他程序占用了本机 1455 端口。
 
 ### 没有发现任务
 
-确认 Codex macOS App 已安装并至少创建过一个本地 thread。Codexling 只读本机 thread
-索引；本地格式不可用时任务状态会回退为不可用，但额度功能仍可使用。
+确认对应 Agent CLI 已安装并至少创建过一个本地会话。Codexling 只读本地会话文件；
+本地格式不可用时任务状态回退为不可用，但额度功能不受影响。
 
 ### 找不到内置 Pet
 
-确认 Codex/ChatGPT App 位于 `/Applications` 或 `~/Applications`。更新 Codex 后，
-在 Codexling 设置页点击“重新扫描”。
+确认 Codex/ChatGPT App 已安装。更新 Codex 后，在 Codexling 设置页重新扫描 Pet。
 
 ### 自定义 Pet 没有出现在列表中
 
 确认目录位于 `~/.codex/pets/<pet-id>`，并同时包含有效的 `pet.json` 与
-`spritesheet.webp`，然后点击“重新扫描”。
+`spritesheet.webp`（1536px 宽、208px 行高、至少 9 行），然后重新扫描。
 
 ### 已切换 Pet，但 Codex 中仍显示旧 Pet
 
 查看设置页是否出现“Codex 重启后生效”。当前运行中的 Codex 不会自动刷新 Pet；
 在没有重要任务运行时点击“重启 Codex”。
+
+### Gateway 相关问题
+
+打开 Gateway 窗口的“Gateway Doctor”标签诊断回环端口、鉴权与上游桥接。若 58349
+端口被占用，结束占用进程后通过设置开关重启网关。
 
 ### App 内更新失败
 
@@ -277,6 +304,10 @@ cd app/Codexling
 ./package_app.sh
 open "dist/Codexling.app"
 ```
+
+`package_app.sh` 会先构建 Swift 主程序与 Agent 事件桥，再以 Cargo 构建 Rust 网关
+（`crates/gateway-server` → `codexling-gateway`），三者一起打入
+`Contents/{MacOS,Helpers}`。
 
 交互式打包与发布：
 
@@ -292,6 +323,12 @@ cd app/Codexling
 sudo xcodebuild -license
 ```
 
+单独运行 Rust 测试（协议转换与网关）：
+
+```bash
+cargo test --workspace
+```
+
 ## Landing 开发
 
 ```bash
@@ -304,10 +341,15 @@ pnpm dev
 
 ```text
 app/
-├── Codexling/       # Swift / SwiftUI 原生 App、测试和发布脚本
+├── Codexling/       # Swift / SwiftUI 原生 App、事件桥 CLI、测试和发布脚本
 └── landing/         # Next.js landing
+crates/              # Rust 网关 workspace（三协议转换、路由、遥测、健康巡检）
+spikes/              # 可行性验证 spike
+docs/
+├── manual/          # 操作手册（按源码通读生成，最接近现状）
+├── concepts/        # UI 概念稿与预览 HTML 及其索引
+└── multi-agent/     # 多 Agent / 网关调研与方案
 assets/screenshots/  # README 使用的原生 App 截图
-docs/                # 当前方案、实现记录和文档漂移审计
 docker/landing/      # landing 容器部署配置
 PROJECT.md           # 当前项目状态与技术边界
 README.md
@@ -316,13 +358,12 @@ README.md
 ## 进一步阅读
 
 - [当前项目状态与技术边界](PROJECT.md)
-- [总体方案](docs/codexling方案.md)
-- [状态栏与 Pets](docs/status-bar-pets.md)
-- [主界面布局方向（横向 / 竖向）](docs/dashboard-orientation.md)
-- [陪伴式 UI 实现记录](docs/ui-refresh-implementation-plan.md)
-- [流体玻璃主题与窗口边界](docs/liquid-glass-theme.md)
-- [Pet 与 companion 状态同步](docs/pet-companion-state-plan.md)
-- [ChatGPT Plus/Pro 订阅周期](docs/chatgpt-plus-pro-membership-expiry.md)
-- [文档漂移审计与演进证据](docs/documentation-drift-audit.md)
+- [当前实现方案](docs/codexling方案.md)
+- [操作手册（按源码生成）](docs/manual/00-总览.md)
+- [Gateway 模型健康巡检方案](docs/gateway-model-health-check-plan.md)
+- [Gateway 用量分析方案](docs/gateway-usage-analytics-plan.md)
+- [模型能力与推理强度规范](docs/manual/06-模型能力与推理强度规范.md)
+- [UI 概念稿索引](docs/concepts/README.md)
+- [文档漂移审计](docs/documentation-drift-audit.md)
 
 当前仓库公开源码供审阅；文档中的现行行为以当前源码和测试为准。
