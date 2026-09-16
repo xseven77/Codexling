@@ -573,7 +573,6 @@ struct GatewayProviderSectionCard: View {
     @State private var isExpanded: Bool = false
     @State private var isHealthDetailExpanded: Bool = false
     @State private var healthFilterMode: HealthFilterMode = .problematic
-    @State private var copiedGroupId: String? = nil
     @State private var copiedModelId: String? = nil
     @State private var isAddingModel: Bool = false
     @State private var customModelInput: String = ""
@@ -729,11 +728,15 @@ struct GatewayProviderSectionCard: View {
                 )
             }
 
-            if section.accountGroups.count > 1 {
+            if !section.accountGroups.isEmpty {
                 GatewayAccountSwitcherBar(
                     groups: section.accountGroups,
                     activeGroupId: activeGroup.id,
-                    onSelect: { selectedAccountId = $0 }
+                    isExpanded: isExpanded,
+                    isConsolidated: isConsolidated,
+                    totalModelsCount: displayModels.count,
+                    onSelect: { selectedAccountId = $0 },
+                    onToggleExpand: { isExpanded.toggle() }
                 )
             }
 
@@ -837,10 +840,7 @@ struct GatewayProviderSectionCard: View {
                     }
                 }
 
-                if activeGroup.isProxyEnabled {
-                    copySnippetButton
-                    expandDrawerButton
-                }
+                healthDiagnosisPillButton
             }
 
             GatewayAccountStatusBanners(
@@ -850,16 +850,6 @@ struct GatewayProviderSectionCard: View {
                 hasZeroModels: activeGroup.models.isEmpty && activeGroup.connectionID != nil,
                 onResync: { syncModels(for: activeGroup) }
             )
-
-            if activeGroup.isProxyEnabled && !displayRecommendedModels.isEmpty {
-                GatewayRecommendedModelsGrid(
-                    models: displayRecommendedModels,
-                    copiedModelId: copiedModelId,
-                    onCopy: { modelId in
-                        copyModel(modelId, id: modelId)
-                    }
-                )
-            }
 
             if isHealthDetailExpanded {
                 accountHealthDetailPanel
@@ -913,6 +903,16 @@ struct GatewayProviderSectionCard: View {
         )
     }
 
+    static func healthRank(_ status: String) -> Int {
+        switch status {
+        case "available": 0
+        case "error": 1
+        case "skipped": 2
+        case "unavailable": 3
+        default: 4
+        }
+    }
+
     /// 单个账号的模型健康巡检详情：列出每个模型的状态、延迟与错误原因。
     @ViewBuilder
     private var accountHealthDetailPanel: some View {
@@ -940,84 +940,61 @@ struct GatewayProviderSectionCard: View {
                 .frame(width: 220)
             }
 
-            if isConsolidated && section.accountGroups.count > 1 {
-                HStack(spacing: 6) {
-                    Text("巡检诊断账号:")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.codexMuted)
-
-                    ForEach(section.accountGroups) { grp in
-                        let isSelected = activeGroup.id == grp.id
-                        Button {
-                            selectedAccountId = grp.id
-                        } label: {
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(grp.isProxyEnabled ? (isSelected ? Color.purple : Color.green) : Color.codexMuted)
-                                    .frame(width: 5, height: 5)
-                                Text(grp.accountName)
-                                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
-                            }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(isSelected ? Color.purple.opacity(0.15) : Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(isSelected ? Color.purple : Color.codexInk)
+            // 诊断结果列表 (无任何二次账号选择器，100% 联动上方当前选定账号)
+            ScrollView(showsIndicators: false) {
+                if let health = activeAccountHealth {
+                    let filtered = health.models.filter { item in
+                        switch healthFilterMode {
+                        case .all:
+                            return true
+                        case .problematic:
+                            return item.status != "available"
+                        case .available:
+                            return item.status == "available"
                         }
-                        .buttonStyle(.plain)
                     }
-                }
-                .padding(.vertical, 2)
-            }
 
-            if let health = activeAccountHealth {
-                let filtered = health.models.filter { item in
-                    switch healthFilterMode {
-                    case .all:
-                        return true
-                    case .problematic:
-                        return item.status != "available"
-                    case .available:
-                        return item.status == "available"
+                    let ordered = filtered.sorted { lhs, rhs in
+                        let r1 = Self.healthRank(lhs.status)
+                        let r2 = Self.healthRank(rhs.status)
+                        if r1 != r2 { return r1 < r2 }
+                        return lhs.id < rhs.id
                     }
-                }
 
-                let ordered = filtered.sorted { lhs, rhs in
-                    let r1 = Self.healthRank(lhs.status)
-                    let r2 = Self.healthRank(rhs.status)
-                    if r1 != r2 { return r1 < r2 }
-                    return lhs.id < rhs.id
-                }
-
-                if ordered.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: healthFilterMode == .problematic ? "checkmark.seal.fill" : "info.circle")
-                            .font(.system(size: 11))
-                            .foregroundStyle(healthFilterMode == .problematic ? Color.green : Color.codexMuted)
-                        Text(healthFilterMode == .problematic ? "太棒了！当前账号没有发现异常或不可用的模型。" : "当前筛选条件下暂无模型。")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Color.codexMuted)
+                    if ordered.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: healthFilterMode == .problematic ? "checkmark.seal.fill" : "info.circle")
+                                .font(.system(size: 11))
+                                .foregroundStyle(healthFilterMode == .problematic ? Color.green : Color.codexMuted)
+                            Text(healthFilterMode == .problematic ? "太棒了！当前账号没有发现异常或不可用的模型。" : "当前筛选条件下暂无模型。")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.codexMuted)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 4)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(ordered) { item in
+                                healthDetailRow(item)
+                                if item.id != ordered.last?.id {
+                                    CodexDivider(.horizontal)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .background(Color.codexBackground.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 4)
                 } else {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(ordered) { item in
-                            healthDetailRow(item)
-                            if item.id != ordered.last?.id {
-                                CodexDivider(.horizontal)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .background(Color.codexBackground.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    Text("尚未执行巡检，点击上方“检查可用性”后即可查看每个模型的具体状态。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .padding(.vertical, 6)
                 }
-            } else {
-                Text("尚未执行巡检，点击上方“检查可用性”后即可查看每个模型的具体状态。")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Color.codexMuted)
-                    .padding(.vertical, 6)
             }
+            .frame(maxHeight: 380)
+            .scrollIndicators(.hidden)
+            .background(ScrollIndicatorHider())
         }
         .padding(10)
         .background(Color.accentColor.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1105,16 +1082,6 @@ struct GatewayProviderSectionCard: View {
         .padding(.horizontal, 10)
     }
 
-    private static func healthRank(_ status: String) -> Int {
-        switch status {
-        case "available": 0
-        case "error": 1
-        case "skipped": 2
-        case "unavailable": 3
-        default: 4
-        }
-    }
-
     private func healthStatusColor(_ status: String) -> Color {
         switch status {
         case "available": .green
@@ -1162,58 +1129,6 @@ struct GatewayProviderSectionCard: View {
                     .font(.system(size: 10))
                     .foregroundStyle(Color.codexMuted)
                     .lineLimit(1)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isHealthDetailExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        if let summary = consolidatedHealthSummary {
-                            Text("可用 \(summary.available)")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(Color.green)
-                            Text("·")
-                                .font(.system(size: 9))
-                                .foregroundStyle(Color.codexMuted)
-                            Text("不可用 \(summary.unavailable)")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(summary.unavailable > 0 ? Color.red : Color.codexMuted)
-                            if summary.error > 0 {
-                                Text("·")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                                Text("异常 \(summary.error)")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(Color.orange)
-                            }
-                            if summary.unchecked > 0 {
-                                Text("·")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                                Text("未检查 \(summary.unchecked)")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                            }
-                        } else {
-                            Image(systemName: "waveform.path.ecg")
-                                .font(.system(size: 9))
-                                .foregroundStyle(Color.codexMuted)
-                            Text("巡检诊断")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Color.codexMuted)
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundStyle(Color.codexMuted)
-                            .rotationEffect(.degrees(isHealthDetailExpanded ? 90 : 0))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.codexLine.opacity(isHealthDetailExpanded ? 0.2 : 0.12), in: RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                .help("查看供应商下各账号模型的具体可用状态与错误原因")
             } else {
                 HStack(spacing: 6) {
                     Text("当前选定账号:")
@@ -1240,103 +1155,86 @@ struct GatewayProviderSectionCard: View {
                         .foregroundStyle(Color.codexMuted)
                         .lineLimit(1)
                 }
+            }
+        }
+    }
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isHealthDetailExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        if let health = activeAccountHealth {
-                            Text("可用 \(health.summary.available)")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(Color.green)
+    private var healthDiagnosisPillButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isHealthDetailExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Color.accentColor)
+
+                if isConsolidated {
+                    if let summary = consolidatedHealthSummary {
+                        Text("可用 \(summary.available)")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Color.green)
+                        Text("·")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                        Text("不可用 \(summary.unavailable)")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(summary.unavailable > 0 ? Color.red : Color.codexMuted)
+                        if summary.error > 0 {
                             Text("·")
                                 .font(.system(size: 9))
                                 .foregroundStyle(Color.codexMuted)
-                            Text("不可用 \(health.summary.unavailable)")
+                            Text("异常 \(summary.error)")
                                 .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(health.summary.unavailable > 0 ? Color.red : Color.codexMuted)
-                            if health.summary.error > 0 {
-                                Text("·")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                                Text("异常 \(health.summary.error)")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(Color.orange)
-                            }
-                            if health.summary.unchecked > 0 {
-                                Text("·")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                                Text("未检查 \(health.summary.unchecked)")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Color.codexMuted)
-                            }
-                        } else {
-                            Image(systemName: "waveform.path.ecg")
+                                .foregroundStyle(Color.orange)
+                        }
+                    } else {
+                        Text("巡检诊断")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(Color.codexMuted)
+                    }
+                } else {
+                    if let health = activeAccountHealth {
+                        Text("可用 \(health.summary.available)")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Color.green)
+                        Text("·")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.codexMuted)
+                        Text("不可用 \(health.summary.unavailable)")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(health.summary.unavailable > 0 ? Color.red : Color.codexMuted)
+                        if health.summary.error > 0 {
+                            Text("·")
                                 .font(.system(size: 9))
                                 .foregroundStyle(Color.codexMuted)
-                            Text("巡检诊断")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Color.codexMuted)
+                            Text("异常 \(health.summary.error)")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(Color.orange)
                         }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .bold))
+                    } else {
+                        Text("巡检诊断")
+                            .font(.system(size: 9.5, weight: .medium))
                             .foregroundStyle(Color.codexMuted)
-                            .rotationEffect(.degrees(isHealthDetailExpanded ? 90 : 0))
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.codexLine.opacity(isHealthDetailExpanded ? 0.2 : 0.12), in: RoundedRectangle(cornerRadius: 4))
                 }
-                .buttonStyle(.plain)
-                .help("查看该账号每个模型的具体可用状态与错误原因")
-            }
-        }
-    }
 
-    private var copySnippetButton: some View {
-        let isCopied = copiedGroupId == activeGroup.id
-        return Button {
-            copySnippet(for: activeGroup)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                Text(isCopied ? "已复制接入参数" : "一键复制接入参数")
-            }
-            .font(.system(size: 10.5, weight: .semibold))
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(isCopied ? Color.green : Color.codexPrimary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .foregroundStyle(Color.codexOnPrimary)
-        }
-        .buttonStyle(CodexPressableStyle(cornerRadius: 6))
-    }
-
-    private var expandDrawerButton: some View {
-        Button {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                isExpanded.toggle()
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(isExpanded ? "收起" : (isConsolidated ? "全部聚合模型 (\(displayModels.count))" : "全部模型 (\(displayModels.count))"))
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .font(.system(size: 7.5, weight: .bold))
+                    .foregroundStyle(Color.codexMuted)
+                    .rotationEffect(.degrees(isHealthDetailExpanded ? 90 : 0))
             }
-            .font(.system(size: 10.5, weight: .medium))
             .padding(.horizontal, 8)
             .frame(height: 26)
-            .background(Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .foregroundStyle(Color.codexInk)
+            .background(isHealthDetailExpanded ? Color.accentColor.opacity(0.12) : Color.codexLine.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.35), lineWidth: 0.8)
+                    .stroke(isHealthDetailExpanded ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 0.8)
             )
         }
-        .buttonStyle(CodexPressableStyle(cornerRadius: 6))
+        .buttonStyle(.plain)
+        .help("展开/收起查看模型的具体可用状态与错误原因")
     }
 
     private func toggleProxy(for group: GatewayAccountModelGroup) {
@@ -1400,15 +1298,6 @@ struct GatewayProviderSectionCard: View {
             } else {
                 syncingConnectionIDs.remove(connID)
             }
-        }
-    }
-
-    private func copySnippet(for group: GatewayAccountModelGroup) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(group.sampleConfigSnippet, forType: .string)
-        copiedGroupId = group.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            copiedGroupId = nil
         }
     }
 
@@ -1671,35 +1560,68 @@ private struct GatewayProviderRoutingBar: View {
 private struct GatewayAccountSwitcherBar: View {
     let groups: [GatewayAccountModelGroup]
     let activeGroupId: String
+    let isExpanded: Bool
+    let isConsolidated: Bool
+    let totalModelsCount: Int
     let onSelect: (String) -> Void
+    let onToggleExpand: () -> Void
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    ForEach(groups) { grp in
-                        let isSelected = activeGroupId == grp.id
-                        Button {
-                            onSelect(grp.id)
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                proxy.scrollTo(grp.id, anchor: .center)
+        HStack(spacing: 8) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(groups) { grp in
+                            let isSelected = activeGroupId == grp.id
+                            Button {
+                                onSelect(grp.id)
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    proxy.scrollTo(grp.id, anchor: .center)
+                                }
+                            } label: {
+                                accountTabLabel(grp: grp, isSelected: isSelected)
                             }
-                        } label: {
-                            accountTabLabel(grp: grp, isSelected: isSelected)
+                            .id(grp.id)
+                            .buttonStyle(.plain)
                         }
-                        .id(grp.id)
-                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 1)
+                    .background(ScrollIndicatorHider())
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: activeGroupId) { _, newID in
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(newID, anchor: .center)
                     }
                 }
-                .padding(.vertical, 1)
-                .background(ScrollIndicatorHider())
             }
-            .scrollIndicators(.hidden)
-            .onChange(of: activeGroupId) { _, newID in
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    proxy.scrollTo(newID, anchor: .center)
+
+            Spacer(minLength: 0)
+
+            // 位于账号行右侧的模型抽屉展开按钮
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    onToggleExpand()
                 }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(isExpanded ? "收起" : (isConsolidated ? "全部聚合模型 (\(totalModelsCount))" : "全部模型 (\(totalModelsCount))"))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .padding(.horizontal, 8)
+                .frame(height: 26)
+                .background(isExpanded ? Color.codexPrimary.opacity(0.1) : Color.codexMist, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(isExpanded ? Color.codexPrimary : Color.codexInk)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(isExpanded ? Color.codexPrimary.opacity(0.3) : Color.codexLine.opacity(0.35), lineWidth: 0.8)
+                )
             }
+            .buttonStyle(CodexPressableStyle(cornerRadius: 6))
+            .help(isExpanded ? "收起模型列表" : "展开查看可访问的模型清单")
         }
     }
 
@@ -1899,56 +1821,6 @@ private struct GatewayAccountStatusBanners: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.orange.opacity(0.25), lineWidth: 0.8)
             )
-        }
-    }
-}
-
-@MainActor
-private struct GatewayRecommendedModelsGrid: View {
-    let models: [String]
-    let copiedModelId: String?
-    let onCopy: (String) -> Void
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
-    ]
-
-    var body: some View {
-        LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(models, id: \.self) { modelId in
-                let isCopied = copiedModelId == modelId
-                Button {
-                    onCopy(modelId)
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: isCopied ? "checkmark.circle.fill" : "cube.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(isCopied ? Color.green : Color.codexMuted)
-
-                        Text(modelId)
-                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(isCopied ? Color.green : Color.codexInk)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        Spacer(minLength: 0)
-
-                        Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 9))
-                            .foregroundStyle(isCopied ? Color.green : Color.codexMuted.opacity(0.7))
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 7)
-                    .background(Color.codexBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(isCopied ? Color.green.opacity(0.6) : Color.codexLine.opacity(0.3), lineWidth: 0.6)
-                    )
-                }
-                .buttonStyle(.plain)
-                .help("点击复制 \(modelId)")
-            }
         }
     }
 }
