@@ -2,7 +2,7 @@
 
 ## 1. 当前结论
 
-`ui-concepts.html` 在 2026-07-23 前后用于定义陪伴式主窗口的信息架构。当前 Swift 实现已经继续演进，HTML 仅作为历史设计稿，不再是尺寸、控件或安全文案的事实来源。
+`ui-concepts.html`（现位于 `docs/concepts/`）在 2026-07-23 前后用于定义陪伴式主窗口的信息架构。当前 Swift 实现已经继续演进，HTML 仅作为历史设计稿，不再是尺寸、控件或安全文案的事实来源。
 
 现行实现：
 
@@ -150,8 +150,8 @@ swift test
 
 ## 9. 历史设计稿边界
 
-- `ui-concepts.html`：2026-07-23 的设计探索，保留历史场景和交互原型。
-- `settings-concepts.html`：2026-07-22 的设置页草案。
-- `ui-concepts-companion-backup.html`：更早的陪伴概念备份。
+- `docs/concepts/ui-concepts.html`：2026-07-23 的设计探索，保留历史场景和交互原型。
+- `docs/concepts/settings-concepts.html`：2026-07-22 的设置页草案。
+- `docs/concepts/ui-concepts-companion-backup.html`：更早的陪伴概念备份。
 
 这些 HTML 已明确标记为历史文档。当前尺寸、控件、token 存储和状态栏规则以 Swift 源码及本记录为准。

@@ -36,7 +36,7 @@ enum DetachedWindowMetrics {
             + quotaCardSpacing
     }
 
-    /// 竖向布局：单列宽度，与 ui-vertical.html 的设计稿一致。
+    /// 竖向布局：单列宽度，与 docs/concepts/ui-vertical.html 的设计稿一致。
     static let verticalDashboardWidth: CGFloat = 330
     static let verticalContentPadding: CGFloat = 14
     /// 竖向独立窗口首帧占位（测出后 `setContentSize` 收敛）。
