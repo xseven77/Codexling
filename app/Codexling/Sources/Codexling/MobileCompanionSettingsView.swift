@@ -53,6 +53,115 @@ private struct QRCodeView: View {
     }
 }
 
+// MARK: - Shared chrome
+
+/// Raised card used for every block on this page.
+///
+/// The previous version tinted every surface with `codexMist.opacity(0.35)`,
+/// which read as washed-out and gave no sense of depth. Using the real card
+/// surface plus a hairline keeps the blocks distinct from the page background.
+private struct MobileSettingsCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.75), lineWidth: 0.75)
+            )
+    }
+}
+
+/// Rounded icon badge used at the head of a card.
+private struct StatusGlyph: View {
+    let systemName: String
+    let tint: Color
+    var size: CGFloat = 38
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tint.opacity(0.12))
+            Image(systemName: systemName)
+                .font(.system(size: size * 0.42, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(width: size, height: size)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.22), lineWidth: 0.75)
+        )
+    }
+}
+
+/// Secondary (tertiary) action chip — one consistent shape for every minor action.
+private struct ChipButton: View {
+    let title: String
+    let systemImage: String
+    var tint: Color = .codexInk
+    var isEnabled: Bool = true
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                Text(title)
+            }
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(isEnabled ? tint : Color.codexMuted.opacity(0.6))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.codexMist.opacity(isHovering && isEnabled ? 1.0 : 0.6))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// Prominent filled action button.
+private struct PrimaryActionButton: View {
+    let title: String
+    let systemImage: String
+    var isBusy: Bool = false
+    var isEnabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isBusy {
+                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                } else {
+                    Image(systemName: systemImage)
+                }
+                Text(title)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .foregroundStyle(Color.codexOnPrimary)
+            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.5)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+}
+
 // MARK: - Mobile Companion Settings View
 
 struct MobileCompanionSettingsView: View {
@@ -64,6 +173,7 @@ struct MobileCompanionSettingsView: View {
     @State private var actionMessage: String?
     @State private var isErrorMessage = false
     @State private var showsTokenRegenerateAlert = false
+    @State private var isRestartingService = false
 
     var onShowToast: (String, String) -> Void = { _, _ in }
 
@@ -76,6 +186,34 @@ struct MobileCompanionSettingsView: View {
         .onAppear {
             refreshStatus()
         }
+        // Resolve the restart by watching the listener's real status. Watching
+        // `isRunning` would report a failure immediately, because restart()
+        // stops first and that legitimately dips the flag to false.
+        .onChange(of: syncManager.serverStatus) { _, status in
+            guard isRestartingService else { return }
+            switch status {
+            case .ready:
+                isRestartingService = false
+                onShowToast("移动端同步服务已重启 · 端口 \(syncManager.port)", "checkmark.circle")
+            case .failed where !syncManager.isAwaitingRetry:
+                // Retries exhausted — this is a terminal failure.
+                isRestartingService = false
+                onShowToast(
+                    "服务重启失败：\(syncManager.serverError ?? "未知原因")",
+                    "exclamationmark.triangle"
+                )
+            default:
+                break // still starting, or failing but retrying
+            }
+        }
+        .task(id: isRestartingService) {
+            guard isRestartingService else { return }
+            // Safety net so the button cannot spin forever.
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled, isRestartingService else { return }
+            isRestartingService = false
+            onShowToast("服务重启超时，请检查端口是否被占用", "exclamationmark.triangle")
+        }
     }
 
     // MARK: - Section 1: Server & Pairing
@@ -85,141 +223,154 @@ struct MobileCompanionSettingsView: View {
             title: "局域网同步服务与移动端配对",
             subtitle: "通过局域网广播 Agent 状态、额度与伴生宠物，手机扫码免安装即开"
         ) {
-            VStack(alignment: .leading, spacing: 16) {
-                // 1. 服务控制与运行指示
+            VStack(alignment: .leading, spacing: 12) {
+                serviceStatusCard
+
+                if syncManager.isEnabled && syncManager.isRunning {
+                    pairingCard
+                } else {
+                    waitingCard
+                }
+            }
+        }
+    }
+
+    // MARK: Server status
+
+    private var serviceStatusCard: some View {
+        MobileSettingsCard {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
+                    StatusGlyph(systemName: serviceStatusSymbol, tint: serviceStatusTint)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("局域网同步服务")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.codexInk)
+
+                        Text(serviceStatusText)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(serviceStatusTint)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    // Label stays for VoiceOver even though the switch renders bare.
                     Toggle("启用移动端同步服务", isOn: $syncManager.isEnabled)
                         .toggleStyle(.switch)
-                        .font(.system(size: 13, weight: .medium))
+                        .labelsHidden()
+                }
 
-                    Spacer()
+                Divider().overlay(Color.codexLine.opacity(0.6))
 
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(syncManager.isRunning ? Color.codexGreen : Color.codexMuted.opacity(0.4))
-                            .frame(width: 8, height: 8)
-
-                        Text(syncManager.isRunning ? "服务正常运行中" : "已停止")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(syncManager.isRunning ? Color.codexGreen : Color.codexMuted)
-
-                        Text("·")
-                            .foregroundStyle(Color.codexMuted)
-
-                        Text("端口 \(syncManager.port)")
+                // Port and address live on their own row: cramming them beside the
+                // toggle wrapped "端口 58350" onto a second line.
+                HStack(spacing: 10) {
+                    Label {
+                        Text(verbatim: "\(syncManager.lanIPv4):\(syncManager.port)")
                             .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(Color.codexMuted)
+                    } icon: {
+                        Image(systemName: "network")
+                            .font(.system(size: 11))
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.codexMist.opacity(0.5))
-                    .clipShape(Capsule())
+                    .foregroundStyle(Color.codexMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("监听地址与端口")
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        isRestartingService = true
+                        syncManager.restart()
+                    } label: {
+                        HStack(spacing: 5) {
+                            if isRestartingService {
+                                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            Text(isRestartingService ? "重启中…" : "重启服务")
+                        }
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.codexMist.opacity(0.6))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!syncManager.isEnabled || isRestartingService)
+                    .help("在当前端口重新绑定监听；无需退出 Codexling")
                 }
 
                 if let err = syncManager.serverError {
-                    HStack(spacing: 6) {
+                    HStack(alignment: .top, spacing: 7) {
                         Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
                             .foregroundStyle(Color.codexRed)
-                        Text("服务启动异常: \(err)")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(Color.codexRed)
-                    }
-                    .padding(8)
-                    .background(Color.codexRed.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
 
-                Divider()
-                    .overlay(Color.codexLine.opacity(0.6))
-
-                // 2. 二维码与局域网直链
-                if syncManager.isEnabled && syncManager.isRunning {
-                    HStack(alignment: .top, spacing: 20) {
-                        QRCodeView(content: syncManager.webURLString, size: 140)
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("手机扫码一键连接")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.codexInk)
-
-                            Text("在同一 Wi-Fi 局域网下，使用 iPhone 相机或任意移动端浏览器扫描左侧二维码，即可直接打开 1:1 伴生看盘界面，无需安装 App。")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color.codexMuted)
-                                .lineSpacing(3)
-
-                            // 访问链接展示与快捷复制
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("局域网直连网址:")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Color.codexMuted)
-
-                                HStack(spacing: 8) {
-                                    Text(syncManager.webURLString)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(Color.codexInk)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 5)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(Color.codexMist)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                                    Button {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(syncManager.webURLString, forType: .string)
-                                        onShowToast("已复制移动端访问网址", "doc.on.doc")
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "doc.on.doc")
-                                            Text("复制")
-                                        }
-                                        .font(.system(size: 11.5))
-                                    }
-                                    .buttonStyle(.bordered)
-
-                                    Button {
-                                        if let url = URL(string: syncManager.webURLString) {
-                                            NSWorkspace.shared.open(url)
-                                        }
-                                    } label: {
-                                        Image(systemName: "arrow.up.forward.square")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .help("在默认浏览器中打开预览")
-                                }
-                            }
-
-                            HStack(spacing: 12) {
-                                Button(role: .destructive) {
-                                    showsTokenRegenerateAlert = true
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "arrow.triangle.2.circlepath")
-                                        Text("重新生成配对 Token")
-                                    }
-                                    .font(.system(size: 11))
-                                }
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(Color.codexMuted)
-                            }
-                            .padding(.top, 4)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("服务启动异常：\(err)")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color.codexRed)
+                            Text(
+                                syncManager.isAwaitingRetry
+                                    ? "正在自动重试绑定…若持续失败，请确认端口未被其它程序占用，或点击「重启服务」。"
+                                    : "自动重试已用尽，请点击「重启服务」，或改用其它端口。"
+                            )
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.codexMuted)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .padding(14)
-                    .background(Color.codexMist.opacity(0.35))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                } else {
-                    HStack(spacing: 10) {
-                        Image(systemName: "power.circle")
-                            .font(.system(size: 24))
-                            .foregroundStyle(Color.codexMuted)
+                    .padding(9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.codexRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+        }
+    }
 
-                        Text("同步服务未开启，开启后即可在此查看局域网配对二维码与直连网址。")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.codexMuted)
+    // MARK: Pairing
+
+    private var pairingCard: some View {
+        MobileSettingsCard {
+            HStack(alignment: .top, spacing: 18) {
+                QRCodeView(content: syncManager.webURLString, size: 132)
+
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("手机扫码一键连接")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+
+                    Text("在同一 Wi-Fi 局域网下，用 iPhone 相机或任意移动端浏览器扫码，即可打开 1:1 伴生看板，无需安装 App。")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .lineSpacing(2.5)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    addressRow
+
+                    Divider().overlay(Color.codexLine.opacity(0.6))
+
+                    HStack(spacing: 8) {
+                        ChipButton(
+                            title: "重新生成配对 Token",
+                            systemImage: "arrow.triangle.2.circlepath",
+                            tint: Color.codexMuted
+                        ) {
+                            showsTokenRegenerateAlert = true
+                        }
+                        .help("旧设备将需要重新扫码")
+
+                        Spacer(minLength: 0)
                     }
-                    .padding(.vertical, 12)
                 }
             }
         }
@@ -234,6 +385,66 @@ struct MobileCompanionSettingsView: View {
         }
     }
 
+    private var addressRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("局域网直连网址")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.codexMuted)
+
+            HStack(spacing: 8) {
+                Text(syncManager.webURLString)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.codexInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.codexMist.opacity(0.6), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
+                    )
+
+                ChipButton(title: "复制", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(syncManager.webURLString, forType: .string)
+                    onShowToast("已复制移动端访问网址", "doc.on.doc")
+                }
+
+                ChipButton(title: "打开", systemImage: "arrow.up.forward.square") {
+                    if let url = URL(string: syncManager.webURLString) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .help("在默认浏览器中打开预览")
+            }
+        }
+    }
+
+    /// Shown while the service is off, starting, or failed — always with the
+    /// reason and the way forward, never a blank slab.
+    private var waitingCard: some View {
+        MobileSettingsCard {
+            HStack(alignment: .top, spacing: 12) {
+                StatusGlyph(systemName: waitingSymbol, tint: waitingTint, size: 34)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(waitingTitle)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Color.codexInk)
+                    Text(waitingDetail)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.codexMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
     // MARK: - Section 2: Plugin Management
 
     private var pluginManagementSection: some View {
@@ -241,130 +452,176 @@ struct MobileCompanionSettingsView: View {
             title: "Web 伴生前端插件",
             subtitle: "管理桌面端私有托管的 1:1 移动看板 Web Core 静态资源包"
         ) {
-            VStack(alignment: .leading, spacing: 14) {
-                // 插件状态卡片
-                HStack(spacing: 14) {
-                    Image(systemName: pluginStatus.isInstalled ? "shippingbox.fill" : "shippingbox")
-                        .font(.system(size: 24))
-                        .foregroundStyle(pluginStatus.isInstalled ? Color.codexGreen : Color.codexAmber)
-                        .frame(width: 40, height: 40)
-                        .background((pluginStatus.isInstalled ? Color.codexGreen : Color.codexAmber).opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(pluginStatus.isInstalled ? "官方 Web 伴生插件已就绪" : "未安装 Web 前端插件")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.codexInk)
-
-                            if pluginStatus.isInstalled {
-                                Text("v\(pluginStatus.displayVersion)")
-                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .foregroundStyle(Color.codexGreen)
-                                    .background(Color.codexGreen.opacity(0.12))
-                                    .clipShape(Capsule())
-                            }
-                        }
-
-                        Text(
-                            pluginStatus.isInstalled
-                                ? "资源体积 \(pluginStatus.displaySizeString) · 支持 10 款伴生宠物与 Canvas 双正弦液态波浪"
-                                : "未安装时访问 58350 根路由将展示友好引导页，API 数据广播正常工作。"
+            MobileSettingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        StatusGlyph(
+                            systemName: pluginStatus.isInstalled ? "shippingbox.fill" : "shippingbox",
+                            tint: pluginStatus.isInstalled ? Color.codexGreen : Color.codexAmber
                         )
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.codexMuted)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 7) {
+                                Text(pluginStatus.isInstalled ? "Web 伴生插件已就绪" : "未安装 Web 前端插件")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.codexInk)
+
+                                if pluginStatus.isInstalled {
+                                    Text(verbatim: "v\(pluginStatus.displayVersion)")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .foregroundStyle(Color.codexGreen)
+                                        .background(Color.codexGreen.opacity(0.12), in: Capsule())
+                                }
+                            }
+
+                            Text(pluginSubtitle)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(Color.codexMuted)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 12)
+
+                        PrimaryActionButton(
+                            title: pluginStatus.isInstalled ? "检查更新" : "一键安装",
+                            systemImage: pluginStatus.isInstalled
+                                ? "arrow.triangle.2.circlepath"
+                                : "arrow.down.circle.fill",
+                            isBusy: isDownloadingPlugin,
+                            isEnabled: !isDownloadingPlugin
+                        ) {
+                            downloadAndInstallPlugin()
+                        }
                     }
 
-                    Spacer()
-
-                    // 一键网络安装 / 更新按钮
-                    Button {
-                        downloadAndInstallPlugin()
-                    } label: {
+                    if let message = actionMessage {
                         HStack(spacing: 6) {
-                            if isDownloadingPlugin {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("下载安装中...")
-                            } else {
-                                Image(systemName: pluginStatus.isInstalled ? "arrow.triangle.2.circlepath" : "arrow.down.circle.fill")
-                                Text(pluginStatus.isInstalled ? "检查更新" : "一键从网络安装")
+                            Image(systemName: isErrorMessage ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                .font(.system(size: 11))
+                            Text(message)
+                                .font(.system(size: 11.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .foregroundStyle(isErrorMessage ? Color.codexRed : Color.codexGreen)
+                        .padding(.leading, 2)
+                    }
+
+                    Divider().overlay(Color.codexLine.opacity(0.6))
+
+                    HStack(spacing: 8) {
+                        ChipButton(
+                            title: "从本地 .zip 导入…",
+                            systemImage: "square.and.arrow.down",
+                            isEnabled: !isDownloadingPlugin
+                        ) {
+                            importLocalPluginZip()
+                        }
+
+                        ChipButton(title: "在访达中打开", systemImage: "folder") {
+                            NSWorkspace.shared.selectFile(
+                                nil,
+                                inFileViewerRootedAtPath: pluginInstaller.pluginDirectory.path
+                            )
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if pluginStatus.isInstalled {
+                            ChipButton(
+                                title: "移除插件",
+                                systemImage: "trash",
+                                tint: Color.codexRed,
+                                isEnabled: !isDownloadingPlugin
+                            ) {
+                                uninstallPlugin()
                             }
                         }
-                        .font(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .foregroundStyle(Color.codexOnPrimary)
-                        .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isDownloadingPlugin)
-                }
-                .padding(12)
-                .background(Color.codexMist.opacity(0.35))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                if let message = actionMessage {
-                    HStack(spacing: 6) {
-                        Image(systemName: isErrorMessage ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(isErrorMessage ? Color.codexRed : Color.codexGreen)
-
-                        Text(message)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(isErrorMessage ? Color.codexRed : Color.codexGreen)
-                    }
-                    .padding(.horizontal, 4)
-                }
-
-                // 辅助操作
-                HStack(spacing: 12) {
-                    Button {
-                        importLocalPluginZip()
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "folder.badge.gearshape")
-                            Text("从本地 .zip 导入...")
-                        }
-                        .font(.system(size: 11.5))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.codexMist.opacity(0.4), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isDownloadingPlugin)
-
-                    Button {
-                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: pluginInstaller.pluginDirectory.path)
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "folder")
-                            Text("在访达中打开目录")
-                        }
-                        .font(.system(size: 11.5))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.codexMist.opacity(0.4), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    if pluginStatus.isInstalled {
-                        Button(role: .destructive) {
-                            uninstallPlugin()
-                        } label: {
-                            Text("移除插件")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(Color.codexRed)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Color.codexRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isDownloadingPlugin)
                     }
                 }
             }
+        }
+    }
+
+    private var pluginSubtitle: String {
+        guard pluginStatus.isInstalled else {
+            return "未安装时访问 58350 根路由会展示友好引导页，API 数据广播不受影响。"
+        }
+        return "资源体积 \(pluginStatus.displaySizeString) · 支持 10 款伴生宠物与 Canvas 液态波浪"
+    }
+
+    // MARK: - Status derivation
+
+    private var serviceStatusTint: Color {
+        guard syncManager.isEnabled else { return Color.codexMuted.opacity(0.5) }
+        switch syncManager.serverStatus {
+        case .ready: return Color.codexGreen
+        case .starting: return Color.codexAmber
+        case .failed: return Color.codexRed
+        case .idle: return Color.codexMuted.opacity(0.5)
+        }
+    }
+
+    private var serviceStatusSymbol: String {
+        guard syncManager.isEnabled else { return "power" }
+        switch syncManager.serverStatus {
+        case .ready: return "antenna.radiowaves.left.and.right"
+        case .starting: return "arrow.triangle.2.circlepath"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .idle: return "power"
+        }
+    }
+
+    private var serviceStatusText: String {
+        guard syncManager.isEnabled else { return "已停止" }
+        switch syncManager.serverStatus {
+        case .ready: return "服务正常运行中"
+        case .starting: return "正在启动…"
+        case .failed: return syncManager.isAwaitingRetry ? "启动失败 · 自动重试中" : "启动失败"
+        case .idle: return "已停止"
+        }
+    }
+
+    private var waitingSymbol: String {
+        guard syncManager.isEnabled else { return "power.circle" }
+        switch syncManager.serverStatus {
+        case .starting: return "arrow.triangle.2.circlepath"
+        case .failed: return "exclamationmark.triangle.fill"
+        default: return "power.circle"
+        }
+    }
+
+    private var waitingTint: Color {
+        guard syncManager.isEnabled else { return Color.codexMuted }
+        switch syncManager.serverStatus {
+        case .starting: return Color.codexAmber
+        case .failed: return Color.codexRed
+        default: return Color.codexMuted
+        }
+    }
+
+    private var waitingTitle: String {
+        guard syncManager.isEnabled else { return "同步服务未开启" }
+        switch syncManager.serverStatus {
+        case .starting: return "正在启动同步服务…"
+        case .failed: return "同步服务未能启动"
+        default: return "同步服务未运行"
+        }
+    }
+
+    private var waitingDetail: String {
+        guard syncManager.isEnabled else {
+            return "打开上方开关后，这里会出现局域网配对二维码与直连网址。"
+        }
+        switch syncManager.serverStatus {
+        case .starting:
+            return "正在绑定局域网端口，稍候即可扫码连接。"
+        case .failed:
+            return "请查看上方错误说明，或点击「重启服务」重试。"
+        default:
+            return "服务当前未在监听，点击「重启服务」可重新绑定端口。"
         }
     }
 

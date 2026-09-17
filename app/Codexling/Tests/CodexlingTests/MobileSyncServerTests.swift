@@ -127,6 +127,98 @@ struct MobileSyncServerTests {
         server.stop()
     }
 
+    /// Regression: a busy port used to be swallowed entirely.
+    ///
+    /// `NWListener` binds asynchronously, so the conflict arrives via
+    /// `stateUpdateHandler` rather than a thrown error. The old handler called
+    /// `stop()` — no status, no error, no retry — which left the mobile server
+    /// permanently dead after a `restart()` raced with the previous listener's
+    /// cancellation.
+    @Test("MobileSyncServer reports a busy port instead of dying silently")
+    func testPortConflictIsReported() async throws {
+        let port: UInt16 = 59377
+        let provider = MockDataProvider()
+
+        let first = MobileSyncServer(port: port, token: "token-a", dataProvider: provider)
+        try first.start()
+        defer { first.stop() }
+
+        // Wait for the first listener to actually reach `.ready`.
+        try await waitFor(timeout: 5) { first.status == .ready }
+
+        let second = MobileSyncServer(port: port, token: "token-b", dataProvider: provider)
+        defer { second.stop() }
+        try second.start()
+
+        // The second bind must surface a failure, never a silent "started".
+        try await waitFor(timeout: 5) {
+            if case .failed = second.status { return true }
+            return false
+        }
+        if case .failed(let message) = second.status {
+            #expect(!message.isEmpty, "busy port must carry an explanation")
+        } else {
+            Issue.record("expected .failed, got \(second.status)")
+        }
+    }
+
+    @Test("MobileSyncServer recovers once the port is released")
+    func testRebindsAfterPortIsFreed() async throws {
+        let port: UInt16 = 59378
+        let provider = MockDataProvider()
+
+        let blocker = MobileSyncServer(port: port, token: "token-a", dataProvider: provider)
+        try blocker.start()
+        try await waitFor(timeout: 5) { blocker.status == .ready }
+
+        let contender = MobileSyncServer(port: port, token: "token-b", dataProvider: provider)
+        defer { contender.stop() }
+        try contender.start()
+        try await waitFor(timeout: 5) {
+            if case .failed = contender.status { return true }
+            return false
+        }
+
+        // Free the port; the contender's backoff retry must eventually win.
+        blocker.stop()
+        try await waitFor(timeout: 20) { contender.status == .ready }
+        #expect(contender.status == .ready)
+    }
+
+    /// The scenario the settings "重启服务" button exists for: rebind the same
+    /// port without restarting the app. `cancel()` releases the port
+    /// asynchronously, so this used to race into EADDRINUSE and die silently.
+    @Test("MobileSyncServer can be restarted on the same port")
+    func testRestartOnSamePort() async throws {
+        let port: UInt16 = 59379
+        let server = MobileSyncServer(port: port, token: "token", dataProvider: MockDataProvider())
+        defer { server.stop() }
+
+        try server.start()
+        try await waitFor(timeout: 5) { server.status == .ready }
+
+        server.stop()
+        try server.start()
+
+        // Either it binds straight away, or the internal backoff gets there.
+        try await waitFor(timeout: 15) { server.status == .ready }
+        #expect(server.status == .ready)
+        #expect(!server.isAwaitingRetry)
+    }
+
+    /// Polls `condition` until it holds or `timeout` elapses.
+    private func waitFor(
+        timeout: TimeInterval,
+        _ condition: @escaping @Sendable () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        Issue.record("timed out after \(timeout)s waiting for condition")
+    }
+
     @Test("MobileSyncServer default plugin directory points to Application Support")
     func testPluginDirectoryDefault() {
         let defaultURL = MobileSyncServer.defaultPluginDirectoryURL

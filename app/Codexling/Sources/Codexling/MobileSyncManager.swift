@@ -15,6 +15,11 @@ final class MobileSyncManager {
 
     private(set) var isRunning: Bool = false
     private(set) var serverError: String?
+    /// Mirrors `MobileSyncServer.status` so the settings UI can distinguish
+    /// "starting" from "failed" from "stopped".
+    private(set) var serverStatus: MobileSyncServer.Status = .idle
+    /// True while the server is waiting to rebind after a failure.
+    private(set) var isAwaitingRetry: Bool = false
 
     private let defaults = UserDefaults.standard
     private var server: MobileSyncServer?
@@ -109,10 +114,31 @@ final class MobileSyncManager {
             dataProvider: provider
         )
 
+        // The listener binds asynchronously, so readiness is reported by the
+        // server rather than assumed here.
+        newServer.onStatusChange = { [weak self] status in
+            Task { @MainActor [weak self] in
+                guard let self, self.server === newServer else { return }
+                // Set the retry flag first: observers of `serverStatus` read
+                // both values together and must not see a stale pair.
+                self.isAwaitingRetry = newServer.isAwaitingRetry
+                self.serverStatus = status
+                switch status {
+                case .ready:
+                    self.isRunning = true
+                    self.serverError = nil
+                case .failed(let message):
+                    self.isRunning = false
+                    self.serverError = message
+                case .idle, .starting:
+                    self.isRunning = false
+                }
+            }
+        }
+
         do {
             try newServer.start()
             self.server = newServer
-            self.isRunning = true
             self.serverError = nil
         } catch {
             self.server = nil
@@ -122,15 +148,23 @@ final class MobileSyncManager {
     }
 
     func stop() {
+        server?.onStatusChange = nil
         server?.stop()
         server = nil
         isRunning = false
+        serverStatus = .idle
+        isAwaitingRetry = false
     }
 
     func restart() {
         stop()
-        if isEnabled {
-            start()
+        guard isEnabled else { return }
+        // `NWListener.cancel()` releases the port asynchronously. Rebinding on
+        // the very next line is what raced into EADDRINUSE and left the server
+        // permanently down, so give the kernel a moment first.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            self?.start()
         }
     }
 
@@ -223,7 +257,9 @@ final class MobileSyncManager {
                             grantedAt: c.grantedAt,
                             expiresAt: c.expiresAt,
                             status: c.status,
-                            resetType: c.resetType
+                            resetType: c.resetType,
+                            profileImageURL: c.profileImageURL,
+                            profileUserID: c.profileUserID
                         )
                     }
 

@@ -55,6 +55,12 @@ public struct MobileResetCouponPayload: Codable, Equatable, Sendable {
     public let expiresAt: String
     public let status: String?
     public let resetType: String?
+    /// Avatar of the account that granted the coupon. Without this the client
+    /// can only draw a generic placeholder, which is what the mobile web used to
+    /// do while the desktop showed the real Codex avatar.
+    public let profileImageURL: String?
+    /// Preferred display name (`Codex Team`); `source` is only the fallback.
+    public let profileUserID: String?
 
     public init(
         id: String,
@@ -64,7 +70,9 @@ public struct MobileResetCouponPayload: Codable, Equatable, Sendable {
         grantedAt: String? = nil,
         expiresAt: String,
         status: String? = nil,
-        resetType: String? = nil
+        resetType: String? = nil,
+        profileImageURL: String? = nil,
+        profileUserID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -74,6 +82,8 @@ public struct MobileResetCouponPayload: Codable, Equatable, Sendable {
         self.expiresAt = expiresAt
         self.status = status
         self.resetType = resetType
+        self.profileImageURL = profileImageURL
+        self.profileUserID = profileUserID
     }
 }
 
@@ -289,6 +299,11 @@ public final class MobileSyncServer: @unchecked Sendable {
     private var isRunning = false
     private let lock = NSLock()
     private var sseClients: [UUID: NWConnection] = [:]
+    /// Set by an intentional `stop()` so a scheduled rebind cannot resurrect a
+    /// server the app asked to shut down.
+    private var isShuttingDown = false
+    private var rebindAttempt = 0
+    private static let maxRebindAttempts = 6
 
     public init(
         port: UInt16 = MobileSyncServer.defaultPort,
@@ -302,45 +317,142 @@ public final class MobileSyncServer: @unchecked Sendable {
         self.dataProvider = dataProvider
     }
 
+    public enum Status: Equatable, Sendable {
+        case idle
+        case starting
+        case ready
+        case failed(String)
+    }
+
+    /// Observed by the manager so the UI reflects reality instead of an assumption.
+    public var onStatusChange: (@Sendable (Status) -> Void)?
+
+    public private(set) var status: Status = .idle {
+        didSet { onStatusChange?(status) }
+    }
+
+    /// True while a backoff rebind is pending, so the UI can say "retrying"
+    /// instead of just "failed".
+    public private(set) var isAwaitingRetry = false
+
+    /// Starts the listener.
+    ///
+    /// Note that `NWListener` binds **asynchronously**: `start(queue:)` only
+    /// schedules the bind, and a busy port is reported later through
+    /// `stateUpdateHandler` as `.failed` — not as a thrown error. Treating a
+    /// non-throwing return as success is what previously let the server die
+    /// silently (no status, no error, no retry) after a `restart()` raced with
+    /// the cancellation of the previous listener.
     public func start() throws {
         lock.lock()
-        defer { lock.unlock() }
-
-        guard !isRunning else { return }
+        isShuttingDown = false
+        guard listener == nil else {
+            lock.unlock()
+            return
+        }
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: port)
+        self.listener = listener
+        status = .starting
+        lock.unlock()
 
         listener.newConnectionHandler = { [weak self] connection in
             self?.handleNewConnection(connection)
         }
 
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .failed = state {
-                self?.stop()
-            }
+        // `weak listener` keeps a stale listener's late state transitions from
+        // clobbering the state of the one that replaced it.
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard let self, let listener else { return }
+            self.lock.lock()
+            let isCurrent = self.listener === listener
+            self.lock.unlock()
+            guard isCurrent else { return }
+            self.handleListenerState(state)
         }
 
         listener.start(queue: queue)
-        self.listener = listener
-        self.isRunning = true
+    }
+
+    private func handleListenerState(_ state: NWListener.State) {
+        switch state {
+        case .ready:
+            lock.lock()
+            isRunning = true
+            rebindAttempt = 0
+            isAwaitingRetry = false
+            status = .ready
+            lock.unlock()
+
+        case .failed(let error):
+            lock.lock()
+            listener?.cancel()
+            listener = nil
+            isRunning = false
+            let attempt = rebindAttempt
+            rebindAttempt += 1
+            status = .failed(Self.describe(error))
+            isAwaitingRetry = attempt < Self.maxRebindAttempts
+            lock.unlock()
+            scheduleRebind(afterAttempt: attempt)
+
+        case .cancelled:
+            lock.lock()
+            isRunning = false
+            if case .ready = status { status = .idle }
+            lock.unlock()
+
+        default:
+            break
+        }
+    }
+
+    /// Bounded exponential backoff so a transient port conflict self-heals.
+    private func scheduleRebind(afterAttempt attempt: Int) {
+        guard attempt < Self.maxRebindAttempts else { return }
+        let delay = min(pow(2.0, Double(attempt)), 8.0)
+
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let shuttingDown = self.isShuttingDown
+            let alreadyListening = self.listener != nil
+            self.lock.unlock()
+            guard !shuttingDown, !alreadyListening else { return }
+            try? self.start()
+        }
+    }
+
+    private static func describe(_ error: NWError) -> String {
+        switch error {
+        case .posix(let code):
+            if code == .EADDRINUSE { return "端口 \(code) 已被占用" }
+            return "网络错误 \(code.rawValue)"
+        default:
+            return "\(error)"
+        }
     }
 
     public func stop() {
         lock.lock()
-        defer { lock.unlock() }
-
-        guard isRunning else { return }
+        isShuttingDown = true
         isRunning = false
+        rebindAttempt = 0
+        isAwaitingRetry = false
 
-        for connection in sseClients.values {
-            connection.cancel()
-        }
+        let clients = Array(sseClients.values)
         sseClients.removeAll()
 
         listener?.cancel()
         listener = nil
+        status = .idle
+        lock.unlock()
+
+        for connection in clients {
+            connection.cancel()
+        }
     }
 
     public func broadcast(event: String, data: String) {
@@ -571,13 +683,49 @@ public final class MobileSyncServer: @unchecked Sendable {
         let relativePath = (path == "/" || path.isEmpty) ? "index.html" : String(path.dropFirst())
         let fileURL = pluginDirectoryURL.appendingPathComponent(relativePath)
 
+        // Dynamic manifest: inject the live pairing token into `start_url` so a
+        // home-screen shortcut added from any URL still launches authenticated.
+        // An already-installed shortcut keeps whatever URL the OS captured; the
+        // app surfaces that limitation to the user after re-pairing.
+        if relativePath == "manifest.json" {
+            if let data = try? Data(contentsOf: fileURL),
+               var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                json["start_url"] = "./?token=\(token)"
+                if let patched = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) {
+                    sendRawResponse(
+                        status: 200,
+                        headers: [
+                            "Content-Type": "application/manifest+json; charset=utf-8",
+                            "Cache-Control": "no-cache, no-store, must-revalidate",
+                        ],
+                        data: patched,
+                        on: connection
+                    )
+                    return
+                }
+            }
+        }
+
         if FileManager.default.fileExists(atPath: fileURL.path) {
             if let fileData = try? Data(contentsOf: fileURL) {
                 let mime = mimeType(for: fileURL.pathExtension)
-                sendRawResponse(status: 200, headers: ["Content-Type": mime], data: fileData, on: connection)
+                // Hashed bundles are content-addressed and safe to cache forever;
+                // the entry document must always be revalidated, otherwise a phone
+                // keeps booting the previous build after a plugin update.
+                let isHashedAsset = relativePath.hasPrefix("assets/")
+                let cacheControl = isHashedAsset
+                    ? "public, max-age=31536000, immutable"
+                    : "no-cache, no-store, must-revalidate"
+                sendRawResponse(
+                    status: 200,
+                    headers: ["Content-Type": mime, "Cache-Control": cacheControl],
+                    data: fileData,
+                    on: connection
+                )
                 return
             }
         }
+
 
         // Fallback: If root is requested but plugin not installed, serve friendly status page
         if path == "/" || path == "/index.html" {

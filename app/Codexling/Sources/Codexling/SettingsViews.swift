@@ -10,38 +10,44 @@ private enum SettingsLayoutMetrics {
     static let windowBottomInset: CGFloat = 12
 }
 
+/// Sidebar order is the declaration order (`CaseIterable`), so `.pet` sits
+/// directly under `.general` to keep the signature feature within reach.
 private enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case pet
     case accounts
     case agents
     case gateway
     case networkProxy
     case mobile
-    case pet
 
     var id: String { rawValue }
 
+    /// Titles stay in Chinese. Only genuine domain nouns that have no better
+    /// local term are kept in Latin script (Agent / Pet), so the list reads as
+    /// one consistent voice instead of switching languages mid-column.
     var title: String {
         switch self {
-        case .accounts: "账户池"
-        case .agents: "Agents 与 Hooks"
-        case .gateway: "Gateway"
         case .general: "通用"
+        case .pet: "状态栏与 Pet"
+        case .accounts: "账号与密钥"
+        case .agents: "Agent 接入"
+        case .gateway: "本地网关"
         case .networkProxy: "网络代理"
         case .mobile: "移动端伴生"
-        case .pet: "状态栏与 Pet"
         }
     }
 
+    /// Subtitles carry the detail, so titles can stay short.
     var subtitle: String {
         switch self {
-        case .accounts: "管理本机账号与 API Key"
-        case .agents: "接入并管理本地 Coding Agent"
-        case .gateway: "本地多协议 LLM 网关与遥测"
         case .general: "更新、外观、布局与刷新"
+        case .pet: "状态栏、任务浮窗与伴生宠物"
+        case .accounts: "管理本机账号、订阅与 API Key"
+        case .agents: "管理本地 Coding Agent 与 Hook 事件"
+        case .gateway: "多协议 LLM 代理与实时遥测"
         case .networkProxy: "统一管理 Codexling 的公网出站连接"
         case .mobile: "局域网同步、Web 看板与多端配对"
-        case .pet: "菜单栏、任务浮窗与 Pet"
         }
     }
 
@@ -401,9 +407,11 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("SETTINGS")
-                .font(.system(size: 9, weight: .bold))
-                .tracking(1.4)
+            // Latin all-caps tracked well; CJK does not — use a light tracking
+            // and a touch more size so the header reads as a label, not noise.
+            Text("设置")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.8)
                 .foregroundStyle(Color.codexMuted)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 7)
