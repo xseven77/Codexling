@@ -682,6 +682,13 @@ struct MobileCompanionSettingsView: View {
 
     private func refreshStatus() {
         pluginStatus = pluginInstaller.currentStatus()
+        // If the installed version already matches or exceeds the found update, clear it.
+        if let update = availableUpdate {
+            let currentVer = pluginStatus.displayVersion
+            if currentVer == update.version || currentVer == "v\(update.version)" {
+                availableUpdate = nil
+            }
+        }
     }
 
     private func checkForPluginUpdates() {

@@ -81,6 +81,8 @@ public final class WebPluginInstaller: @unchecked Sendable {
         var request = URLRequest(url: Self.latestReleaseAPIURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("Codexling-Desktop", forHTTPHeaderField: "User-Agent")
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.timeoutInterval = 15
 
         let (data, response) = try await URLSession.shared.data(for: request)
