@@ -16,6 +16,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case agents
     case gateway
     case networkProxy
+    case mobile
     case pet
 
     var id: String { rawValue }
@@ -27,6 +28,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .gateway: "Gateway"
         case .general: "通用"
         case .networkProxy: "网络代理"
+        case .mobile: "移动端伴生"
         case .pet: "状态栏与 Pet"
         }
     }
@@ -38,6 +40,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .gateway: "本地多协议 LLM 网关与遥测"
         case .general: "更新、外观、布局与刷新"
         case .networkProxy: "统一管理 Codexling 的公网出站连接"
+        case .mobile: "局域网同步、Web 看板与多端配对"
         case .pet: "菜单栏、任务浮窗与 Pet"
         }
     }
@@ -49,6 +52,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .gateway: "point.3.connected.trianglepath.dotted"
         case .general: "slider.horizontal.3"
         case .networkProxy: "network"
+        case .mobile: "iphone.gen3"
         case .pet: "pawprint"
         }
     }
@@ -406,7 +410,12 @@ struct SettingsView: View {
 
             ForEach(SettingsTab.allCases) { tab in
                 Button {
-                    selectedTab = tab
+                    if selectedTab != tab {
+                        selectedTab = tab
+                        if layout == .window {
+                            onMeasuredContentHeightChange(-1)
+                        }
+                    }
                 } label: {
                     HStack(spacing: 9) {
                         Image(systemName: tab.systemImage)
@@ -482,6 +491,10 @@ struct SettingsView: View {
                 updateSection
             case .networkProxy:
                 networkProxyPageSection
+            case .mobile:
+                MobileCompanionSettingsView { message, icon in
+                    showToast(message, systemImage: icon)
+                }
             case .pet:
                 petSection
                 thirdPartyPetResourcesSection

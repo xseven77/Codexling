@@ -58,7 +58,7 @@ struct DSHActivityService: Sendable {
                     id: "dsh:\(latest.sessionID)",
                     state: state,
                     detail: detail,
-                    title: title,
+                    title: "Deepseek Harness",
                     updatedAt: last.time,
                     model: "Deepseek Harness"
                 )
@@ -308,6 +308,16 @@ struct DSHActivityService: Sendable {
                 title = eventData?["title"] as? String
             } else if type == "user/message", let content = eventData?["content"] as? [[String: Any]] {
                 messageText = content.compactMap { $0["text"] as? String }.joined()
+            } else if type == "agent/inbox/spliced", let inserted = eventData?["inserted"] as? [[String: Any]] {
+                for item in inserted {
+                    if let content = item["content"] as? [[String: Any]] {
+                        let text = content.compactMap { $0["text"] as? String }.joined()
+                        if !text.isEmpty {
+                            messageText = text
+                            break
+                        }
+                    }
+                }
             }
 
             events.append(DSHEvent(type: type, time: time, title: title, messageText: messageText))

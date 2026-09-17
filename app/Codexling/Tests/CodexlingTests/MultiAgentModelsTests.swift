@@ -393,8 +393,8 @@ final class MultiAgentModelsTests: XCTestCase {
                 "second": "second-key",
             ]),
             deepSeekBalanceService: TestDelayedDeepSeekBalanceService(delays: [
-                "first-key": 200_000_000,  // 0.2s
-                "second-key": 400_000_000, // 0.4s
+                "first-key": 150_000_000,  // 0.15s
+                "second-key": 600_000_000, // 0.60s
             ]),
             deepSeekModelsService: TestDeepSeekModelsService(),
             startsAutomaticRefresh: false,
@@ -404,13 +404,13 @@ final class MultiAgentModelsTests: XCTestCase {
         let refreshTask = Task { await store.refreshAllConnections() }
 
         // 两个账号都在加载中。
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 80_000_000)
         XCTAssertEqual(store.refreshingConnectionIDs, Set([firstID, secondID]))
         XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[0]))
         XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[1]))
 
         // 快的账号已加载完，慢的账号仍在加载（分开加载、逐个移除）。
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertEqual(store.refreshingConnectionIDs, Set([secondID]))
         XCTAssertFalse(store.isRefreshingConnection(store.deepSeekConnections[0]))
         XCTAssertTrue(store.isRefreshingConnection(store.deepSeekConnections[1]))

@@ -96,8 +96,9 @@ enum DetachedWindowMetrics {
 
     static func clampSettingsContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
+        let dynamicMaxWidth = max(maxWidth, (screen?.visibleFrame.width ?? 1200) - 100)
         return NSSize(
-            width: min(max(size.width, dashboardWidth), maxWidth),
+            width: min(max(size.width, dashboardWidth), dynamicMaxWidth),
             height: min(
                 max(size.height, min(settingsMinWindowHeight, dynamicMaxHeight)),
                 dynamicMaxHeight
@@ -177,18 +178,13 @@ enum DetachedWindowMetrics {
         return NSSize(width: dashboardWidth, height: height)
     }
 
-    static func settingsWindowSizeLimits(measuredContentHeight: CGFloat?, screen: NSScreen? = nil) -> (min: NSSize, max: NSSize) {
+    static func settingsWindowSizeLimits(measuredContentHeight: CGFloat? = nil, screen: NSScreen? = nil) -> (min: NSSize, max: NSSize) {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
         let minHeight = min(settingsMinWindowHeight, dynamicMaxHeight)
-        let maxHeight: CGFloat
-        if let measuredContentHeight, measuredContentHeight > 0 {
-            maxHeight = max(minHeight, min(measuredContentHeight, dynamicMaxHeight))
-        } else {
-            maxHeight = dynamicMaxHeight
-        }
+        let dynamicMaxWidth = max(maxWidth, (screen?.visibleFrame.width ?? 1200) - 100)
         return (
             NSSize(width: dashboardWidth, height: minHeight),
-            NSSize(width: maxWidth, height: maxHeight)
+            NSSize(width: dynamicMaxWidth, height: dynamicMaxHeight)
         )
     }
 }
@@ -825,6 +821,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let onClose: () -> Void
     private var measuredContentHeight: CGFloat?
     private var isProgrammaticResize = false
+    private var hasUserResized = false
+    private var userResizedSize: NSSize?
 
     init(
         store: UsageSnapshotStore,
@@ -920,6 +918,23 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard measured > 1, measuredContentHeight != measured else { return }
         measuredContentHeight = measured
         applySizeLimits()
+
+        // 避免在用户按住鼠标拖拽窗口边缘时打架
+        if NSEvent.pressedMouseButtons != 0 {
+            return
+        }
+
+        // 如果用户已手动拖拽调整过窗口尺寸，保持用户设置的宽高，绝不强制缩回
+        if hasUserResized, let userSize = userResizedSize {
+            // 如果内容自然高度比用户拉的高度还要大，则自适应长高，但宽度始终保持用户调整的宽度
+            if measured > userSize.height {
+                let dynamicMaxHeight = DetachedWindowMetrics.maximumSettingsWindowHeight(for: window.screen)
+                let newHeight = min(measured, dynamicMaxHeight)
+                resizeWindow(to: NSSize(width: userSize.width, height: newHeight))
+            }
+            return
+        }
+
         resizeWindow(
             to: DetachedWindowMetrics.preferredSettingsWindowSize(
                 contentHeight: measured,
@@ -959,12 +974,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         guard !isProgrammaticResize else { return }
+        hasUserResized = true
+        userResizedSize = window.frame.size
         let clamped = DetachedWindowMetrics.clampSettingsContentSize(
             window.frame.size,
             screen: window.screen
         )
         guard clamped != window.frame.size else { return }
         resizeWindow(to: clamped)
+        userResizedSize = clamped
     }
 
     func windowDidChangeScreen(_ notification: Notification) {

@@ -45,6 +45,15 @@ struct MobileSyncServerTests {
                 )
             ]
         }
+
+        func exportCredentials() async -> MobileCredentialsExportPayload {
+            MobileCredentialsExportPayload(
+                exportedAt: Date(timeIntervalSince1970: 1726470000),
+                accounts: [
+                    MobileCredentialAccountPayload(id: "conn-1", provider: "codex", label: "Work", tokenOrKey: "mock-token-secret")
+                ]
+            )
+        }
     }
 
     @Test("MobileSnapshotPayload JSON serialization")
@@ -122,5 +131,40 @@ struct MobileSyncServerTests {
     func testPluginDirectoryDefault() {
         let defaultURL = MobileSyncServer.defaultPluginDirectoryURL
         #expect(defaultURL.path.contains("Plugins/mobile-web"))
+    }
+
+    @Test("MobileCredentialsExportPayload serialization")
+    func testCredentialsExportSerialization() throws {
+        let payload = MobileCredentialsExportPayload(
+            exportedAt: Date(timeIntervalSince1970: 1726470000),
+            accounts: [
+                MobileCredentialAccountPayload(id: "c1", provider: "codex", label: "Work", tokenOrKey: "tok-12345"),
+                MobileCredentialAccountPayload(id: "c2", provider: "deepseek", label: "Personal", tokenOrKey: "sk-67890")
+            ]
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(payload)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(MobileCredentialsExportPayload.self, from: data)
+
+        #expect(decoded.accounts.count == 2)
+        #expect(decoded.accounts[0].provider == "codex")
+        #expect(decoded.accounts[0].tokenOrKey == "tok-12345")
+        #expect(decoded.accounts[1].provider == "deepseek")
+    }
+
+    @Test("WebPluginInstaller inspects installed plugin")
+    func testWebPluginInstallerStatus() {
+        let installer = WebPluginInstaller.shared
+        let status = installer.currentStatus()
+        // If plugin is installed in App Support, verify manifest and index
+        if status.isInstalled {
+            #expect(status.manifest?.version == "1.0.0")
+            #expect(status.manifest?.name == "codexling-mobile-web")
+        }
     }
 }

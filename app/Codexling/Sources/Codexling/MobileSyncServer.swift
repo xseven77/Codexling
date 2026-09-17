@@ -8,12 +8,29 @@ public struct MobileTaskPayload: Codable, Equatable, Sendable {
     public let state: String
     public let title: String
     public let agent: String
+    public let detail: String?
+    public let model: String?
+    public let workspaceName: String?
+    public let gitBranch: String?
 
-    public init(id: String, state: String, title: String, agent: String) {
+    public init(
+        id: String,
+        state: String,
+        title: String,
+        agent: String,
+        detail: String? = nil,
+        model: String? = nil,
+        workspaceName: String? = nil,
+        gitBranch: String? = nil
+    ) {
         self.id = id
         self.state = state
         self.title = title
         self.agent = agent
+        self.detail = detail
+        self.model = model
+        self.workspaceName = workspaceName
+        self.gitBranch = gitBranch
     }
 }
 
@@ -29,6 +46,37 @@ public struct MobileActivityPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct MobileResetCouponPayload: Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let description: String?
+    public let source: String?
+    public let grantedAt: String?
+    public let expiresAt: String
+    public let status: String?
+    public let resetType: String?
+
+    public init(
+        id: String,
+        title: String,
+        description: String? = nil,
+        source: String? = nil,
+        grantedAt: String? = nil,
+        expiresAt: String,
+        status: String? = nil,
+        resetType: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.source = source
+        self.grantedAt = grantedAt
+        self.expiresAt = expiresAt
+        self.status = status
+        self.resetType = resetType
+    }
+}
+
 public struct MobileConnectionPayload: Codable, Equatable, Sendable {
     public let id: String
     public let provider: String
@@ -37,6 +85,28 @@ public struct MobileConnectionPayload: Codable, Equatable, Sendable {
     public let shortWindowRemaining: Double?
     public let weeklyRemaining: Double?
     public let balance: String?
+    public let accountName: String?
+    public let email: String?
+    public let planName: String?
+    public let shortWindowLabel: String?
+    public let shortWindowResetAt: String?
+    public let weeklyWindowLabel: String?
+    public let weeklyWindowResetAt: String?
+    public let claudeGptFiveHourRemaining: Double?
+    public let claudeGptWeeklyRemaining: Double?
+    public let subscriptionActiveUntilISO: String?
+    public let subscriptionWillRenew: Bool?
+    public let subscriptionDaysRemaining: Int?
+    public let subscriptionReminderMessage: String?
+    public let subscriptionRenewalLine: String?
+    public let resetCoupons: [MobileResetCouponPayload]?
+    public let keySuffix: String?
+    public let statusColor: String?
+    public let toppedUp: String?
+    public let granted: String?
+    public let availableModelCount: Int?
+    public let availableModelIDs: [String]?
+    public let lastValidatedAt: String?
 
     public init(
         id: String,
@@ -45,7 +115,29 @@ public struct MobileConnectionPayload: Codable, Equatable, Sendable {
         isHealthy: Bool,
         shortWindowRemaining: Double? = nil,
         weeklyRemaining: Double? = nil,
-        balance: String? = nil
+        balance: String? = nil,
+        accountName: String? = nil,
+        email: String? = nil,
+        planName: String? = nil,
+        shortWindowLabel: String? = nil,
+        shortWindowResetAt: String? = nil,
+        weeklyWindowLabel: String? = nil,
+        weeklyWindowResetAt: String? = nil,
+        claudeGptFiveHourRemaining: Double? = nil,
+        claudeGptWeeklyRemaining: Double? = nil,
+        subscriptionActiveUntilISO: String? = nil,
+        subscriptionWillRenew: Bool? = nil,
+        subscriptionDaysRemaining: Int? = nil,
+        subscriptionReminderMessage: String? = nil,
+        subscriptionRenewalLine: String? = nil,
+        resetCoupons: [MobileResetCouponPayload]? = nil,
+        keySuffix: String? = nil,
+        statusColor: String? = nil,
+        toppedUp: String? = nil,
+        granted: String? = nil,
+        availableModelCount: Int? = nil,
+        availableModelIDs: [String]? = nil,
+        lastValidatedAt: String? = nil
     ) {
         self.id = id
         self.provider = provider
@@ -54,6 +146,28 @@ public struct MobileConnectionPayload: Codable, Equatable, Sendable {
         self.shortWindowRemaining = shortWindowRemaining
         self.weeklyRemaining = weeklyRemaining
         self.balance = balance
+        self.accountName = accountName
+        self.email = email
+        self.planName = planName
+        self.shortWindowLabel = shortWindowLabel
+        self.shortWindowResetAt = shortWindowResetAt
+        self.weeklyWindowLabel = weeklyWindowLabel
+        self.weeklyWindowResetAt = weeklyWindowResetAt
+        self.claudeGptFiveHourRemaining = claudeGptFiveHourRemaining
+        self.claudeGptWeeklyRemaining = claudeGptWeeklyRemaining
+        self.subscriptionActiveUntilISO = subscriptionActiveUntilISO
+        self.subscriptionWillRenew = subscriptionWillRenew
+        self.subscriptionDaysRemaining = subscriptionDaysRemaining
+        self.subscriptionReminderMessage = subscriptionReminderMessage
+        self.subscriptionRenewalLine = subscriptionRenewalLine
+        self.resetCoupons = resetCoupons
+        self.keySuffix = keySuffix
+        self.statusColor = statusColor
+        self.toppedUp = toppedUp
+        self.granted = granted
+        self.availableModelCount = availableModelCount
+        self.availableModelIDs = availableModelIDs
+        self.lastValidatedAt = lastValidatedAt
     }
 }
 
@@ -61,6 +175,7 @@ public struct MobileSnapshotPayload: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let generatedAt: Date
     public let activePetId: String
+    public let todayMinutes: Int
     public let activity: MobileActivityPayload
     public let connections: [MobileConnectionPayload]
 
@@ -68,12 +183,14 @@ public struct MobileSnapshotPayload: Codable, Equatable, Sendable {
         schemaVersion: Int = 1,
         generatedAt: Date = Date(),
         activePetId: String,
+        todayMinutes: Int = 0,
         activity: MobileActivityPayload,
         connections: [MobileConnectionPayload]
     ) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.activePetId = activePetId
+        self.todayMinutes = todayMinutes
         self.activity = activity
         self.connections = connections
     }
@@ -118,11 +235,38 @@ public struct MobilePetMetadata: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Mobile Credentials Export Payload
+
+public struct MobileCredentialAccountPayload: Codable, Equatable, Sendable {
+    public let id: String
+    public let provider: String
+    public let label: String
+    public let tokenOrKey: String
+
+    public init(id: String, provider: String, label: String, tokenOrKey: String) {
+        self.id = id
+        self.provider = provider
+        self.label = label
+        self.tokenOrKey = tokenOrKey
+    }
+}
+
+public struct MobileCredentialsExportPayload: Codable, Equatable, Sendable {
+    public let exportedAt: Date
+    public let accounts: [MobileCredentialAccountPayload]
+
+    public init(exportedAt: Date = Date(), accounts: [MobileCredentialAccountPayload]) {
+        self.exportedAt = exportedAt
+        self.accounts = accounts
+    }
+}
+
 // MARK: - Mobile Sync Data Provider
 
 public protocol MobileSyncDataProvider: AnyObject, Sendable {
     func makeSnapshot() async -> MobileSnapshotPayload
     func availablePets() -> [MobilePetMetadata]
+    func exportCredentials() async -> MobileCredentialsExportPayload
 }
 
 // MARK: - Mobile Sync Server
@@ -256,14 +400,29 @@ public final class MobileSyncServer: @unchecked Sendable {
         let queryParams = parseQuery(pathComponents.count > 1 ? pathComponents[1] : nil)
 
         var headers: [String: String] = [:]
-        for line in lines.dropFirst() {
-            if line.isEmpty { break }
+        var bodyStartIndex = lines.count
+        for (idx, line) in lines.enumerated().dropFirst() {
+            if line.isEmpty {
+                bodyStartIndex = idx + 1
+                break
+            }
             let headerParts = line.split(separator: ":", maxSplits: 1)
             if headerParts.count == 2 {
                 let name = headerParts[0].trimmingCharacters(in: .whitespaces).lowercased()
                 let value = headerParts[1].trimmingCharacters(in: .whitespaces)
                 headers[name] = value
             }
+        }
+        let requestBody = lines.dropFirst(bodyStartIndex).joined(separator: "\r\n")
+
+        // 0. Handle CORS preflight
+        if method == "OPTIONS" {
+            sendResponse(status: 204, headers: [
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+            ], body: "", on: connection)
+            return
         }
 
         // 1. Public health check
@@ -279,7 +438,81 @@ public final class MobileSyncServer: @unchecked Sendable {
                 return
             }
 
+            // Dynamic serving of pet spritesheets
+            if requestPath.hasPrefix("/mobile/pets/") && requestPath.hasSuffix("/spritesheet.webp") {
+                let petSub = String(requestPath.dropFirst("/mobile/pets/".count).dropLast("/spritesheet.webp".count))
+                // Look in Application Support/Codexling/Pets/<petSub>/spritesheet.webp
+                let customURL = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Application Support/Codexling/Pets")
+                    .appendingPathComponent(petSub)
+                    .appendingPathComponent("spritesheet.webp")
+                if FileManager.default.fileExists(atPath: customURL.path),
+                   let data = try? Data(contentsOf: customURL) {
+                    sendRawResponse(status: 200, headers: ["Content-Type": "image/webp"], data: data, on: connection)
+                    return
+                }
+                // Fallback to plugin pets
+                let pluginURL = pluginDirectoryURL.appendingPathComponent("pets").appendingPathComponent(petSub).appendingPathComponent("spritesheet.webp")
+                if FileManager.default.fileExists(atPath: pluginURL.path),
+                   let data = try? Data(contentsOf: pluginURL) {
+                    sendRawResponse(status: 200, headers: ["Content-Type": "image/webp"], data: data, on: connection)
+                    return
+                }
+            }
+
             switch (method, requestPath) {
+            case ("GET", "/mobile/proxy"), ("POST", "/mobile/proxy"):
+                guard let targetStr = queryParams["target"], let targetURL = URL(string: targetStr) else {
+                    sendResponse(status: 400, headers: [:], body: "Missing target parameter", on: connection)
+                    return
+                }
+                Task {
+                    var req = URLRequest(url: targetURL)
+                    req.httpMethod = method
+                    req.timeoutInterval = 30
+                    if !requestBody.isEmpty, let bodyData = requestBody.data(using: .utf8) {
+                        req.httpBody = bodyData
+                    }
+                    if let auth = headers["x-target-authorization"] ?? headers["authorization"] {
+                        req.setValue(auth, forHTTPHeaderField: "Authorization")
+                    }
+                    if let ct = headers["content-type"] {
+                        req.setValue(ct, forHTTPHeaderField: "Content-Type")
+                    } else if method == "POST" {
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    }
+                    req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+                    // Domain-specific headers for OpenAI and Google Cloud Code
+                    let host = targetURL.host?.lowercased() ?? ""
+                    if host.contains("chatgpt.com") {
+                        req.setValue("Codexling/0.1", forHTTPHeaderField: "User-Agent")
+                        req.setValue("https://chatgpt.com/", forHTTPHeaderField: "Origin")
+                        req.setValue("https://chatgpt.com/", forHTTPHeaderField: "Referer")
+                        if targetURL.path.contains("/wham/") {
+                            req.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+                            req.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+                        }
+                        if let accountID = headers["chatgpt-account-id"] ?? queryParams["account_id"] {
+                            req.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+                        }
+                    } else if host.contains("googleapis.com") {
+                        req.setValue("antigravity", forHTTPHeaderField: "User-Agent")
+                        req.setValue(#"{"ideType":"ANTIGRAVITY"}"#, forHTTPHeaderField: "Client-Metadata")
+                    } else {
+                        req.setValue("CodexlingMobile/1.0", forHTTPHeaderField: "User-Agent")
+                    }
+
+                    do {
+                        let (data, response) = try await URLSession.codexlingExternal.data(for: req)
+                        let httpResponse = response as? HTTPURLResponse
+                        let statusCode = httpResponse?.statusCode ?? 200
+                        let responseText = String(data: data, encoding: .utf8) ?? "{}"
+                        self.sendResponse(status: statusCode, headers: ["Content-Type": "application/json"], body: responseText, on: connection)
+                    } catch {
+                        self.sendResponse(status: 502, headers: [:], body: error.localizedDescription, on: connection)
+                    }
+                }
             case ("GET", "/mobile/snapshot"):
                 Task {
                     let snapshot = await self.dataProvider.makeSnapshot()
@@ -303,6 +536,19 @@ public final class MobileSyncServer: @unchecked Sendable {
                     self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
                 }
 
+            case ("GET", "/mobile/credentials"):
+                Task {
+                    let credentials = await self.dataProvider.exportCredentials()
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    if let data = try? encoder.encode(credentials),
+                       let jsonString = String(data: data, encoding: .utf8) {
+                        self.sendResponse(status: 200, headers: ["Content-Type": "application/json"], body: jsonString, on: connection)
+                    } else {
+                        self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
+                    }
+                }
+
             case ("GET", "/mobile/events"):
                 startSSEStream(on: connection)
 
@@ -312,8 +558,8 @@ public final class MobileSyncServer: @unchecked Sendable {
             return
         }
 
-        // 3. Desktop Plugin Static Web Hosting (GET / or static files)
-        if method == "GET" {
+        // 3. Desktop Plugin Static Web Hosting (GET / HEAD / or static files)
+        if method == "GET" || method == "HEAD" {
             servePluginStaticContent(path: requestPath, on: connection)
             return
         }
@@ -425,6 +671,9 @@ public final class MobileSyncServer: @unchecked Sendable {
     ) {
         var response = "HTTP/1.1 \(status) \(statusMessage(for: status))\r\n"
         var finalHeaders = headers
+        finalHeaders["Access-Control-Allow-Origin"] = "*"
+        finalHeaders["Access-Control-Allow-Headers"] = "*"
+        finalHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         finalHeaders["Content-Length"] = "\(data.count)"
         finalHeaders["Connection"] = "close"
 

@@ -236,6 +236,12 @@ struct CodexTaskActivity: Identifiable, Equatable, Sendable {
     /// Hook-backed tasks carry the Agent name in `title`/`model`; native Codex
     /// tasks carry the model name instead, so Codex is the safe fallback.
     var agentDisplayName: String {
+        if id.hasPrefix("dsh:") { return "Deepseek Harness" }
+        if id.hasPrefix("hermes:") { return "Hermes" }
+        if id.hasPrefix("antigravity:") { return "Antigravity" }
+        if id.hasPrefix("pi:") { return "Pi" }
+        if id.hasPrefix("codex:") { return "Codex" }
+
         for agent in BuiltInAgentCatalog.prioritized {
             if model == agent.displayName
                 || title == agent.displayName

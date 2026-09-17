@@ -301,7 +301,7 @@ final class GatewayTests: XCTestCase {
 
         // Test Tab Switching
         store.selectedTab = .connect
-        XCTAssertEqual(store.selectedTab.rawValue, "接入与模型")
+        XCTAssertEqual(store.selectedTab.rawValue, "模型接入")
         XCTAssertEqual(store.selectedTab.symbolName, "network")
 
         // Test metric updates

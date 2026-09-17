@@ -834,6 +834,22 @@ final class CodexlingTests: XCTestCase {
             min(naturalContentHeight, settingsMaximum),
             min(DetachedWindowMetrics.settingsMinWindowHeight, settingsMaximum)
         ))
+
+        // 验证设置窗口允许用户自由拖拽拉大，maxSize.height 不应被限制在 measuredContentHeight
+        let limits = DetachedWindowMetrics.settingsWindowSizeLimits(
+            measuredContentHeight: 480,
+            screen: NSScreen.main
+        )
+        XCTAssertEqual(limits.max.height, settingsMaximum)
+        XCTAssertGreaterThanOrEqual(limits.max.width, DetachedWindowMetrics.maxWidth)
+
+        // 验证 clamp 允许放宽到屏幕或大宽度
+        let clamped = DetachedWindowMetrics.clampSettingsContentSize(
+            NSSize(width: 750, height: 700),
+            screen: NSScreen.main
+        )
+        XCTAssertEqual(clamped.width, 750)
+        XCTAssertEqual(clamped.height, min(700, settingsMaximum))
     }
 
     @MainActor

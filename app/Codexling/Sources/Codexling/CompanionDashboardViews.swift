@@ -3572,7 +3572,12 @@ private struct TaskStackView: View {
             .first(where: { $0.displayName == agentName })?.id ?? .codex
     }
     private var displayTitle: String {
-        if let displayedTask { return displayedTask.title }
+        if let displayedTask {
+            if displayedTask.agentDisplayName == "Deepseek Harness" {
+                return "Deepseek Harness"
+            }
+            return displayedTask.title
+        }
         return switch snapshot.state {
         case .idle: "暂时没有待跟进的任务"
         case .unavailable: "暂时无法读取 Codex 活动"
@@ -3593,6 +3598,11 @@ private struct TaskStackView: View {
     private var displayUpdatedAt: Date { displayedTask?.updatedAt ?? snapshot.updatedAt }
     private var displayMetadata: [(icon: String, value: String)] {
         guard let displayedTask else { return [] }
+        if displayedTask.agentDisplayName == "Deepseek Harness" {
+            return [
+                ("cpu", "Deepseek Harness")
+            ]
+        }
         return [
             displayedTask.workspaceName.map { ("folder", $0) },
             displayedTask.gitBranch.map { ("arrow.triangle.branch", $0) },

@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncSelectedCodexProjection()
             self?.startAccountCarouselTimer()
             self?.statusController?.refreshStatusTitle()
+            MobileSyncManager.shared.broadcastSnapshot()
         }
         multiAgentSettingsStore.onAccountCarouselPauseChanged = { [weak self] _ in
             self?.startAccountCarouselTimer()
@@ -82,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onPetSettingsChanged = { [weak self] in
             self?.syncCompanionState()
             self?.statusController?.refreshStatusTitle()
+            MobileSyncManager.shared.broadcastSnapshot()
         }
         settingsStore.onStandalonePetEnabledChanged = { [weak self] _ in
             self?.applyStandalonePetVisibility()
@@ -103,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }()
             self?.companionStatsStore.setActivityState(snapshot.state, agentID: activeAgent)
             self?.statusController?.refreshStatusTitle()
+            MobileSyncManager.shared.broadcastSnapshot()
         }
 
         GatewayStore.shared.bind(
@@ -111,6 +114,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         GatewayWindowController.shared.multiAgentSettingsStore = multiAgentSettingsStore
         GatewayWindowController.shared.appSettings = settingsStore
+
+        MobileSyncManager.shared.bind(
+            activityStore: activityStore,
+            multiAgentSettingsStore: multiAgentSettingsStore,
+            appSettingsStore: settingsStore,
+            companionStatsStore: companionStatsStore
+        )
 
         let actions = UsageActions(
             refresh: { [weak self] in
@@ -213,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MobileSyncManager.shared.stop()
         GatewaySupervisor.shared.stop()
         multiAgentSettingsStore.stopCodexAppServers()
         agentEventSocketService.stop()
