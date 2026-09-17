@@ -144,7 +144,11 @@ private struct PrimaryActionButton: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if isBusy {
-                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 12, height: 12)
+                        .tint(Color.codexOnPrimary)
                 } else {
                     Image(systemName: systemImage)
                 }
@@ -154,11 +158,19 @@ private struct PrimaryActionButton: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .foregroundStyle(Color.codexOnPrimary)
-            .background(Color.codexPrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.5)
+            .background(
+                isBusy
+                    ? Color.codexPrimary.opacity(0.85)
+                    : (isEnabled ? Color.codexPrimary : Color.codexPrimary.opacity(0.4)),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(isBusy ? 0.25 : 0.1), lineWidth: 0.75)
+            )
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
+        .disabled(!isEnabled && !isBusy)
     }
 }
 
@@ -169,6 +181,8 @@ struct MobileCompanionSettingsView: View {
     @State private var pluginInstaller = WebPluginInstaller.shared
     @State private var pluginStatus: WebPluginStatus = WebPluginInstaller.shared.currentStatus()
     @State private var isDownloadingPlugin = false
+    @State private var isCheckingForUpdate = false
+    @State private var availableUpdate: WebPluginInstaller.RemoteReleaseInfo?
     @State private var downloadProgress: Double = 0.0
     @State private var actionMessage: String?
     @State private var isErrorMessage = false
@@ -485,19 +499,58 @@ struct MobileCompanionSettingsView: View {
 
                         Spacer(minLength: 12)
 
-                        PrimaryActionButton(
-                            title: pluginStatus.isInstalled ? "检查更新" : "一键安装",
-                            systemImage: pluginStatus.isInstalled
-                                ? "arrow.triangle.2.circlepath"
-                                : "arrow.down.circle.fill",
-                            isBusy: isDownloadingPlugin,
-                            isEnabled: !isDownloadingPlugin
-                        ) {
-                            downloadAndInstallPlugin()
+                        if !pluginStatus.isInstalled {
+                            PrimaryActionButton(
+                                title: isDownloadingPlugin ? "正在安装…" : "一键安装",
+                                systemImage: "arrow.down.circle.fill",
+                                isBusy: isDownloadingPlugin,
+                                isEnabled: !isDownloadingPlugin
+                            ) {
+                                downloadAndInstallPlugin()
+                            }
+                        } else if let update = availableUpdate, update.hasUpdate {
+                            PrimaryActionButton(
+                                title: isDownloadingPlugin ? "正在更新…" : "更新至 v\(update.version)",
+                                systemImage: "arrow.up.circle.fill",
+                                isBusy: isDownloadingPlugin,
+                                isEnabled: !isDownloadingPlugin
+                            ) {
+                                downloadAndInstallPlugin(remoteURL: update.downloadURL)
+                            }
+                        } else {
+                            ChipButton(
+                                title: isCheckingForUpdate ? "检查中…" : "检查更新",
+                                systemImage: "arrow.triangle.2.circlepath",
+                                isEnabled: !isCheckingForUpdate && !isDownloadingPlugin
+                            ) {
+                                checkForPluginUpdates()
+                            }
                         }
                     }
 
-                    if let message = actionMessage {
+                    if isDownloadingPlugin {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text(actionMessage ?? "正在下载插件包…")
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color.codexInk)
+
+                                Spacer()
+
+                                if downloadProgress > 0 {
+                                    Text(verbatim: "\(Int(downloadProgress * 100))%")
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.codexPrimary)
+                                }
+                            }
+
+                            ProgressView(value: downloadProgress > 0 ? downloadProgress : nil)
+                                .progressViewStyle(.linear)
+                                .tint(Color.codexPrimary)
+                                .controlSize(.small)
+                        }
+                        .padding(.vertical, 2)
+                    } else if let message = actionMessage {
                         HStack(spacing: 6) {
                             Image(systemName: isErrorMessage ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                 .font(.system(size: 11))
@@ -631,16 +684,63 @@ struct MobileCompanionSettingsView: View {
         pluginStatus = pluginInstaller.currentStatus()
     }
 
-    private func downloadAndInstallPlugin() {
-        isDownloadingPlugin = true
-        actionMessage = "正在连接 GitHub Release 下载最新插件包..."
+    private func checkForPluginUpdates() {
+        isCheckingForUpdate = true
+        actionMessage = "正在查询远端最新版本…"
         isErrorMessage = false
 
         Task {
             do {
-                try await pluginInstaller.downloadAndInstall()
+                let releaseInfo = try await pluginInstaller.checkForUpdates()
+                await MainActor.run {
+                    self.isCheckingForUpdate = false
+                    self.availableUpdate = releaseInfo
+                    if releaseInfo.hasUpdate {
+                        self.actionMessage = "发现新版本 v\(releaseInfo.version)，可点击「更新至 v\(releaseInfo.version)」"
+                        self.isErrorMessage = false
+                        self.onShowToast("发现 Web 伴生插件新版本 v\(releaseInfo.version)", "arrow.up.circle.fill")
+                    } else {
+                        self.actionMessage = "当前已是最新版本 (v\(self.pluginStatus.displayVersion))"
+                        self.isErrorMessage = false
+                        self.onShowToast("Web 插件已是最新版本", "checkmark.circle")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isCheckingForUpdate = false
+                    self.actionMessage = "检查更新失败: \(error.localizedDescription)"
+                    self.isErrorMessage = true
+                }
+            }
+        }
+    }
+
+    private func downloadAndInstallPlugin(remoteURL: URL? = nil) {
+        isDownloadingPlugin = true
+        downloadProgress = 0.0
+        actionMessage = "正在连接 GitHub Release 下载最新插件包…"
+        isErrorMessage = false
+
+        let targetURL = remoteURL ?? WebPluginInstaller.defaultReleaseURL
+
+        Task {
+            do {
+                try await pluginInstaller.downloadAndInstall(from: targetURL, onProgress: { progress, currentBytes, totalBytes in
+                    Task { @MainActor in
+                        self.downloadProgress = progress
+                        if totalBytes > 0 {
+                            let currStr = ByteCountFormatter.string(fromByteCount: currentBytes, countStyle: .file)
+                            let totalStr = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+                            self.actionMessage = "正在下载插件包：\(currStr) / \(totalStr) (\(Int(progress * 100))%)"
+                        } else {
+                            self.actionMessage = "正在下载插件包…"
+                        }
+                    }
+                })
                 await MainActor.run {
                     self.isDownloadingPlugin = false
+                    self.downloadProgress = 1.0
+                    self.availableUpdate = nil
                     self.refreshStatus()
                     self.actionMessage = "插件安装成功！当前版本 v\(self.pluginStatus.displayVersion)"
                     self.isErrorMessage = false
@@ -649,6 +749,7 @@ struct MobileCompanionSettingsView: View {
             } catch {
                 await MainActor.run {
                     self.isDownloadingPlugin = false
+                    self.downloadProgress = 0.0
                     self.actionMessage = "安装失败: \(error.localizedDescription)"
                     self.isErrorMessage = true
                 }

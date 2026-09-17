@@ -255,7 +255,7 @@ struct MobileSyncServerTests {
         let status = installer.currentStatus()
         // If plugin is installed in App Support, verify manifest and index
         if status.isInstalled {
-            #expect(status.manifest?.version == "1.0.0")
+            #expect(status.manifest?.version != nil)
             #expect(status.manifest?.name == "codexling-mobile-web")
         }
     }

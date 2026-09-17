@@ -729,29 +729,334 @@ public final class MobileSyncServer: @unchecked Sendable {
 
         // Fallback: If root is requested but plugin not installed, serve friendly status page
         if path == "/" || path == "/index.html" {
+            let serverPort = self.port
+            let hasToken = !token.isEmpty
             let fallbackHTML = """
             <!DOCTYPE html>
             <html lang="zh-CN">
             <head>
               <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width,initial-scale=1">
-              <title>Codexling Mobile Web</title>
+              <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+              <title>Web 伴生插件未就绪 · Codexling</title>
               <style>
-                body { background: #121214; color: #e4e4e7; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; box-sizing: border-box; }
-                .card { max-width: 440px; background: #18181b; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 32px; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-                h1 { color: #f59e0b; font-size: 20px; margin-top: 0; letter-spacing: -0.02em; }
-                p { color: #a1a1aa; font-size: 14px; line-height: 1.6; margin: 12px 0; }
-                .badge { display: inline-block; background: rgba(16,185,129,0.15); color: #10b981; padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 500; margin-top: 16px; }
-                .path { font-family: ui-monospace, monospace; background: #27272a; padding: 3px 8px; border-radius: 6px; font-size: 12px; color: #e4e4e7; word-break: break-all; }
+                :root {
+                  --bg: #121316;
+                  --card: #1c1d22;
+                  --card-inner: #24262c;
+                  --border: rgba(255, 255, 255, 0.08);
+                  --border-strong: rgba(255, 255, 255, 0.14);
+                  --text-title: #f4f4f5;
+                  --text-sub: #a1a1aa;
+                  --text-muted: #71717a;
+                  --primary: #28c04e;
+                  --amber: #f59e0b;
+                  --blue: #3b82f6;
+                }
+                * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+                body {
+                  background: var(--bg);
+                  color: var(--text-title);
+                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+                  min-height: 100vh;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  padding: 24px 16px;
+                  background-image: radial-gradient(circle at 50% 0%, rgba(40, 192, 78, 0.08) 0%, transparent 60%);
+                }
+                .container {
+                  width: 100%;
+                  max-width: 480px;
+                  background: var(--card);
+                  border: 1px solid var(--border);
+                  border-radius: 20px;
+                  padding: 28px 20px;
+                  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+                  position: relative;
+                }
+                .badge-row {
+                  display: flex;
+                  justify-content: center;
+                  margin-bottom: 16px;
+                }
+                .status-capsule {
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 6px;
+                  background: rgba(16, 185, 129, 0.12);
+                  border: 1px solid rgba(16, 185, 129, 0.28);
+                  color: #34d399;
+                  padding: 4px 12px;
+                  border-radius: 9999px;
+                  font-size: 11.5px;
+                  font-weight: 500;
+                  letter-spacing: 0.2px;
+                }
+                .pulse-dot {
+                  width: 7px;
+                  height: 7px;
+                  background: #10b981;
+                  border-radius: 50%;
+                  animation: pulse 2s infinite ease-in-out;
+                }
+                @keyframes pulse {
+                  0%, 100% { opacity: 1; transform: scale(1); }
+                  50% { opacity: 0.4; transform: scale(0.85); }
+                }
+                .icon-hero {
+                  width: 56px;
+                  height: 56px;
+                  margin: 0 auto 16px;
+                  background: rgba(245, 158, 11, 0.12);
+                  border: 1px solid rgba(245, 158, 11, 0.25);
+                  border-radius: 16px;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  color: var(--amber);
+                }
+                .title {
+                  text-align: center;
+                  font-size: 18px;
+                  font-weight: 600;
+                  color: var(--text-title);
+                  margin-bottom: 8px;
+                  letter-spacing: -0.01em;
+                }
+                .subtitle {
+                  text-align: center;
+                  font-size: 13px;
+                  color: var(--text-sub);
+                  line-height: 1.55;
+                  margin-bottom: 24px;
+                }
+                .section-title {
+                  font-size: 12px;
+                  font-weight: 600;
+                  color: var(--text-muted);
+                  text-transform: uppercase;
+                  letter-spacing: 0.5px;
+                  margin-bottom: 10px;
+                  padding-left: 2px;
+                }
+                .plan-card {
+                  background: var(--card-inner);
+                  border: 1px solid var(--border);
+                  border-radius: 14px;
+                  padding: 14px;
+                  margin-bottom: 12px;
+                  transition: border-color 0.2s;
+                }
+                .plan-card.recommend {
+                  border-color: rgba(40, 192, 78, 0.35);
+                  background: linear-gradient(180deg, rgba(40, 192, 78, 0.05) 0%, var(--card-inner) 100%);
+                }
+                .plan-header {
+                  display: flex;
+                  align-items: center;
+                  justify-content: space-between;
+                  margin-bottom: 8px;
+                }
+                .plan-title {
+                  font-size: 13.5px;
+                  font-weight: 600;
+                  color: var(--text-title);
+                  display: flex;
+                  align-items: center;
+                  gap: 6px;
+                }
+                .tag {
+                  font-size: 10px;
+                  font-weight: 600;
+                  padding: 2px 6px;
+                  border-radius: 4px;
+                  background: rgba(40, 192, 78, 0.18);
+                  color: #4ade80;
+                }
+                .step-list {
+                  list-style: none;
+                  font-size: 12px;
+                  color: var(--text-sub);
+                  line-height: 1.65;
+                }
+                .step-list li {
+                  position: relative;
+                  padding-left: 18px;
+                  margin-bottom: 4px;
+                }
+                .step-list li::before {
+                  content: "•";
+                  position: absolute;
+                  left: 6px;
+                  color: var(--text-muted);
+                }
+                .highlight-text {
+                  color: var(--text-title);
+                  font-weight: 500;
+                }
+                .action-row {
+                  margin-top: 24px;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 10px;
+                }
+                .btn {
+                  width: 100%;
+                  border: none;
+                  border-radius: 12px;
+                  padding: 13px;
+                  font-size: 13.5px;
+                  font-weight: 600;
+                  cursor: pointer;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  gap: 6px;
+                  transition: opacity 0.15s, transform 0.1s;
+                }
+                .btn:active { transform: scale(0.98); }
+                .btn-primary {
+                  background: var(--primary);
+                  color: #0b2f13;
+                }
+                .btn-secondary {
+                  background: rgba(255, 255, 255, 0.06);
+                  color: var(--text-sub);
+                  border: 1px solid var(--border);
+                }
+                .footer-meta {
+                  margin-top: 20px;
+                  padding-top: 14px;
+                  border-top: 1px solid var(--border);
+                  display: flex;
+                  justify-content: space-between;
+                  font-size: 11px;
+                  color: var(--text-muted);
+                  font-family: ui-monospace, monospace;
+                }
+                .detect-tip {
+                  text-align: center;
+                  font-size: 11px;
+                  color: var(--text-muted);
+                  margin-top: 8px;
+                }
               </style>
             </head>
             <body>
-              <div class="card">
-                <h1>Codexling Mobile Web</h1>
-                <p>Web 伴生前端插件尚未安装或尚未启用。</p>
-                <p>请将 <span class="path">mobile-web</span> 插件包导入至桌面端插件目录。</p>
-                <div class="badge">● 局域网 API 广播服务正常运行中 (端口: 58350)</div>
+              <div class="container">
+                <div class="badge-row">
+                  <div class="status-capsule">
+                    <span class="pulse-dot"></span>
+                    <span>局域网同步正常 · 端口 \(serverPort)</span>
+                  </div>
+                </div>
+
+                <div class="icon-hero">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                  </svg>
+                </div>
+
+                <h1 class="title">Web 伴生前端未就绪</h1>
+                <p class="subtitle">Mac 端同步服务已连通，但尚未安装或启用移动看板 Web Core 静态资源包。</p>
+
+                <div class="section-title">安装与就绪方案</div>
+
+                <!-- 方案一：推荐在线安装 -->
+                <div class="plan-card recommend">
+                  <div class="plan-header">
+                    <div class="plan-title">
+                      <span>方案 1：Mac 端一键在线安装</span>
+                    </div>
+                    <span class="tag">推荐</span>
+                  </div>
+                  <ul class="step-list">
+                    <li>打开 Mac 屏幕顶部的 <span class="highlight-text">Codexling</span> 并进入「偏好设置」</li>
+                    <li>切换至侧边栏 <span class="highlight-text">「移动端伴生」</span> 标签页</li>
+                    <li>在 Web 伴生前端插件卡片中，点击 <span class="highlight-text">「一键安装」</span></li>
+                    <li>安装完成后，本页面会自动感应并载入看板界面</li>
+                  </ul>
+                </div>
+
+                <!-- 方案二：本地导入或开发构建 -->
+                <div class="plan-card">
+                  <div class="plan-header">
+                    <div class="plan-title">
+                      <span>方案 2：从本地 .zip 导入 / 自建插件</span>
+                    </div>
+                  </div>
+                  <ul class="step-list">
+                    <li>若已有离线包，在 Mac 设置页点击 <span class="highlight-text">「从本地 .zip 导入…」</span></li>
+                    <li><a href="https://github.com/xseven77/CodexlingMobileWebPlugin-release/releases/latest/download/mobile-web-plugin.zip" target="_blank" style="color: #60a5fa; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin: 3px 0; font-weight: 500;"><span>📥 点击直接下载最新官方插件包 (mobile-web-plugin.zip)</span> ↗</a></li>
+                    <li>开发者可在 <span class="highlight-text">CodexlingMobile</span> 目录运行发布脚本自建</li>
+                  </ul>
+                </div>
+
+                <div class="action-row">
+                  <button class="btn btn-primary" id="refreshBtn" onclick="checkAndReload()">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
+                    </svg>
+                    <span>重新检测并载入看板</span>
+                  </button>
+                </div>
+                <div class="detect-tip" id="pollStatus">正在后台静默探测插件就绪状态 (每 3 秒)...</div>
+
+                <div class="footer-meta">
+                  <span>TOKEN: \(hasToken ? "已就绪 (TOKEN OK)" : "未携带")</span>
+                  <span>API: /mobile/snapshot</span>
+                </div>
               </div>
+
+              <script>
+                var isChecking = false;
+                function checkAndReload() {
+                  if (isChecking) return;
+                  isChecking = true;
+                  var btn = document.getElementById('refreshBtn');
+                  var origText = btn.innerHTML;
+                  btn.innerHTML = '<span>正在检测...</span>';
+                  
+                  // 请求一个必定由正式 Web 插件提供的资源特征
+                  fetch('./index.html?t=' + Date.now(), { method: 'GET', cache: 'no-cache' })
+                    .then(function(res) {
+                      return res.text();
+                    })
+                    .then(function(html) {
+                      // 若已不再是 fallback 页面（即正式插件已部署，包含 codexling-app-shell 或 vite 入口）
+                      if (html && (html.indexOf('codexling-app-shell') !== -1 || html.indexOf('/assets/index') !== -1 || html.indexOf('__DSH_BOOT__') !== -1)) {
+                        window.location.reload();
+                      } else {
+                        btn.innerHTML = '<span>暂未检测到插件，请在 Mac 完成安装</span>';
+                        setTimeout(function() {
+                          btn.innerHTML = origText;
+                          isChecking = false;
+                        }, 1800);
+                      }
+                    })
+                    .catch(function() {
+                      btn.innerHTML = origText;
+                      isChecking = false;
+                    });
+                }
+
+                // 自动后台轮询：Mac 端点完安装，手机端无需任何操作自动跳转！
+                var pollInterval = setInterval(function() {
+                  fetch('./index.html?probe=' + Date.now(), { method: 'GET', cache: 'no-cache' })
+                    .then(function(res) { return res.text(); })
+                    .then(function(html) {
+                      if (html && (html.indexOf('codexling-app-shell') !== -1 || html.indexOf('/assets/index') !== -1)) {
+                        clearInterval(pollInterval);
+                        var status = document.getElementById('pollStatus');
+                        if (status) status.innerText = '检测到插件已安装，正在载入看板...';
+                        setTimeout(function() { window.location.reload(); }, 600);
+                      }
+                    })
+                    .catch(function() {});
+                }, 3000);
+              </script>
             </body>
             </html>
             """

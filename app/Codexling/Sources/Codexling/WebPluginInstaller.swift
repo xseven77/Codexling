@@ -66,6 +66,78 @@ public final class WebPluginInstaller: @unchecked Sendable {
         string: "https://github.com/xseven77/CodexlingMobileWebPlugin-release/releases/latest/download/mobile-web-plugin.zip"
     )!
 
+    public static let latestReleaseAPIURL = URL(
+        string: "https://api.github.com/repos/xseven77/CodexlingMobileWebPlugin-release/releases/latest"
+    )!
+
+    public struct RemoteReleaseInfo: Equatable, Sendable {
+        public let tagName: String
+        public let version: String
+        public let downloadURL: URL
+        public let hasUpdate: Bool
+    }
+
+    public func checkForUpdates() async throws -> RemoteReleaseInfo {
+        var request = URLRequest(url: Self.latestReleaseAPIURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw NSError(domain: "WebPluginInstaller", code: 4, userInfo: [NSLocalizedDescriptionKey: "查询远端版本失败: HTTP \(code)"])
+        }
+
+        struct ReleaseDTO: Decodable {
+            let tagName: String
+            let assets: [AssetDTO]
+
+            enum CodingKeys: String, CodingKey {
+                case tagName = "tag_name"
+                case assets
+            }
+        }
+        struct AssetDTO: Decodable {
+            let name: String
+            let browserDownloadURL: String
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case browserDownloadURL = "browser_download_url"
+            }
+        }
+
+        let dto = try JSONDecoder().decode(ReleaseDTO.self, from: data)
+        let normalizedRemoteVer = dto.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+        guard let zipAsset = dto.assets.first(where: { $0.name.hasSuffix(".zip") }),
+              let downloadURL = URL(string: zipAsset.browserDownloadURL) else {
+            throw NSError(domain: "WebPluginInstaller", code: 5, userInfo: [NSLocalizedDescriptionKey: "Release 中未找到插件 .zip 资产"])
+        }
+
+        let localVer = currentStatus().manifest?.version ?? "0.0.0"
+        let hasUpdate = compareVersions(normalizedRemoteVer, localVer) > 0
+
+        return RemoteReleaseInfo(
+            tagName: dto.tagName,
+            version: normalizedRemoteVer,
+            downloadURL: downloadURL,
+            hasUpdate: hasUpdate
+        )
+    }
+
+    private func compareVersions(_ v1: String, _ v2: String) -> Int {
+        let parts1 = v1.split(separator: ".").compactMap { Int($0) }
+        let parts2 = v2.split(separator: ".").compactMap { Int($0) }
+        let maxLen = max(parts1.count, parts2.count)
+        for i in 0..<maxLen {
+            let p1 = i < parts1.count ? parts1[i] : 0
+            let p2 = i < parts2.count ? parts2[i] : 0
+            if p1 != p2 { return p1 > p2 ? 1 : -1 }
+        }
+        return 0
+    }
+
     public let pluginDirectory: URL
     private let fileManager = FileManager.default
 
@@ -146,9 +218,12 @@ public final class WebPluginInstaller: @unchecked Sendable {
 
     public func downloadAndInstall(
         from remoteURL: URL = defaultReleaseURL,
-        onProgress: (@Sendable (Double) -> Void)? = nil
+        onProgress: (@Sendable (Double, Int64, Int64) -> Void)? = nil
     ) async throws {
-        let session = URLSession(configuration: .default)
+        let delegate = DownloadProgressDelegate(onProgress: onProgress)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
         let (tempDownloadedURL, response) = try await session.download(from: remoteURL)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
@@ -160,7 +235,7 @@ public final class WebPluginInstaller: @unchecked Sendable {
             )
         }
 
-        onProgress?(1.0)
+        onProgress?(1.0, 1, 1)
         try install(fromLocalZip: tempDownloadedURL)
         try? fileManager.removeItem(at: tempDownloadedURL)
     }
@@ -200,5 +275,31 @@ public final class WebPluginInstaller: @unchecked Sendable {
             }
         }
         return total
+    }
+}
+
+// MARK: - Download Progress Delegate
+
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let onProgress: (@Sendable (Double, Int64, Int64) -> Void)?
+
+    init(onProgress: (@Sendable (Double, Int64, Int64) -> Void)?) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let progress = min(1.0, max(0.0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
+        onProgress?(progress, totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // Handled in async download(from:)
     }
 }

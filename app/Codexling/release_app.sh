@@ -82,8 +82,11 @@ require_clean_worktree() {
   status="$(git -C "${REPO_ROOT}" status --porcelain)"
 
   if [[ -n "${status}" ]]; then
+    warn "检测到工作区存在未提交变动："
     printf "%s\n" "${status}"
-    fail "工作区不干净。请先提交、stash 或清理改动后再发布。"
+    if ! confirm "是否继续并在此状态下进行构建与发布？"; then
+      fail "已取消发布。请先提交、stash 或清理改动后再发布。"
+    fi
   fi
 }
 
@@ -151,8 +154,9 @@ read_release_inputs() {
   printf "  2) 小版本更新：%s -> %s\n" "${current_version}" "$(bump_version "${current_version}" minor)"
   printf "  3) 大版本更新：%s -> %s\n" "${current_version}" "$(bump_version "${current_version}" major)"
   printf "  4) 手动输入版本号\n"
+  printf "  5) 保持当前版本 (重新打包/覆盖远端 Release)：%s\n" "${current_version}"
 
-  read -r -p "请输入选项 [1-4]（默认 1）： " version_choice
+  read -r -p "请输入选项 [1-5]（默认 1）： " version_choice
   version_choice="${version_choice:-1}"
 
   case "${version_choice}" in
@@ -166,7 +170,17 @@ read_release_inputs() {
       RELEASE_VERSION="$(bump_version "${current_version}" major)"
       ;;
     4)
-      read -r -p "请输入本次发布版本号，例如 0.1.1： " RELEASE_VERSION
+      while :; do
+        read -r -p "请输入本次发布版本号，例如 0.1.1： " RELEASE_VERSION
+        if validate_version "${RELEASE_VERSION}"; then
+          break
+        fi
+        warn "版本号格式不正确：${RELEASE_VERSION}。请使用类似 0.1.1 或 1.0.0 的格式。"
+      done
+      ;;
+    5)
+      RELEASE_VERSION="${current_version}"
+      default_build="${current_build}"
       ;;
     *)
       fail "无效选项：${version_choice}"
@@ -312,17 +326,35 @@ push_branch_and_tag() {
 
 release_notes_file() {
   local notes_path="${DIST_DIR}/release-notes-${RELEASE_VERSION}.md"
+  local latest_tag recent_commits
 
-  cat > "${notes_path}" <<EOF
-## ${APP_NAME} ${RELEASE_VERSION}
+  latest_tag="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
+  recent_commits=""
+  if [[ -n "${latest_tag}" ]]; then
+    recent_commits="$(git -C "${REPO_ROOT}" log "${latest_tag}..HEAD" --pretty=format:"- %s" 2>/dev/null | grep -v "^- Release " || true)"
+  fi
 
-### 下载
-
-- \`${APP_NAME}-${RELEASE_VERSION}.dmg\`：推荐安装包
-- \`${APP_NAME}-${RELEASE_VERSION}.zip\`：备用压缩包
-
-> 当前构建使用 ad-hoc 签名，未做 Apple notarization。
-EOF
+  {
+    echo "## ${APP_NAME} ${RELEASE_VERSION}"
+    echo ""
+    if [[ -n "${CUSTOM_RELEASE_NOTES:-}" ]]; then
+      echo "### 更新要点"
+      echo ""
+      echo "${CUSTOM_RELEASE_NOTES}"
+      echo ""
+    elif [[ -n "${recent_commits}" ]]; then
+      echo "### 更新记录（自 ${latest_tag} 以来）"
+      echo ""
+      echo "${recent_commits}"
+      echo ""
+    fi
+    echo "### 下载"
+    echo ""
+    echo "- \`${APP_NAME}-${RELEASE_VERSION}.dmg\`：推荐安装包"
+    echo "- \`${APP_NAME}-${RELEASE_VERSION}.zip\`：备用压缩包"
+    echo ""
+    echo "> 当前构建使用 ad-hoc 签名，未做 Apple notarization。"
+  } > "${notes_path}"
 
   printf "%s" "${notes_path}"
 }
@@ -465,6 +497,52 @@ publish_only() {
   info "发布完成：${RELEASE_TAG}"
 }
 
+CUSTOM_RELEASE_NOTES=""
+
+confirm_release_plan() {
+  local latest_tag recent_commits
+  latest_tag="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
+  recent_commits=""
+  if [[ -n "${latest_tag}" ]]; then
+    recent_commits="$(git -C "${REPO_ROOT}" log "${latest_tag}..HEAD" --pretty=format:"- %s" 2>/dev/null | grep -v "^- Release " || true)"
+  fi
+
+  printf "\n========================================================\n"
+  printf "  准备发布：%s %s (build %s, Tag: %s)\n" "${APP_NAME}" "${RELEASE_VERSION}" "${RELEASE_BUILD}" "${RELEASE_TAG}"
+  printf "  目标分支：%s\n" "${CURRENT_BRANCH}"
+  printf "========================================================\n"
+
+  if [[ -n "${recent_commits}" ]]; then
+    printf "\n自 %s 以来检测到的 Git 提交记录：\n%s\n\n" "${latest_tag}" "${recent_commits}"
+  fi
+
+  printf "是否输入自定义更新摘要？(留空直接回车使用自动提取的 Git 提交记录)\n"
+  read -r -p "> " CUSTOM_RELEASE_NOTES
+
+  if ! confirm "确认开始编译、打包并发布到 GitHub Release？"; then
+    fail "已取消发布。"
+  fi
+}
+
+check_web_plugin_status() {
+  info "检查移动端伴生 Web 插件状态..."
+  local plugin_dir="${HOME}/Library/Application Support/Codexling/Plugins/mobile-web"
+  local manifest_file="${plugin_dir}/plugin-manifest.json"
+  local index_file="${plugin_dir}/index.html"
+  local mobile_repo_dir="${REPO_ROOT}/../CodexlingMobile"
+
+  if [[ -f "${index_file}" ]]; then
+    local version="未知"
+    if [[ -f "${manifest_file}" ]]; then
+      version="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${manifest_file}" | cut -d'"' -f4 || echo "未知")"
+    fi
+    info "本地已安装 Web 伴生插件：v${version} (${plugin_dir})"
+  else
+    warn "本地尚未安装 Web 伴生插件 (mobile-web)。"
+    printf "  提示：若希望在桌面端发布时同步准备 Web 伴生插件，可前往 %s 执行 ./scripts/publish_release.sh\n" "${mobile_repo_dir}"
+  fi
+}
+
 main() {
   parse_args "$@"
 
@@ -474,6 +552,7 @@ main() {
   require_command gh "请先安装 GitHub CLI：brew install gh"
 
   ensure_github_auth
+  check_web_plugin_status
 
   if [[ "${PUBLISH_ONLY}" == "true" ]]; then
     publish_only
@@ -483,6 +562,7 @@ main() {
   require_branch
   require_clean_worktree
   read_release_inputs
+  confirm_release_plan
   update_plist_version
   build_release_artifacts
   verify_dmg
