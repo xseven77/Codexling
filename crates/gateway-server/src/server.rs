@@ -2171,6 +2171,40 @@ mod tests {
     }
 
     #[test]
+    fn cloud_code_response_message_extracts_thought_and_indexes_tools() {
+        let response = serde_json::json!({
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            {"text": "Let me think about this...", "thought": true},
+                            {"functionCall": {"name": "bash", "args": {"command": "git status"}}},
+                            {"text": "Proceeding with branch checkout."}
+                        ]
+                    }
+                }]
+            }
+        });
+        let message = GatewayServer::new("test-token")
+            .cloud_code_response_message(&response)
+            .unwrap();
+        assert_eq!(
+            message["reasoning_content"],
+            "Let me think about this..."
+        );
+        assert_eq!(
+            message["content"],
+            "Proceeding with branch checkout."
+        );
+        assert_eq!(message["tool_calls"][0]["index"], 0);
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "bash");
+        assert_eq!(
+            message["tool_calls"][0]["function"]["arguments"],
+            "{\"command\":\"git status\"}"
+        );
+    }
+
+    #[test]
     fn wraps_non_object_tool_results_for_gemini_function_response() {
         let object = serde_json::json!({"path": "README.md", "found": true});
         assert_eq!(
@@ -4325,32 +4359,54 @@ impl GatewayServer {
             .unwrap_or_else(|_| "{\"role\":\"assistant\",\"content\":\"\"}".into());
         let tool_calls = message.get("tool_calls").cloned();
         let has_tools = tool_calls.is_some();
+        let reasoning = message.get("reasoning_content").and_then(|v| v.as_str());
+        let content = message.get("content").and_then(|v| v.as_str());
+
         let response = if is_stream {
-            if let Some(tool_calls) = tool_calls {
-                let tool_calls_json =
-                    serde_json::to_string(&tool_calls).unwrap_or_else(|_| "[]".into());
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"tool_calls\":{tool_calls_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
-                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
-                )
-            } else {
-                let answer_json = serde_json::to_string(
-                    message
-                        .get("content")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or(""),
-                )
-                .unwrap_or_else(|_| "\"\"".into());
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":{answer_json}}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n",
-                    upstream.connection_id, upstream.quota_score, upstream.routing_mode
-                )
+            let mut sse_chunks = Vec::new();
+            if let Some(reasoning_text) = reasoning {
+                if !reasoning_text.trim().is_empty() {
+                    let r_json = serde_json::to_string(reasoning_text).unwrap_or_else(|_| "\"\"".into());
+                    sse_chunks.push(format!(
+                        "data: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":{r_json}}},\"finish_reason\":null}}]}}\n\n"
+                    ));
+                }
             }
+            if let Some(content_text) = content {
+                if !content_text.is_empty() {
+                    let c_json = serde_json::to_string(content_text).unwrap_or_else(|_| "\"\"".into());
+                    sse_chunks.push(format!(
+                        "data: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"content\":{c_json}}},\"finish_reason\":null}}]}}\n\n"
+                    ));
+                }
+            }
+            let finish_reason = if let Some(ref tc) = tool_calls {
+                let tc_json = serde_json::to_string(tc).unwrap_or_else(|_| "[]".into());
+                sse_chunks.push(format!(
+                    "data: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":{tc_json}}},\"finish_reason\":null}}]}}\n\n"
+                ));
+                "tool_calls"
+            } else {
+                "stop"
+            };
+            sse_chunks.push(format!(
+                "data: {{\"id\":\"gemini_oauth\",\"object\":\"chat.completion.chunk\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"{finish_reason}\"}}]}}\n\ndata: [DONE]\n\n"
+            ));
+
+            let mut body_str = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n",
+                upstream.connection_id, upstream.quota_score, upstream.routing_mode
+            );
+            body_str.push_str(&sse_chunks.concat());
+            body_str
         } else {
             let finish_reason = if tool_calls.is_some() {
                 "tool_calls"
             } else {
                 "stop"
             };
-            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{{\"id\":\"gemini_oauth\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{message_json},\"finish_reason\":\"{finish_reason}\"}}]}}",
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nx-codexling-routed-account: {}\r\nx-codexling-quota-score: {}\r\nx-codexling-routing-mode: {}\r\nConnection: close\r\n\r\n{{\"id\":\"gemini_oauth\",\"object\":\"chat.completion\",\"created\":{now_unix},\"model\":{model},\"choices\":[{{\"index\":0,\"message\":{message_json},\"finish_reason\":\"{finish_reason}\"}}]}}",
                 upstream.connection_id, upstream.quota_score, upstream.routing_mode
             )
         };
@@ -4925,54 +4981,71 @@ impl GatewayServer {
             .pointer("/response/candidates/0/content/parts")
             .or_else(|| body.pointer("/candidates/0/content/parts"))?
             .as_array()?;
-        let text = parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tool_calls = parts
-            .iter()
-            .filter_map(|part| {
-                let call = part.get("functionCall")?;
-                let name = call.get("name")?.as_str()?;
-                let args = call
-                    .get("args")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({}));
-                let arguments = serde_json::to_string(&args).ok()?;
-                let mut function = serde_json::json!({"name":name,"arguments":arguments});
-                let call_id = format!(
-                    "call_gemini_{}",
-                    self.total_tool_calls.fetch_add(1, Ordering::Relaxed)
-                );
-                if let Some(signature) = part
-                    .get("thoughtSignature")
-                    .or_else(|| part.get("thought_signature"))
-                    .or_else(|| call.get("thoughtSignature"))
-                    .or_else(|| call.get("thought_signature"))
-                    .and_then(|value| value.as_str())
-                {
-                    // This vendor extension is ignored by ordinary OpenAI
-                    // providers but preserves this Gemini call's required state.
-                    function["thought_signature"] = serde_json::json!(signature);
-                    if let Ok(mut cache) = self.gemini_thought_signatures.lock() {
-                        if cache.len() >= 1024 {
-                            cache.clear();
-                        }
-                        cache.insert(call_id.clone(), signature.to_string());
-                        cache.insert(
-                            Self::gemini_thought_signature_key(name, &args),
-                            signature.to_string(),
-                        );
-                    }
+        let mut reasoning_parts = Vec::new();
+        let mut text_parts = Vec::new();
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(|text| text.as_str()) {
+                let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                if is_thought {
+                    reasoning_parts.push(text);
+                } else {
+                    text_parts.push(text);
                 }
-                Some(serde_json::json!({"id": call_id, "type":"function", "function":function}))
-            })
-            .collect::<Vec<_>>();
-        if text.trim().is_empty() && tool_calls.is_empty() {
+            }
+        }
+        let reasoning = reasoning_parts.join("\n");
+        let text = text_parts.join("\n");
+        let mut tool_calls = Vec::new();
+        for part in parts {
+            let Some(call) = part.get("functionCall") else {
+                continue;
+            };
+            let Some(name) = call.get("name").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let args = call
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let Some(arguments) = serde_json::to_string(&args).ok() else {
+                continue;
+            };
+            let mut function = serde_json::json!({"name":name,"arguments":arguments});
+            let call_id = format!(
+                "call_gemini_{}",
+                self.total_tool_calls.fetch_add(1, Ordering::Relaxed)
+            );
+            if let Some(signature) = part
+                .get("thoughtSignature")
+                .or_else(|| part.get("thought_signature"))
+                .or_else(|| call.get("thoughtSignature"))
+                .or_else(|| call.get("thought_signature"))
+                .and_then(|value| value.as_str())
+            {
+                // This vendor extension is ignored by ordinary OpenAI
+                // providers but preserves this Gemini call's required state.
+                function["thought_signature"] = serde_json::json!(signature);
+                if let Ok(mut cache) = self.gemini_thought_signatures.lock() {
+                    if cache.len() >= 1024 {
+                        cache.clear();
+                    }
+                    cache.insert(call_id.clone(), signature.to_string());
+                    cache.insert(
+                        Self::gemini_thought_signature_key(name, &args),
+                        signature.to_string(),
+                    );
+                }
+            }
+            let index = tool_calls.len();
+            tool_calls.push(serde_json::json!({"index": index, "id": call_id, "type":"function", "function":function}));
+        }
+        if text.trim().is_empty() && tool_calls.is_empty() && reasoning.trim().is_empty() {
             return None;
         }
         let mut message = serde_json::json!({"role":"assistant", "content": if text.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(text) }});
+        if !reasoning.trim().is_empty() {
+            message["reasoning_content"] = serde_json::Value::String(reasoning);
+        }
         if !tool_calls.is_empty() {
             message["tool_calls"] = serde_json::Value::Array(tool_calls);
         }
