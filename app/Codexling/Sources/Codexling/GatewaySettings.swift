@@ -16,7 +16,7 @@ public enum ProviderRoutingMode: String, Codable, CaseIterable, Identifiable, Se
     public var subtitle: String {
         switch self {
         case .smooth: return "多账号轮询均衡负载，各账号额度平滑消耗防并发限频"
-        case .pinnedAccount: return "流量优先直通所选的特定账号；额度耗尽或异常时自动切换并持久化"
+        case .pinnedAccount: return "流量优先直通所选的特定账号；额度耗尽或异常时自动降级为平滑过渡"
         }
     }
 

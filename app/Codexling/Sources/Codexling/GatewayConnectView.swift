@@ -1551,7 +1551,7 @@ private struct GatewayProviderRoutingBar: View {
         case .smooth:
             return "平滑过渡：多账号根据额度评分与使用时间 (LRU) 动态轮询，均衡消耗额度并降低 RPM 限频。"
         case .pinnedAccount:
-            return "固定特定账号：统一模型请求优先路由至 [\(pinnedAccountName)]；若额度耗尽或报错将自动切换并持久化下一健康账号。"
+            return "固定特定账号：统一模型请求优先路由至 [\(pinnedAccountName)]；若额度耗尽或报错将自动切换为平滑过渡策略。"
         }
     }
 }

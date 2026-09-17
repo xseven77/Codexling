@@ -415,6 +415,17 @@ public final class GatewayStore {
             }
         }
 
+        // 若网关进程因额度耗尽自动将路由降级为平滑过渡 (smooth)，保留磁盘上的降级状态。
+        if !onDisk.providerRoutingModes.isEmpty {
+            for (provider, diskMode) in onDisk.providerRoutingModes {
+                if diskMode == ProviderRoutingMode.smooth.rawValue,
+                   merged.providerRoutingModes[provider] == ProviderRoutingMode.pinnedAccount.rawValue {
+                    merged.providerRoutingModes[provider] = diskMode
+                    merged.providerPinnedAccounts.removeValue(forKey: provider)
+                }
+            }
+        }
+
         try? settingsStorage.save(merged)
     }
 
@@ -460,6 +471,14 @@ public final class GatewayStore {
                 updated.automationTasks[idx].lastRunStatus = diskTask.lastRunStatus
                 updated.automationTasks[idx].lastRunSummary = diskTask.lastRunSummary
             }
+        }
+
+        // 同步网关写入的路由模式降级（例如固定账号额度耗尽自动切为 smooth）
+        if onDisk.providerRoutingModes != updated.providerRoutingModes {
+            updated.providerRoutingModes = onDisk.providerRoutingModes
+        }
+        if onDisk.providerPinnedAccounts != updated.providerPinnedAccounts {
+            updated.providerPinnedAccounts = onDisk.providerPinnedAccounts
         }
 
         guard updated != gatewaySettings else { return }

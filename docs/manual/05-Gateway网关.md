@@ -61,7 +61,7 @@ Gateway 是一个绑定本机回环地址的本地 LLM 代理服务，由仓库�
 - 按供应商分组展示账号卡（`GatewayProviderSection` / `GatewayAccountModelGroup` / `GatewayExportedModel`，`GatewayStore.swift:75-195`）：每个 Codex/Gemini 账号导出哪些模型一目了然。
 - **每供应商路由策略**（`ProviderRoutingMode`，`GatewaySettings.swift:3-33`）：
   - **平滑过渡 (smooth)**：多账号轮询均衡负载，各账号额度平滑消耗、防并发限频。
-  - **固定特定账号 (pinnedAccount)**：流量优先直通所选账号（记录 `pinnedAccountId`）。当该固定账号遭遇 429 限频、额度耗尽或凭证异常时，网关将自动无缝切换到同渠道池的另一健康可用账号，并持久化回写 `gateway-settings.json`（等效于用户在 UI 设置中主动切换）。
+  - **固定特定账号 (pinnedAccount)**：流量优先直通所选账号（记录 `pinnedAccountId`）。当该固定账号遭遇 429 限频、额度耗尽或凭证异常时，网关将自动降级为平滑过渡策略（`smooth`），清除该固定账号绑定并持久化回写 `gateway-settings.json`，由平滑池接管后续请求，而不再固定到其他某个账号。
   - 设置入口 `GatewayStore.setProviderRoutingMode`（`GatewayStore.swift:365`），持久化于 `~/Library/Application Support/Codexling/gateway-settings.json`（`GatewaySettings.swift:303-322`）。
 - **供应商合并展示**：`isProviderConsolidated` / `setProviderConsolidated` 将同供应商多账号折叠为一组（`GatewayStore.swift:349-357`）。聚合模式下点击查看模型抽屉，直接呈现可访问的可用模型清单，并动态展示调度流向（固定直通或多账号均衡调度）。
 
