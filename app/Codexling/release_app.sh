@@ -326,12 +326,17 @@ push_branch_and_tag() {
 
 release_notes_file() {
   local notes_path="${DIST_DIR}/release-notes-${RELEASE_VERSION}.md"
-  local latest_tag recent_commits
+  local base_tag commits_list
 
-  latest_tag="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
-  recent_commits=""
-  if [[ -n "${latest_tag}" ]]; then
-    recent_commits="$(git -C "${REPO_ROOT}" log "${latest_tag}..HEAD" --pretty=format:"- %s" 2>/dev/null | grep -v "^- Release " || true)"
+  base_tag="${BASE_TAG_FOR_NOTES:-}"
+  commits_list="${DETECTED_RECENT_COMMITS:-}"
+
+  # 如果没有在 confirm_release_plan 中初始化过（例如 --publish-only 场景），则动态计算一次
+  if [[ -z "${base_tag}" && -z "${commits_list}" ]]; then
+    base_tag="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
+    if [[ -n "${base_tag}" ]]; then
+      commits_list="$(git -C "${REPO_ROOT}" log "${base_tag}..HEAD" --pretty=format:"- %s" 2>/dev/null | grep -v "^- Release " || true)"
+    fi
   fi
 
   {
@@ -342,10 +347,15 @@ release_notes_file() {
       echo ""
       echo "${CUSTOM_RELEASE_NOTES}"
       echo ""
-    elif [[ -n "${recent_commits}" ]]; then
-      echo "### 更新记录（自 ${latest_tag} 以来）"
+    fi
+    if [[ -n "${commits_list}" ]]; then
+      local section_title="### 更新记录"
+      if [[ -n "${base_tag}" ]]; then
+        section_title="### 更新记录（自 ${base_tag} 以来）"
+      fi
+      echo "${section_title}"
       echo ""
-      echo "${recent_commits}"
+      echo "${commits_list}"
       echo ""
     fi
     echo "### 下载"
@@ -498,6 +508,8 @@ publish_only() {
 }
 
 CUSTOM_RELEASE_NOTES=""
+DETECTED_RECENT_COMMITS=""
+BASE_TAG_FOR_NOTES=""
 
 confirm_release_plan() {
   local latest_tag recent_commits
@@ -506,6 +518,9 @@ confirm_release_plan() {
   if [[ -n "${latest_tag}" ]]; then
     recent_commits="$(git -C "${REPO_ROOT}" log "${latest_tag}..HEAD" --pretty=format:"- %s" 2>/dev/null | grep -v "^- Release " || true)"
   fi
+
+  BASE_TAG_FOR_NOTES="${latest_tag}"
+  DETECTED_RECENT_COMMITS="${recent_commits}"
 
   printf "\n========================================================\n"
   printf "  准备发布：%s %s (build %s, Tag: %s)\n" "${APP_NAME}" "${RELEASE_VERSION}" "${RELEASE_BUILD}" "${RELEASE_TAG}"
