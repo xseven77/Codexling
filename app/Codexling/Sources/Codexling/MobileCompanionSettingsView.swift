@@ -411,7 +411,8 @@ struct MobileCompanionSettingsView: View {
                             SettingsUpdateChip(
                                 title: isCheckingForUpdate ? "检查中…" : "检查更新",
                                 systemImage: "arrow.triangle.2.circlepath",
-                                isEnabled: !isCheckingForUpdate && !isDownloadingPlugin
+                                isEnabled: !isCheckingForUpdate && !isDownloadingPlugin,
+                                isBusy: isCheckingForUpdate
                             ) {
                                 checkForPluginUpdates()
                             }

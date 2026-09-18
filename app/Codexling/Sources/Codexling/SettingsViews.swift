@@ -1235,7 +1235,7 @@ struct SettingsView: View {
                 SettingsUpdateCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 12) {
-                            SettingsUpdateGlyph(systemName: "app.badge.fill", tint: statusColor)
+                            SettingsApplicationIcon()
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack(spacing: 7) {
                                     Text("Codexling")
@@ -1268,6 +1268,7 @@ struct SettingsView: View {
                                     title: updater.settingsPrimaryActionTitle,
                                     systemImage: "arrow.triangle.2.circlepath",
                                     isEnabled: !updater.phase.isBusy,
+                                    isBusy: updater.phase == .checking,
                                     action: primaryUpdateAction
                                 )
                             }
@@ -1356,19 +1357,6 @@ struct SettingsView: View {
         switch updater.phase {
         case .available, .upToDate, .failed, .installing: return updater.settingsStatusLine
         default: return nil
-        }
-    }
-
-    private var statusColor: Color {
-        switch updater.phase {
-        case .failed:
-            .codexRed
-        case .available:
-            .codexAmber
-        case .upToDate, .idle:
-            .codexGreen
-        default:
-            .codexPrimary
         }
     }
 

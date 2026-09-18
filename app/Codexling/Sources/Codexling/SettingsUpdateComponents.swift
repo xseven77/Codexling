@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Shared chrome
@@ -44,12 +45,30 @@ struct SettingsUpdateGlyph: View {
     }
 }
 
+/// Transparent mascot artwork stays unchanged across update states.
+struct SettingsApplicationIcon: View {
+    private var image: NSImage {
+        if let url = Bundle.main.url(forResource: "codexling-logo", withExtension: "webp"),
+           let icon = NSImage(contentsOf: url) { return icon }
+        return NSApplication.shared.applicationIconImage ?? NSImage(size: NSSize(width: 38, height: 38))
+    }
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: 38, height: 38)
+    }
+}
+
 /// Secondary (tertiary) action chip — one consistent shape for every minor action.
 struct SettingsUpdateChip: View {
     let title: String
     let systemImage: String
     var tint: Color = .codexInk
     var isEnabled: Bool = true
+    var isBusy: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
@@ -57,24 +76,32 @@ struct SettingsUpdateChip: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: systemImage)
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 12, height: 12)
+                        .tint(Color.codexGreen)
+                } else {
+                    Image(systemName: systemImage)
+                }
                 Text(title)
             }
             .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(isEnabled ? tint : Color.codexMuted.opacity(0.6))
+            .foregroundStyle(isBusy ? Color.codexGreen : (isEnabled ? tint : Color.codexMuted.opacity(0.6)))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.codexMist.opacity(isHovering && isEnabled ? 1.0 : 0.6))
+                    .fill(isBusy ? Color.codexGreen.opacity(0.08) : Color.codexMist.opacity(isHovering && isEnabled ? 1.0 : 0.6))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
+                    .stroke(isBusy ? Color.codexGreen.opacity(0.22) : Color.codexLine.opacity(0.7), lineWidth: 0.75)
             )
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
+        .disabled(!isEnabled || isBusy)
         .onHover { isHovering = $0 }
     }
 }
