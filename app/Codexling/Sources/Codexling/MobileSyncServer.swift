@@ -592,10 +592,12 @@ public final class MobileSyncServer: @unchecked Sendable {
 
             if requestPath.hasPrefix("/api/v1/pets/") && requestPath.hasSuffix("/spritesheet.webp") {
                 let petSub = String(requestPath.dropFirst("/api/v1/pets/".count).dropLast("/spritesheet.webp".count))
-                // Look in Application Support/Codexling/Pets/<petSub>/spritesheet.webp
+                let cleanSub = (petSub.removingPercentEncoding ?? petSub)
+                    .replacingOccurrences(of: "^(custom|builtin):", with: "", options: .regularExpression)
+                // Look in Application Support/Codexling/Pets/<cleanSub>/spritesheet.webp
                 let customURL = FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent("Library/Application Support/Codexling/Pets")
-                    .appendingPathComponent(petSub)
+                    .appendingPathComponent(cleanSub)
                     .appendingPathComponent("spritesheet.webp")
                 if FileManager.default.fileExists(atPath: customURL.path),
                    let data = try? Data(contentsOf: customURL) {
@@ -603,7 +605,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                     return
                 }
                 // Fallback to plugin pets
-                let pluginURL = pluginDirectoryURL.appendingPathComponent("pets").appendingPathComponent(petSub).appendingPathComponent("spritesheet.webp")
+                let pluginURL = pluginDirectoryURL.appendingPathComponent("pets").appendingPathComponent(cleanSub).appendingPathComponent("spritesheet.webp")
                 if FileManager.default.fileExists(atPath: pluginURL.path),
                    let data = try? Data(contentsOf: pluginURL) {
                     sendRawResponse(status: 200, headers: ["Content-Type": "image/webp"], data: data, on: connection)
@@ -616,6 +618,48 @@ public final class MobileSyncServer: @unchecked Sendable {
                 Task {
                     let discovered = await self.discoverLANAgents(subnetOverride: queryParams["subnet"])
                     self.sendJSONResponse(status: 200, object: ["devices": discovered], on: connection)
+                }
+            case ("GET", "/api/v1/agents/pet"):
+                guard let target = queryParams["target"], let targetURL = URL(string: target),
+                      ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
+                      targetURL.host != nil, targetURL.user == nil, targetURL.password == nil,
+                      targetURL.path.hasPrefix("/api/v1/pets/") && targetURL.path.hasSuffix("/spritesheet.webp") else {
+                    sendJSONResponse(status: 400, object: ["error": "invalid_agent_pet_target"], on: connection)
+                    return
+                }
+                let targetToken = queryParams["target_token"] ?? (headers["x-target-authorization"]?.hasPrefix("Bearer ") == true ? String(headers["x-target-authorization"]!.dropFirst("Bearer ".count)) : nil)
+                guard let targetToken, !targetToken.isEmpty else {
+                    sendJSONResponse(status: 400, object: ["error": "missing_target_token"], on: connection)
+                    return
+                }
+                Task {
+                    var req = URLRequest(url: targetURL)
+                    req.httpMethod = "GET"
+                    req.timeoutInterval = 15
+                    req.setValue("Bearer \(targetToken)", forHTTPHeaderField: "Authorization")
+                    if let appName { req.setValue(appName, forHTTPHeaderField: "X-Codexling-App-Name") }
+                    do {
+                        let session = URLSession.codexlingRelay(for: targetURL)
+                        let (data, response) = try await session.data(for: req)
+                        let httpResponse = response as? HTTPURLResponse
+                        let statusCode = httpResponse?.statusCode ?? 200
+                        if statusCode == 200 {
+                            let contentType = httpResponse?.value(forHTTPHeaderField: "Content-Type") ?? "image/webp"
+                            self.sendRawResponse(
+                                status: 200,
+                                headers: [
+                                    "Content-Type": contentType,
+                                    "Cache-Control": "public, max-age=3600"
+                                ],
+                                data: data,
+                                on: connection
+                            )
+                        } else {
+                            self.sendResponse(status: statusCode, headers: [:], body: "Upstream returned \(statusCode)", on: connection)
+                        }
+                    } catch {
+                        self.sendJSONResponse(status: 502, object: ["error": "upstream_unavailable", "message": error.localizedDescription], on: connection)
+                    }
                 }
             case ("GET", "/api/v1/agents/events"):
                 guard let target = queryParams["target"], let targetURL = URL(string: target),

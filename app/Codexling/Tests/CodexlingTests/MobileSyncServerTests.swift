@@ -347,6 +347,40 @@ struct MobileSyncServerTests {
         #expect(String(decoding: missingData, as: UTF8.self).contains("missing_provider_authorization"))
     }
 
+    @Test("Dedicated Agent pet relay validates target and returns 400 for non-spritesheet target")
+    func testAgentPetRelay() async throws {
+        let server = MobileSyncServer(port: 59424, token: "pet-secret", dataProvider: MockDataProvider())
+        defer { server.stop() }
+        try server.start()
+        try await waitFor(timeout: 5) { server.status == .ready }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+
+        var url = URLComponents(string: "http://127.0.0.1:59424/api/v1/agents/pet")!
+        // Missing target
+        var request = URLRequest(url: url.url!)
+        request.setValue("Bearer pet-secret", forHTTPHeaderField: "Authorization")
+        let (_, missingTarget) = try await session.data(for: request)
+        #expect((missingTarget as? HTTPURLResponse)?.statusCode == 400)
+
+        // Invalid target path
+        url.queryItems = [
+            URLQueryItem(name: "target", value: "http://127.0.0.1:59424/api/v1/snapshot"),
+            URLQueryItem(name: "target_token", value: "target-token")
+        ]
+        request.url = url.url!
+        let (_, invalidTarget) = try await session.data(for: request)
+        #expect((invalidTarget as? HTTPURLResponse)?.statusCode == 400)
+
+        // Missing target token
+        url.queryItems = [
+            URLQueryItem(name: "target", value: "http://127.0.0.1:59424/api/v1/pets/test/spritesheet.webp")
+        ]
+        request.url = url.url!
+        let (_, missingToken) = try await session.data(for: request)
+        #expect((missingToken as? HTTPURLResponse)?.statusCode == 400)
+    }
+
     @Test("Agent discover route requires authentication and returns devices")
     func testAgentDiscovery() async throws {
         let server = MobileSyncServer(port: 59420, token: "discover-secret", dataProvider: MockDataProvider())
