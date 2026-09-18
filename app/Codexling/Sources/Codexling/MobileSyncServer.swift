@@ -563,7 +563,13 @@ public final class MobileSyncServer: @unchecked Sendable {
 
         // 1. Public health check
         if requestPath == "/health" {
-            sendJSONResponse(status: 200, object: ["status": "ok"], on: connection)
+            let deviceName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+            sendJSONResponse(status: 200, object: [
+                "status": "ok",
+                "service": "codexling",
+                "name": deviceName,
+                "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.9"
+            ], on: connection)
             return
         }
 
@@ -1427,9 +1433,12 @@ public final class MobileSyncServer: @unchecked Sendable {
                         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                               obj["status"] as? String == "ok" else { return nil }
 
-                        var name = "Codexling (\(host))"
+                        var name = (obj["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if name == nil || name?.isEmpty == true {
+                            name = "Codexling (\(host))"
+                        }
                         var isPlugin = true
-                        var version: String? = nil
+                        var version: String? = obj["version"] as? String
 
                         if let manifestURL = URL(string: "http://\(host):58350/plugin-manifest.json") {
                             var mReq = URLRequest(url: manifestURL)
@@ -1437,11 +1446,10 @@ public final class MobileSyncServer: @unchecked Sendable {
                             if let (mData, mResp) = try? await probeSession.data(for: mReq),
                                (mResp as? HTTPURLResponse)?.statusCode == 200,
                                let mObj = try? JSONSerialization.jsonObject(with: mData) as? [String: Any] {
-                                version = mObj["version"] as? String
-                                isPlugin = (mObj["name"] as? String) == "codexling-mobile-web"
-                                if let desc = mObj["description"] as? String, !desc.isEmpty {
-                                    name = desc
+                                if let mVer = mObj["version"] as? String, !mVer.isEmpty {
+                                    version = mVer
                                 }
+                                isPlugin = (mObj["name"] as? String) == "codexling-mobile-web"
                             }
                         }
 
@@ -1449,7 +1457,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                             ip: host,
                             port: 58350,
                             baseUrl: "http://\(host):58350",
-                            name: name,
+                            name: name ?? "Codexling (\(host))",
                             isPlugin: isPlugin,
                             isLocal: (host == localIP),
                             version: version
