@@ -66,14 +66,14 @@ enum DetachedWindowMetrics {
             && abs(size.width - verticalDashboardWidth) < 1
     }
     // MARK: - 设置窗口度量
-    /// 设置窗口默认宽度：容纳侧栏 (166) 与右侧充裕的卡片内容 (714)，确保二维码、直连网址和按钮从容布局。
-    static let settingsDefaultWidth: CGFloat = 920
     /// 设置窗口最小宽度
     static let settingsMinWidth: CGFloat = 720
+    /// 设置窗口默认宽度：默认使用窗口设定的最小宽度 (720)。
+    static let settingsDefaultWidth: CGFloat = settingsMinWidth
     /// 设置窗口默认高度：完整容纳移动端伴生等包含多组卡片的页面，避免首屏内容紧贴窗口底边或产生不必要的滚动。
     static let settingsDefaultHeight: CGFloat = 840
     /// 移动端伴生页面专项推荐尺寸
-    static let settingsMobileWidth: CGFloat = 920
+    static let settingsMobileWidth: CGFloat = settingsMinWidth
     static let settingsMobileHeight: CGFloat = 840
     /// 设置窗口最小高度
     static let settingsMinWindowHeight: CGFloat = 600

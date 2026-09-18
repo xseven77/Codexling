@@ -835,9 +835,14 @@ final class CodexlingTests: XCTestCase {
             min(DetachedWindowMetrics.settingsDefaultHeight, settingsMaximum)
         ))
 
-        // 验证移动端伴生页面拥有专属宽裕首选尺寸
+        // 验证设置窗口初始默认宽度等于设定最小宽度
+        let defaultInitialSize = DetachedWindowMetrics.settingsWindowInitialSize(for: .general, screen: NSScreen.main)
+        XCTAssertEqual(defaultInitialSize.width, DetachedWindowMetrics.settingsMinWidth)
+        XCTAssertEqual(DetachedWindowMetrics.settingsDefaultWidth, DetachedWindowMetrics.settingsMinWidth)
+
+        // 验证移动端伴生页面亦遵循设定宽度
         let mobileInitialSize = DetachedWindowMetrics.settingsWindowInitialSize(for: .mobile, screen: NSScreen.main)
-        XCTAssertEqual(mobileInitialSize.width, DetachedWindowMetrics.settingsMobileWidth)
+        XCTAssertEqual(mobileInitialSize.width, DetachedWindowMetrics.settingsMinWidth)
         XCTAssertEqual(mobileInitialSize.height, min(DetachedWindowMetrics.settingsMobileHeight, settingsMaximum))
 
         let mobilePreferred = DetachedWindowMetrics.preferredSettingsWindowSize(
