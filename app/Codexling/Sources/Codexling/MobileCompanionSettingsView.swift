@@ -53,127 +53,6 @@ private struct QRCodeView: View {
     }
 }
 
-// MARK: - Shared chrome
-
-/// Raised card used for every block on this page.
-///
-/// The previous version tinted every surface with `codexMist.opacity(0.35)`,
-/// which read as washed-out and gave no sense of depth. Using the real card
-/// surface plus a hairline keeps the blocks distinct from the page background.
-private struct MobileSettingsCard<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        content
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.codexCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.75), lineWidth: 0.75)
-            )
-    }
-}
-
-/// Rounded icon badge used at the head of a card.
-private struct StatusGlyph: View {
-    let systemName: String
-    let tint: Color
-    var size: CGFloat = 38
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tint.opacity(0.12))
-            Image(systemName: systemName)
-                .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(tint)
-        }
-        .frame(width: size, height: size)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 0.75)
-        )
-    }
-}
-
-/// Secondary (tertiary) action chip — one consistent shape for every minor action.
-private struct ChipButton: View {
-    let title: String
-    let systemImage: String
-    var tint: Color = .codexInk
-    var isEnabled: Bool = true
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                Text(title)
-            }
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(isEnabled ? tint : Color.codexMuted.opacity(0.6))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.codexMist.opacity(isHovering && isEnabled ? 1.0 : 0.6))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .onHover { isHovering = $0 }
-    }
-}
-
-/// Prominent filled action button.
-private struct PrimaryActionButton: View {
-    let title: String
-    let systemImage: String
-    var isBusy: Bool = false
-    var isEnabled: Bool = true
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                if isBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: 12, height: 12)
-                        .tint(Color.codexOnPrimary)
-                } else {
-                    Image(systemName: systemImage)
-                }
-                Text(title)
-            }
-            .font(.system(size: 12, weight: .semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .foregroundStyle(Color.codexOnPrimary)
-            .background(
-                isBusy
-                    ? Color.codexPrimary.opacity(0.85)
-                    : (isEnabled ? Color.codexPrimary : Color.codexPrimary.opacity(0.4)),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.white.opacity(isBusy ? 0.25 : 0.1), lineWidth: 0.75)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled && !isBusy)
-    }
-}
-
 // MARK: - Mobile Companion Settings View
 
 struct MobileCompanionSettingsView: View {
@@ -253,10 +132,10 @@ struct MobileCompanionSettingsView: View {
     // MARK: Server status
 
     private var serviceStatusCard: some View {
-        MobileSettingsCard {
+        SettingsUpdateCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    StatusGlyph(systemName: serviceStatusSymbol, tint: serviceStatusTint)
+                    SettingsUpdateGlyph(systemName: serviceStatusSymbol, tint: serviceStatusTint)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("开放 API 服务")
@@ -355,7 +234,7 @@ struct MobileCompanionSettingsView: View {
     // MARK: Pairing
 
     private var pairingCard: some View {
-        MobileSettingsCard {
+        SettingsUpdateCard {
             HStack(alignment: .top, spacing: 18) {
                 QRCodeView(content: syncManager.webURLString, size: 132)
 
@@ -375,7 +254,7 @@ struct MobileCompanionSettingsView: View {
                     Divider().overlay(Color.codexLine.opacity(0.6))
 
                     HStack(spacing: 8) {
-                        ChipButton(
+                        SettingsUpdateChip(
                             title: "复制 Token",
                             systemImage: "key"
                         ) {
@@ -385,7 +264,7 @@ struct MobileCompanionSettingsView: View {
                         }
                         .help("仅复制当前配对 Token")
 
-                        ChipButton(
+                        SettingsUpdateChip(
                             title: "重新生成配对 Token",
                             systemImage: "arrow.triangle.2.circlepath",
                             tint: Color.codexMuted
@@ -432,13 +311,13 @@ struct MobileCompanionSettingsView: View {
                             .stroke(Color.codexLine.opacity(0.7), lineWidth: 0.75)
                     )
 
-                ChipButton(title: "复制", systemImage: "doc.on.doc") {
+                SettingsUpdateChip(title: "复制", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(syncManager.webURLString, forType: .string)
                     onShowToast("已复制移动端访问网址", "doc.on.doc")
                 }
 
-                ChipButton(title: "打开", systemImage: "arrow.up.forward.square") {
+                SettingsUpdateChip(title: "打开", systemImage: "arrow.up.forward.square") {
                     if let url = URL(string: syncManager.webURLString) {
                         NSWorkspace.shared.open(url)
                     }
@@ -451,9 +330,9 @@ struct MobileCompanionSettingsView: View {
     /// Shown while the service is off, starting, or failed — always with the
     /// reason and the way forward, never a blank slab.
     private var waitingCard: some View {
-        MobileSettingsCard {
+        SettingsUpdateCard {
             HStack(alignment: .top, spacing: 12) {
-                StatusGlyph(systemName: waitingSymbol, tint: waitingTint, size: 34)
+                SettingsUpdateGlyph(systemName: waitingSymbol, tint: waitingTint, size: 34)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(waitingTitle)
@@ -477,10 +356,10 @@ struct MobileCompanionSettingsView: View {
             title: "Web 伴生前端插件",
             subtitle: "管理桌面端私有托管的 1:1 移动看板 Web Core 静态资源包"
         ) {
-            MobileSettingsCard {
+            SettingsUpdateCard {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        StatusGlyph(
+                        SettingsUpdateGlyph(
                             systemName: pluginStatus.isInstalled ? "shippingbox.fill" : "shippingbox",
                             tint: pluginStatus.isInstalled ? Color.codexGreen : Color.codexAmber
                         )
@@ -511,7 +390,7 @@ struct MobileCompanionSettingsView: View {
                         Spacer(minLength: 12)
 
                         if !pluginStatus.isInstalled {
-                            PrimaryActionButton(
+                            SettingsUpdatePrimaryAction(
                                 title: isDownloadingPlugin ? "正在安装…" : "一键安装",
                                 systemImage: "arrow.down.circle.fill",
                                 isBusy: isDownloadingPlugin,
@@ -520,7 +399,7 @@ struct MobileCompanionSettingsView: View {
                                 downloadAndInstallPlugin()
                             }
                         } else if let update = availableUpdate, update.hasUpdate {
-                            PrimaryActionButton(
+                            SettingsUpdatePrimaryAction(
                                 title: isDownloadingPlugin ? "正在更新…" : "更新至 v\(update.version)",
                                 systemImage: "arrow.up.circle.fill",
                                 isBusy: isDownloadingPlugin,
@@ -529,7 +408,7 @@ struct MobileCompanionSettingsView: View {
                                 downloadAndInstallPlugin(remoteURL: update.downloadURL)
                             }
                         } else {
-                            ChipButton(
+                            SettingsUpdateChip(
                                 title: isCheckingForUpdate ? "检查中…" : "检查更新",
                                 systemImage: "arrow.triangle.2.circlepath",
                                 isEnabled: !isCheckingForUpdate && !isDownloadingPlugin
@@ -576,7 +455,7 @@ struct MobileCompanionSettingsView: View {
                     Divider().overlay(Color.codexLine.opacity(0.6))
 
                     HStack(spacing: 8) {
-                        ChipButton(
+                        SettingsUpdateChip(
                             title: "从本地 .zip 导入…",
                             systemImage: "square.and.arrow.down",
                             isEnabled: !isDownloadingPlugin
@@ -584,7 +463,7 @@ struct MobileCompanionSettingsView: View {
                             importLocalPluginZip()
                         }
 
-                        ChipButton(title: "在访达中打开", systemImage: "folder") {
+                        SettingsUpdateChip(title: "在访达中打开", systemImage: "folder") {
                             NSWorkspace.shared.selectFile(
                                 nil,
                                 inFileViewerRootedAtPath: pluginInstaller.pluginDirectory.path
@@ -594,7 +473,7 @@ struct MobileCompanionSettingsView: View {
                         Spacer(minLength: 0)
 
                         if pluginStatus.isInstalled {
-                            ChipButton(
+                            SettingsUpdateChip(
                                 title: "移除插件",
                                 systemImage: "trash",
                                 tint: Color.codexRed,

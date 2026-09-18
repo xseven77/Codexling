@@ -1230,59 +1230,132 @@ struct SettingsView: View {
     }
 
     private var updateSection: some View {
-        SettingsSection(title: "应用与偏好") {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Codexling \(updater.currentVersion)（\(updater.currentBuild)）")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(updater.settingsStatusLine)
-                            .font(.system(size: 11))
-                            .foregroundStyle(statusColor)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    HStack(spacing: 7) {
-                        IconButton(
-                            systemName: "arrow.up.right",
-                            title: "打开 GitHub Releases",
-                            action: updater.openReleasesPage
-                        )
-                        Button(updater.settingsPrimaryActionTitle, action: primaryUpdateAction)
-                            .buttonStyle(SettingsPrimaryActionButtonStyle())
-                            .disabled(updater.phase.isBusy)
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsSection(title: "应用更新", subtitle: "通过 GitHub Releases 检查、下载并安装 Codexling 新版本") {
+                SettingsUpdateCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            SettingsUpdateGlyph(systemName: "app.badge.fill", tint: statusColor)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 7) {
+                                    Text("Codexling")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Color.codexInk)
+                                    Text(verbatim: "v\(updater.currentVersion)")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .foregroundStyle(Color.codexGreen)
+                                        .background(Color.codexGreen.opacity(0.12), in: Capsule())
+                                }
+                                Text("Build \(updater.currentBuild) · \(updater.settingsStatusLine)")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Color.codexMuted)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 12)
+                            if updater.phase == .available || updater.phase == .downloading || updater.phase == .installing {
+                                SettingsUpdatePrimaryAction(
+                                    title: appUpdateActionTitle,
+                                    systemImage: "arrow.up.circle.fill",
+                                    isBusy: updater.phase.isBusy,
+                                    isEnabled: !updater.phase.isBusy,
+                                    action: primaryUpdateAction
+                                )
+                            } else {
+                                SettingsUpdateChip(
+                                    title: updater.settingsPrimaryActionTitle,
+                                    systemImage: "arrow.triangle.2.circlepath",
+                                    isEnabled: !updater.phase.isBusy,
+                                    action: primaryUpdateAction
+                                )
+                            }
+                        }
+                        if updater.phase == .downloading {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text("正在下载应用更新…")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(Color.codexInk)
+                                    Spacer()
+                                    Text(verbatim: "\(Int(updater.downloadProgress * 100))%")
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.codexPrimary)
+                                }
+                                ProgressView(value: updater.downloadProgress > 0 ? updater.downloadProgress : nil)
+                                    .progressViewStyle(.linear)
+                                    .tint(Color.codexPrimary)
+                                    .controlSize(.small)
+                            }
+                            .padding(.vertical, 2)
+                        } else if let feedback = appUpdateFeedback {
+                            HStack(spacing: 6) {
+                                Image(systemName: appUpdateFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                    .font(.system(size: 11))
+                                Text(feedback)
+                                    .font(.system(size: 11.5))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .foregroundStyle(appUpdateFailed ? Color.codexRed : Color.codexGreen)
+                            .padding(.leading, 2)
+                        }
+                        Divider().overlay(Color.codexLine.opacity(0.6))
+                        HStack(spacing: 8) {
+                            SettingsUpdateChip(title: "查看版本发布", systemImage: "arrow.up.right", action: updater.openReleasesPage)
+                            SettingsUpdateChip(title: "在访达中打开", systemImage: "folder") {
+                                NSWorkspace.shared.selectFile(Bundle.main.bundleURL.path, inFileViewerRootedAtPath: Bundle.main.bundleURL.deletingLastPathComponent().path)
+                            }
+                            Spacer(minLength: 0)
+                            if updater.phase == .available {
+                                SettingsUpdateChip(title: "重新检查", systemImage: "arrow.triangle.2.circlepath", action: updater.checkForUpdates)
+                            }
+                        }
                     }
                 }
-                .padding(.horizontal, 16)
-                .frame(minHeight: 62)
-
-                if case .downloading = updater.phase {
-                    ProgressView(value: updater.downloadProgress)
-                        .progressViewStyle(.linear)
-                        .tint(Color.codexPrimary)
-                }
-                CodexDivider()
-                launchAtLoginSection
-                CodexDivider()
-                silentLaunchSection
-                CodexDivider()
-                themeSection
-                CodexDivider()
-                orientationSection
-                CodexDivider()
-                mainWindowProviderCarouselSection
-                CodexDivider()
-                notchProviderCarouselSection
-                CodexDivider()
-                accountCarouselSection
-                CodexDivider()
-                refreshSection
             }
-            .settingsGroupSurface()
-            .frame(maxWidth: .infinity, alignment: .leading)
+            SettingsSection(title: "偏好设置") {
+                VStack(alignment: .leading, spacing: 0) {
+                    launchAtLoginSection
+                    CodexDivider()
+                    silentLaunchSection
+                    CodexDivider()
+                    themeSection
+                    CodexDivider()
+                    orientationSection
+                    CodexDivider()
+                    mainWindowProviderCarouselSection
+                    CodexDivider()
+                    notchProviderCarouselSection
+                    CodexDivider()
+                    accountCarouselSection
+                    CodexDivider()
+                    refreshSection
+                }
+                .settingsGroupSurface()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .onAppear {
-            settings.refreshLaunchAtLoginStatus()
+        .onAppear { settings.refreshLaunchAtLoginStatus() }
+    }
+
+    private var appUpdateFailed: Bool {
+        if case .failed = updater.phase { return true }
+        return false
+    }
+
+    private var appUpdateActionTitle: String {
+        switch updater.phase {
+        case .downloading: return "正在更新…"
+        case .installing: return "正在安装…"
+        default: return "更新至 v\(updater.latestRelease?.version ?? updater.currentVersion)"
+        }
+    }
+
+    private var appUpdateFeedback: String? {
+        switch updater.phase {
+        case .available, .upToDate, .failed, .installing: return updater.settingsStatusLine
+        default: return nil
         }
     }
 
@@ -1292,10 +1365,10 @@ struct SettingsView: View {
             .codexRed
         case .available:
             .codexAmber
-        case .upToDate:
+        case .upToDate, .idle:
             .codexGreen
         default:
-            .codexMuted
+            .codexPrimary
         }
     }
 
