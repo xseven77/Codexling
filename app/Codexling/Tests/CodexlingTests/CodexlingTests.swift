@@ -817,23 +817,36 @@ final class CodexlingTests: XCTestCase {
     func testSettingsWindowStartsCompactAndUsesNaturalContentHeight() {
         let settingsMaximum = DetachedWindowMetrics.maximumSettingsWindowHeight(for: NSScreen.main)
         let provisional = DetachedWindowMetrics.settingsWindowProvisionalHeight(screen: NSScreen.main)
-        XCTAssertEqual(provisional, min(560, settingsMaximum))
+        XCTAssertEqual(provisional, min(DetachedWindowMetrics.settingsDefaultHeight, settingsMaximum))
 
         let shortContent = DetachedWindowMetrics.preferredSettingsWindowSize(
             contentHeight: 240,
             screen: NSScreen.main
         )
-        XCTAssertEqual(shortContent.height, min(DetachedWindowMetrics.settingsMinWindowHeight, settingsMaximum))
+        XCTAssertEqual(shortContent.height, min(DetachedWindowMetrics.settingsDefaultHeight, settingsMaximum))
 
-        let naturalContentHeight = min(480, settingsMaximum)
+        let naturalContentHeight = min(960, settingsMaximum)
         let naturalContent = DetachedWindowMetrics.preferredSettingsWindowSize(
             contentHeight: naturalContentHeight,
             screen: NSScreen.main
         )
         XCTAssertEqual(naturalContent.height, max(
-            min(naturalContentHeight, settingsMaximum),
-            min(DetachedWindowMetrics.settingsMinWindowHeight, settingsMaximum)
+            min(naturalContentHeight + 24, settingsMaximum),
+            min(DetachedWindowMetrics.settingsDefaultHeight, settingsMaximum)
         ))
+
+        // 验证移动端伴生页面拥有专属宽裕首选尺寸
+        let mobileInitialSize = DetachedWindowMetrics.settingsWindowInitialSize(for: .mobile, screen: NSScreen.main)
+        XCTAssertEqual(mobileInitialSize.width, DetachedWindowMetrics.settingsMobileWidth)
+        XCTAssertEqual(mobileInitialSize.height, min(DetachedWindowMetrics.settingsMobileHeight, settingsMaximum))
+
+        let mobilePreferred = DetachedWindowMetrics.preferredSettingsWindowSize(
+            contentHeight: 700,
+            tab: .mobile,
+            screen: NSScreen.main
+        )
+        XCTAssertEqual(mobilePreferred.width, DetachedWindowMetrics.settingsMobileWidth)
+        XCTAssertEqual(mobilePreferred.height, min(DetachedWindowMetrics.settingsMobileHeight, settingsMaximum))
 
         // 验证设置窗口允许用户自由拖拽拉大，maxSize.height 不应被限制在 measuredContentHeight
         let limits = DetachedWindowMetrics.settingsWindowSizeLimits(
@@ -841,15 +854,15 @@ final class CodexlingTests: XCTestCase {
             screen: NSScreen.main
         )
         XCTAssertEqual(limits.max.height, settingsMaximum)
-        XCTAssertGreaterThanOrEqual(limits.max.width, DetachedWindowMetrics.maxWidth)
+        XCTAssertGreaterThanOrEqual(limits.max.width, DetachedWindowMetrics.settingsDefaultWidth)
 
         // 验证 clamp 允许放宽到屏幕或大宽度
         let clamped = DetachedWindowMetrics.clampSettingsContentSize(
-            NSSize(width: 750, height: 700),
+            NSSize(width: 950, height: 860),
             screen: NSScreen.main
         )
-        XCTAssertEqual(clamped.width, 750)
-        XCTAssertEqual(clamped.height, min(700, settingsMaximum))
+        XCTAssertEqual(clamped.width, 950)
+        XCTAssertEqual(clamped.height, min(860, settingsMaximum))
     }
 
     @MainActor

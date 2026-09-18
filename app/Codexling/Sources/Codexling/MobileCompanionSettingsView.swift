@@ -197,6 +197,7 @@ struct MobileCompanionSettingsView: View {
             pluginManagementSection
         }
         .padding(.bottom, 24)
+        .background(ScrollIndicatorHider(id: "mobileCompanion"))
         .onAppear {
             refreshStatus()
         }
@@ -374,6 +375,16 @@ struct MobileCompanionSettingsView: View {
                     Divider().overlay(Color.codexLine.opacity(0.6))
 
                     HStack(spacing: 8) {
+                        ChipButton(
+                            title: "复制 Token",
+                            systemImage: "key"
+                        ) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(syncManager.token, forType: .string)
+                            onShowToast("已复制配对 Token", "key")
+                        }
+                        .help("仅复制当前配对 Token")
+
                         ChipButton(
                             title: "重新生成配对 Token",
                             systemImage: "arrow.triangle.2.circlepath",

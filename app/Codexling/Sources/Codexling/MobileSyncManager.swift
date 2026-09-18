@@ -96,6 +96,9 @@ final class MobileSyncManager {
         self.multiAgentSettingsStore = multiAgentSettingsStore
         self.appSettingsStore = appSettingsStore
         self.companionStatsStore = companionStatsStore
+        companionStatsStore?.onMinutesChanged = { [weak self] in
+            self?.broadcastSnapshot()
+        }
 
         if isEnabled {
             start()

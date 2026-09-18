@@ -412,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         standalonePetWindowController?.show()
     }
 
-    private func openSettingsWindow() {
+    private func openSettingsWindow(tab: SettingsTab? = nil) {
         guard let actions else { return }
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
@@ -421,10 +421,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 multiAgentSettings: multiAgentSettingsStore,
                 updater: updateController,
                 actions: actions,
+                initialTab: tab,
                 onClose: { [weak self] in
                     self?.handleSettingsWindowClosed()
                 }
             )
+        } else if let tab {
+            settingsWindowController?.selectTab(tab)
         }
 
         if NSApp.activationPolicy() != .regular {
@@ -432,9 +435,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         let targetScreen = windowController?.currentScreen
-        settingsWindowController?.show(on: targetScreen)
+        settingsWindowController?.show(tab: tab, on: targetScreen)
         DispatchQueue.main.async { [weak self] in
-            self?.settingsWindowController?.show(on: targetScreen)
+            self?.settingsWindowController?.show(tab: tab, on: targetScreen)
         }
     }
 

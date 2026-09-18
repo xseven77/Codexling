@@ -12,7 +12,7 @@ private enum SettingsLayoutMetrics {
 
 /// Sidebar order is the declaration order (`CaseIterable`), so `.pet` sits
 /// directly under `.general` to keep the signature feature within reach.
-private enum SettingsTab: String, CaseIterable, Identifiable {
+enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case pet
     case accounts
@@ -70,7 +70,9 @@ struct SettingsView: View {
     @Bindable var multiAgentSettings: MultiAgentSettingsStore
     @Bindable var updater: AppUpdateController
     let layout: UsagePanelLayout
+    var initialTab: SettingsTab? = nil
     var onMeasuredContentHeightChange: (CGFloat) -> Void = { _ in }
+    var onTabSelected: (SettingsTab) -> Void = { _ in }
     @State private var showsPetPicker = false
     @State private var showsCodexRestartConfirmation = false
     @State private var isRestartingCodex = false
@@ -83,13 +85,34 @@ struct SettingsView: View {
     @State private var presentingInstallGuide: AgentIntegrationStatus?
     @State private var toast: SettingsToast?
     @State private var toastDismissGeneration = 0
-    @State private var selectedTab: SettingsTab = .general
+    @State private var selectedTab: SettingsTab
     @State private var showsStickySettingsTitle = false
     @State private var isNetworkProxyTesting = false
     @State private var isProviderQuickTesting = false
     @State private var proxyTestMessage: String?
     @State private var providerQuickResults: [ProviderQuickConnectivityResult] = []
     @Environment(\.openURL) private var openURL
+
+    init(
+        store: UsageSnapshotStore,
+        settings: AppSettingsStore,
+        multiAgentSettings: MultiAgentSettingsStore,
+        updater: AppUpdateController,
+        layout: UsagePanelLayout,
+        initialTab: SettingsTab? = nil,
+        onMeasuredContentHeightChange: @escaping (CGFloat) -> Void = { _ in },
+        onTabSelected: @escaping (SettingsTab) -> Void = { _ in }
+    ) {
+        self._store = Bindable(store)
+        self._settings = Bindable(settings)
+        self._multiAgentSettings = Bindable(multiAgentSettings)
+        self._updater = Bindable(updater)
+        self.layout = layout
+        self.initialTab = initialTab
+        self.onMeasuredContentHeightChange = onMeasuredContentHeightChange
+        self.onTabSelected = onTabSelected
+        self._selectedTab = State(initialValue: initialTab ?? .general)
+    }
 
     var body: some View {
         lifecycleContent
@@ -347,6 +370,7 @@ struct SettingsView: View {
                     .padding(.top, SettingsLayoutMetrics.windowTopInset)
                     .padding(.bottom, SettingsLayoutMetrics.windowBottomInset)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(ScrollIndicatorHider(id: selectedTab))
                     .background {
                         GeometryReader { geometry in
                             Color.clear.preference(
@@ -370,7 +394,7 @@ struct SettingsView: View {
             .background {
                 ZStack {
                     Color.codexBackground.opacity(0.50)
-                    ScrollIndicatorHider()
+                    ScrollIndicatorHider(id: selectedTab)
                 }
             }
         }
@@ -420,6 +444,7 @@ struct SettingsView: View {
                 Button {
                     if selectedTab != tab {
                         selectedTab = tab
+                        onTabSelected(tab)
                         if layout == .window {
                             onMeasuredContentHeightChange(-1)
                         }
@@ -2019,7 +2044,35 @@ struct RevealedAPIKey: Equatable {
     let value: String
 }
 
+final class InvisibleScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+    override class var isCompatibleWithResponsiveScrolling: Bool { true }
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat { 0 }
+
+    override func draw(_ dirtyRect: NSRect) {}
+    override func drawKnob() {}
+    override func drawKnobSlot(in rect: NSRect, highlight: Bool) {}
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override var isHidden: Bool {
+        get { true }
+        set { super.isHidden = true }
+    }
+
+    override var alphaValue: CGFloat {
+        get { 0 }
+        set { super.alphaValue = 0 }
+    }
+
+    override var frame: NSRect {
+        get { .zero }
+        set { super.frame = .zero }
+    }
+}
+
 struct ScrollIndicatorHider: NSViewRepresentable {
+    var id: AnyHashable? = nil
+
     func makeNSView(context: Context) -> NSView {
         ScrollIndicatorHiderView()
     }
@@ -2030,6 +2083,8 @@ struct ScrollIndicatorHider: NSViewRepresentable {
 }
 
 private final class ScrollIndicatorHiderView: NSView {
+    private weak var observedScrollView: NSScrollView?
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
@@ -2042,6 +2097,14 @@ private final class ScrollIndicatorHiderView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         scheduleUpdate()
+        if let window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onWindowResized),
+                name: NSWindow.didResizeNotification,
+                object: window
+            )
+        }
     }
 
     override func layout() {
@@ -2050,7 +2113,8 @@ private final class ScrollIndicatorHiderView: NSView {
     }
 
     func scheduleUpdate() {
-        for delay in [0.0, 0.05, 0.25] {
+        hideIndicators()
+        for delay in [0.0, 0.02, 0.05, 0.12, 0.25, 0.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.hideIndicators()
             }
@@ -2061,29 +2125,135 @@ private final class ScrollIndicatorHiderView: NSView {
         let targetScrollView = self.enclosingScrollView ?? findTargetScrollView()
         guard let scrollView = targetScrollView else { return }
 
+        if observedScrollView !== scrollView {
+            detachFromObservedScrollView()
+            observedScrollView = scrollView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.postsFrameChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
+
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onBoundsOrLiveScrollChanged),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onBoundsOrLiveScrollChanged),
+                name: NSScrollView.didLiveScrollNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onBoundsOrLiveScrollChanged),
+                name: NSView.frameDidChangeNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onBoundsOrLiveScrollChanged),
+                name: NSView.frameDidChangeNotification,
+                object: scrollView.contentView
+            )
+        }
+
+        applyHiding(to: scrollView)
+    }
+
+    private func applyHiding(to scrollView: NSScrollView) {
         scrollView.scrollerStyle = .overlay
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
-        scrollView.verticalScroller?.isHidden = true
-        scrollView.horizontalScroller?.isHidden = true
-        scrollView.verticalScroller?.alphaValue = 0
-        scrollView.horizontalScroller?.alphaValue = 0
-        scrollView.verticalScroller = nil
-        scrollView.horizontalScroller = nil
         scrollView.autohidesScrollers = true
         scrollView.scrollerInsets = NSEdgeInsetsZero
         scrollView.automaticallyAdjustsContentInsets = false
+
+        if !(scrollView.verticalScroller is InvisibleScroller) {
+            scrollView.verticalScroller = InvisibleScroller()
+        }
+        scrollView.verticalScroller?.isHidden = true
+        scrollView.verticalScroller?.alphaValue = 0
+        scrollView.verticalScroller?.frame = .zero
+
+        if !(scrollView.horizontalScroller is InvisibleScroller) {
+            scrollView.horizontalScroller = InvisibleScroller()
+        }
+        scrollView.horizontalScroller?.isHidden = true
+        scrollView.horizontalScroller?.alphaValue = 0
+        scrollView.horizontalScroller?.frame = .zero
+
         scrollView.tile()
     }
 
+    @objc private func onBoundsOrLiveScrollChanged() {
+        if let scrollView = observedScrollView {
+            applyHiding(to: scrollView)
+        }
+    }
+
+    @objc private func onWindowResized() {
+        if let scrollView = observedScrollView {
+            applyHiding(to: scrollView)
+        } else {
+            hideIndicators()
+        }
+    }
+
+    private func detachFromObservedScrollView() {
+        if let scrollView = observedScrollView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSScrollView.didLiveScrollNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.frameDidChangeNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.frameDidChangeNotification,
+                object: scrollView.contentView
+            )
+        }
+        observedScrollView = nil
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     private func findTargetScrollView() -> NSScrollView? {
+        if let enclosing = self.enclosingScrollView {
+            return enclosing
+        }
+        var current: NSView? = self.superview
+        while let view = current {
+            if let scroll = view as? NSScrollView {
+                return scroll
+            }
+            current = view.superview
+        }
         guard let rootView = window?.contentView else { return nil }
-        let markerRect = convert(bounds, to: nil)
         var candidates: [NSScrollView] = []
         collectScrollViews(in: rootView, into: &candidates)
-        return candidates
-            .filter({ $0.convert($0.bounds, to: nil).intersects(markerRect) })
-            .min(by: { scrollViewArea($0) < scrollViewArea($1) })
+        if candidates.count == 1 {
+            return candidates.first
+        }
+        let markerRect = convert(bounds, to: nil)
+        if markerRect.width > 0 && markerRect.height > 0 {
+            if let matched = candidates.first(where: { $0.convert($0.bounds, to: nil).intersects(markerRect) }) {
+                return matched
+            }
+        }
+        return candidates.min(by: { scrollViewArea($0) < scrollViewArea($1) })
     }
 
     private func collectScrollViews(in view: NSView, into result: inout [NSScrollView]) {

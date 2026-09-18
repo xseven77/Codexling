@@ -4,6 +4,75 @@ import Testing
 
 @Suite("MobileSyncServerTests")
 struct MobileSyncServerTests {
+    @Test("Agent SSE relay forwards events without waiting for stream completion")
+    func testAgentSSERelay() async throws {
+        let upstream = MobileSyncServer(port: 59391, token: "upstream-test-token", dataProvider: MockDataProvider())
+        let relay = MobileSyncServer(port: 59392, token: "relay-test-token", dataProvider: MockDataProvider())
+        try upstream.start()
+        defer { upstream.stop() }
+        try relay.start()
+        defer { relay.stop() }
+        try await waitFor(timeout: 5) { upstream.status == .ready && relay.status == .ready }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        var url = URLComponents(string: "http://127.0.0.1:59392/mobile/events/proxy")!
+        url.queryItems = [
+            URLQueryItem(name: "token", value: "relay-test-token"),
+            URLQueryItem(name: "target_token", value: "upstream-test-token"),
+            URLQueryItem(name: "target", value: "http://127.0.0.1:59391/mobile/events")
+        ]
+        var request = URLRequest(url: url.url!)
+        request.timeoutInterval = 5
+        var rejectedURL = url
+        rejectedURL.queryItems = url.queryItems?.map {
+            $0.name == "target_token" ? URLQueryItem(name: "target_token", value: "wrong-token") : $0
+        }
+        let (_, rejectedResponse) = try await session.data(from: rejectedURL.url!)
+        #expect((rejectedResponse as? HTTPURLResponse)?.statusCode == 401)
+        let (bytes, response) = try await session.bytes(for: request)
+        let http = try #require(response as? HTTPURLResponse)
+        #expect(http.statusCode == 200)
+        #expect(http.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == "*")
+        #expect(http.value(forHTTPHeaderField: "X-Accel-Buffering") == "no")
+        var received = false
+        var receivedInitial = false
+        for try await line in bytes.lines {
+            if line.hasPrefix("data:") {
+                if !receivedInitial {
+                    #expect(line.contains("task-1"))
+                    receivedInitial = true
+                    upstream.broadcast(event: "snapshot", data: #"{"activity":{"state":"executing","activeTaskCount":1,"activeTasks":[]},"todayMinutes":42}"#)
+                    continue
+                }
+                #expect(line.contains("executing"))
+                #expect(line.contains("42"))
+                received = true
+                break
+            }
+        }
+        #expect(received)
+        #expect(receivedInitial)
+    }
+
+    @MainActor
+    @Test("Working minutes notify SSE publisher even when task state is unchanged")
+    func testWorkingMinutesNotify() {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("sse-stats-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let start = Date()
+        let stats = CompanionStatsStore(fileURL: file, now: start)
+        var notifications = 0
+        stats.onMinutesChanged = { notifications += 1 }
+        stats.setActivityState(.thinking, agentID: "codex", now: start)
+        stats.tick(now: start.addingTimeInterval(30))
+        #expect(notifications == 0)
+        stats.tick(now: start.addingTimeInterval(65))
+        #expect(stats.todayMinutes == 1)
+        #expect(notifications == 1)
+        stats.tick(now: start.addingTimeInterval(90))
+        #expect(notifications == 1)
+    }
+
     final class MockDataProvider: MobileSyncDataProvider, @unchecked Sendable {
         func makeSnapshot() async -> MobileSnapshotPayload {
             MobileSnapshotPayload(
@@ -223,6 +292,42 @@ struct MobileSyncServerTests {
     func testPluginDirectoryDefault() {
         let defaultURL = MobileSyncServer.defaultPluginDirectoryURL
         #expect(defaultURL.path.contains("Plugins/mobile-web"))
+    }
+
+    @Test("Public PWA manifest never includes a pairing token")
+    func testPublicManifestDoesNotExposePairingToken() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let secret = "private-pairing-secret"
+        let original: [String: Any] = [
+            "name": "Codexling Mobile", "display": "standalone", "scope": "./",
+            "start_url": "./?token=\(secret)",
+            "icons": [["src": "icons/app-icon-192.png", "sizes": "192x192", "type": "image/png"]],
+        ]
+        try JSONSerialization.data(withJSONObject: original)
+            .write(to: directory.appendingPathComponent("manifest.json"))
+        let port: UInt16 = 59386
+        let server = MobileSyncServer(port: port, token: secret, pluginDirectoryURL: directory, dataProvider: MockDataProvider())
+        defer { server.stop() }
+        try server.start()
+        try await waitFor(timeout: 5) { server.status == .ready }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)/manifest.json")!)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let manifest = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(manifest["start_url"] as? String == "./")
+        #expect(manifest["display"] as? String == "standalone")
+        #expect(manifest["scope"] as? String == "./")
+        #expect((manifest["icons"] as? [[String: String]])?.count == 1)
+        #expect(!String(decoding: data, as: UTF8.self).contains(secret))
+        let (_, unauthorized) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)/mobile/snapshot")!)
+        #expect((unauthorized as? HTTPURLResponse)?.statusCode == 401)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/mobile/snapshot")!)
+        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        let (_, authorized) = try await session.data(for: request)
+        #expect((authorized as? HTTPURLResponse)?.statusCode == 200)
     }
 
     @Test("MobileCredentialsExportPayload serialization")

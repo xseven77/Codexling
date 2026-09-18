@@ -78,7 +78,13 @@ final class CompanionStatsStore {
     private var record: Record
     private var timer: Timer?
 
-    private(set) var todaySeconds: TimeInterval = 0
+    var onMinutesChanged: (() -> Void)?
+
+    private(set) var todaySeconds: TimeInterval = 0 {
+        didSet {
+            if Int(oldValue / 60) != Int(todaySeconds / 60) { onMinutesChanged?() }
+        }
+    }
 
     var todayMinutes: Int {
         Int(todaySeconds / 60)

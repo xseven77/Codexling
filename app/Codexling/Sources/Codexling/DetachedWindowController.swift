@@ -65,12 +65,36 @@ enum DetachedWindowMetrics {
         size.height > 1
             && abs(size.width - verticalDashboardWidth) < 1
     }
-    /// 设置页先以紧凑高度出现；右侧内容的自然高度测出后再一次性收敛。
-    static func settingsWindowProvisionalHeight(screen: NSScreen? = nil) -> CGFloat {
-        min(560, maximumSettingsWindowHeight(for: screen))
+    // MARK: - 设置窗口度量
+    /// 设置窗口默认宽度：容纳侧栏 (166) 与右侧充裕的卡片内容 (714)，确保二维码、直连网址和按钮从容布局。
+    static let settingsDefaultWidth: CGFloat = 920
+    /// 设置窗口最小宽度
+    static let settingsMinWidth: CGFloat = 720
+    /// 设置窗口默认高度：完整容纳移动端伴生等包含多组卡片的页面，避免首屏内容紧贴窗口底边或产生不必要的滚动。
+    static let settingsDefaultHeight: CGFloat = 840
+    /// 移动端伴生页面专项推荐尺寸
+    static let settingsMobileWidth: CGFloat = 920
+    static let settingsMobileHeight: CGFloat = 840
+    /// 设置窗口最小高度
+    static let settingsMinWindowHeight: CGFloat = 600
+
+    /// 设置页打开时的首帧高度
+    static func settingsWindowProvisionalHeight(for tab: SettingsTab? = nil, screen: NSScreen? = nil) -> CGFloat {
+        let baseHeight = (tab == .mobile) ? max(settingsDefaultHeight, settingsMobileHeight) : settingsDefaultHeight
+        return min(baseHeight, maximumSettingsWindowHeight(for: screen))
     }
-    /// 用户手动缩小时的下限；低于内容高度时 SwiftUI 才启用滚动。
-    static let settingsMinWindowHeight: CGFloat = 560
+
+    /// 设置窗口初始推荐尺寸
+    static func settingsWindowInitialSize(for tab: SettingsTab? = nil, screen: NSScreen? = nil) -> NSSize {
+        let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
+        let baseWidth = (tab == .mobile) ? max(settingsDefaultWidth, settingsMobileWidth) : settingsDefaultWidth
+        let baseHeight = (tab == .mobile) ? max(settingsDefaultHeight, settingsMobileHeight) : settingsDefaultHeight
+        let dynamicMaxWidth = max(baseWidth, (screen?.visibleFrame.width ?? 1200) - 100)
+        return NSSize(
+            width: min(baseWidth, dynamicMaxWidth),
+            height: min(baseHeight, dynamicMaxHeight)
+        )
+    }
 
     static var defaultWidth: CGFloat { dashboardWidth }
     static var defaultHeight: CGFloat { loggedInDashboardHeight }
@@ -96,9 +120,9 @@ enum DetachedWindowMetrics {
 
     static func clampSettingsContentSize(_ size: NSSize, screen: NSScreen? = nil) -> NSSize {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
-        let dynamicMaxWidth = max(maxWidth, (screen?.visibleFrame.width ?? 1200) - 100)
+        let dynamicMaxWidth = max(settingsDefaultWidth, (screen?.visibleFrame.width ?? 1200) - 100)
         return NSSize(
-            width: min(max(size.width, dashboardWidth), dynamicMaxWidth),
+            width: min(max(size.width, settingsMinWidth), dynamicMaxWidth),
             height: min(
                 max(size.height, min(settingsMinWindowHeight, dynamicMaxHeight)),
                 dynamicMaxHeight
@@ -172,18 +196,25 @@ enum DetachedWindowMetrics {
         )
     }
 
-    static func preferredSettingsWindowSize(contentHeight: CGFloat, screen: NSScreen? = nil) -> NSSize {
+    static func preferredSettingsWindowSize(contentHeight: CGFloat, tab: SettingsTab? = nil, screen: NSScreen? = nil) -> NSSize {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
-        let height = min(max(contentHeight, settingsMinWindowHeight), dynamicMaxHeight)
-        return NSSize(width: dashboardWidth, height: height)
+        let baseWidth = (tab == .mobile) ? max(settingsDefaultWidth, settingsMobileWidth) : settingsDefaultWidth
+        let baseHeight = (tab == .mobile) ? max(settingsDefaultHeight, settingsMobileHeight) : settingsDefaultHeight
+        let dynamicMaxWidth = max(baseWidth, (screen?.visibleFrame.width ?? 1200) - 100)
+        let preferredHeight = max(contentHeight + 24, baseHeight)
+        let height = min(preferredHeight, dynamicMaxHeight)
+        return NSSize(
+            width: min(baseWidth, dynamicMaxWidth),
+            height: height
+        )
     }
 
     static func settingsWindowSizeLimits(measuredContentHeight: CGFloat? = nil, screen: NSScreen? = nil) -> (min: NSSize, max: NSSize) {
         let dynamicMaxHeight = maximumSettingsWindowHeight(for: screen)
         let minHeight = min(settingsMinWindowHeight, dynamicMaxHeight)
-        let dynamicMaxWidth = max(maxWidth, (screen?.visibleFrame.width ?? 1200) - 100)
+        let dynamicMaxWidth = max(settingsDefaultWidth, (screen?.visibleFrame.width ?? 1200) - 100)
         return (
-            NSSize(width: dashboardWidth, height: minHeight),
+            NSSize(width: settingsMinWidth, height: minHeight),
             NSSize(width: dynamicMaxWidth, height: dynamicMaxHeight)
         )
     }
@@ -817,8 +848,12 @@ final class DetachedWindowController: NSObject, NSWindowDelegate {
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private var hostingController: NSHostingController<SettingsView>!
+    private let store: UsageSnapshotStore
     private let settings: AppSettingsStore
+    private let multiAgentSettings: MultiAgentSettingsStore
+    private let updater: AppUpdateController
     private let onClose: () -> Void
+    private var currentTab: SettingsTab
     private var measuredContentHeight: CGFloat?
     private var isProgrammaticResize = false
     private var hasUserResized = false
@@ -830,16 +865,21 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         multiAgentSettings: MultiAgentSettingsStore,
         updater: AppUpdateController,
         actions: UsageActions,
+        initialTab: SettingsTab? = nil,
         onClose: @escaping () -> Void
     ) {
+        let tab = initialTab ?? .general
+        self.currentTab = tab
+        self.store = store
         self.settings = settings
+        self.multiAgentSettings = multiAgentSettings
+        self.updater = updater
         self.onClose = onClose
+        let initialSize = DetachedWindowMetrics.settingsWindowInitialSize(for: tab)
         window = NSWindow(
             contentRect: NSRect(
-                x: 0,
-                y: 0,
-                width: DetachedWindowMetrics.dashboardWidth,
-                height: DetachedWindowMetrics.settingsWindowProvisionalHeight()
+                origin: .zero,
+                size: initialSize
             ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -854,8 +894,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 multiAgentSettings: multiAgentSettings,
                 updater: updater,
                 layout: .window,
+                initialTab: tab,
                 onMeasuredContentHeightChange: { [weak self] height in
                     self?.handleMeasuredContentHeight(height)
+                },
+                onTabSelected: { [weak self] selectedTab in
+                    self?.handleTabSelected(selectedTab)
                 }
             )
         )
@@ -876,7 +920,42 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.center()
     }
 
-    func show(on screen: NSScreen? = nil) {
+    func selectTab(_ tab: SettingsTab) {
+        currentTab = tab
+        measuredContentHeight = nil
+        handleTabSelected(tab)
+        hostingController.rootView = SettingsView(
+            store: store,
+            settings: settings,
+            multiAgentSettings: multiAgentSettings,
+            updater: updater,
+            layout: .window,
+            initialTab: tab,
+            onMeasuredContentHeightChange: { [weak self] height in
+                self?.handleMeasuredContentHeight(height)
+            },
+            onTabSelected: { [weak self] selectedTab in
+                self?.handleTabSelected(selectedTab)
+            }
+        )
+    }
+
+    private func handleTabSelected(_ tab: SettingsTab) {
+        currentTab = tab
+        let targetSize = DetachedWindowMetrics.settingsWindowInitialSize(for: tab, screen: window.screen)
+        if !hasUserResized {
+            if window.frame.width < targetSize.width || window.frame.height < targetSize.height {
+                let newWidth = max(window.frame.width, targetSize.width)
+                let newHeight = max(window.frame.height, targetSize.height)
+                resizeWindow(to: NSSize(width: newWidth, height: newHeight))
+            }
+        }
+    }
+
+    func show(tab: SettingsTab? = nil, on screen: NSScreen? = nil) {
+        if let tab {
+            selectTab(tab)
+        }
         if let screen, window.screen !== screen, !window.isVisible {
             let size = window.frame.size
             let visible = screen.visibleFrame
@@ -920,7 +999,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         applySizeLimits()
 
         // 避免在用户按住鼠标拖拽窗口边缘时打架
-        if NSEvent.pressedMouseButtons != 0 {
+        if NSEvent.pressedMouseButtons != 0 || window.inLiveResize {
             return
         }
 
@@ -938,6 +1017,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         resizeWindow(
             to: DetachedWindowMetrics.preferredSettingsWindowSize(
                 contentHeight: measured,
+                tab: currentTab,
                 screen: window.screen
             )
         )
@@ -973,7 +1053,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard !isProgrammaticResize else { return }
+        guard !isProgrammaticResize, window.inLiveResize else { return }
         hasUserResized = true
         userResizedSize = window.frame.size
         let clamped = DetachedWindowMetrics.clampSettingsContentSize(
@@ -983,6 +1063,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard clamped != window.frame.size else { return }
         resizeWindow(to: clamped)
         userResizedSize = clamped
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        hasUserResized = true
+        userResizedSize = window.frame.size
     }
 
     func windowDidChangeScreen(_ notification: Notification) {

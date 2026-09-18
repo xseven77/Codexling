@@ -299,6 +299,8 @@ public final class MobileSyncServer: @unchecked Sendable {
     private var isRunning = false
     private let lock = NSLock()
     private var sseClients: [UUID: NWConnection] = [:]
+    private var sseRelays: [UUID: Task<Void, Never>] = [:]
+    private var heartbeatTimer: DispatchSourceTimer?
     /// Set by an intentional `stop()` so a scheduled rebind cannot resurrect a
     /// server the app asked to shut down.
     private var isShuttingDown = false
@@ -444,6 +446,10 @@ public final class MobileSyncServer: @unchecked Sendable {
 
         let clients = Array(sseClients.values)
         sseClients.removeAll()
+        let relays = Array(sseRelays.values)
+        sseRelays.removeAll()
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
 
         listener?.cancel()
         listener = nil
@@ -453,6 +459,7 @@ public final class MobileSyncServer: @unchecked Sendable {
         for connection in clients {
             connection.cancel()
         }
+        for relay in relays { relay.cancel() }
     }
 
     public func broadcast(event: String, data: String) {
@@ -573,6 +580,17 @@ public final class MobileSyncServer: @unchecked Sendable {
             }
 
             switch (method, requestPath) {
+            case ("GET", "/mobile/events/proxy"):
+                guard let target = queryParams["target"], let targetURL = URL(string: target),
+                      ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
+                      targetURL.host != nil, targetURL.user == nil, targetURL.password == nil,
+                      targetURL.query == nil, targetURL.fragment == nil,
+                      targetURL.path.hasSuffix("/mobile/events"),
+                      let targetToken = queryParams["target_token"], !targetToken.isEmpty else {
+                    sendJSONResponse(status: 400, object: ["error": "invalid_agent_stream"], on: connection)
+                    return
+                }
+                startSSERelay(target: targetURL, token: targetToken, on: connection)
             case ("GET", "/mobile/proxy"), ("POST", "/mobile/proxy"):
                 guard let targetStr = queryParams["target"], let targetURL = URL(string: targetStr) else {
                     sendResponse(status: 400, headers: [:], body: "Missing target parameter", on: connection)
@@ -683,14 +701,13 @@ public final class MobileSyncServer: @unchecked Sendable {
         let relativePath = (path == "/" || path.isEmpty) ? "index.html" : String(path.dropFirst())
         let fileURL = pluginDirectoryURL.appendingPathComponent(relativePath)
 
-        // Dynamic manifest: inject the live pairing token into `start_url` so a
-        // home-screen shortcut added from any URL still launches authenticated.
-        // An already-installed shortcut keeps whatever URL the OS captured; the
-        // app surfaces that limitation to the user after re-pairing.
+        // The manifest is public. PWA launches restore their pairing from client
+        // storage, or ask to pair again when the installed app has separate storage.
+        // Override even older plugin manifests so they cannot expose a launch token.
         if relativePath == "manifest.json" {
             if let data = try? Data(contentsOf: fileURL),
                var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-                json["start_url"] = "./?token=\(token)"
+                json["start_url"] = "./"
                 if let patched = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) {
                     sendRawResponse(
                         status: 200,
@@ -1152,15 +1169,96 @@ public final class MobileSyncServer: @unchecked Sendable {
         }
     }
 
+    private func startSSERelay(target: URL, token: String, on connection: NWConnection) {
+        let relayID = UUID()
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed: self?.removeSSERelay(id: relayID)
+            default: break
+            }
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            var started = false
+            defer {
+                let closeStream = started || Task.isCancelled
+                self.removeSSERelay(id: relayID)
+                if closeStream { connection.cancel() }
+            }
+            do {
+                var request = URLRequest(url: target)
+                request.timeoutInterval = 3600
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                let (bytes, response) = try await URLSession.codexlingExternal.bytes(for: request)
+                guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                guard http.statusCode == 200 else {
+                    self.sendJSONResponse(status: http.statusCode, object: ["error": "agent_stream_failed"], on: connection)
+                    return
+                }
+                guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true else {
+                    throw URLError(.badServerResponse)
+                }
+                let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache, no-transform\r\nAccess-Control-Allow-Origin: *\r\nX-Accel-Buffering: no\r\nConnection: keep-alive\r\n\r\n: relay ready\n\n"
+                try await self.sendStreamData(Data(headers.utf8), on: connection)
+                started = true
+                var buffer = Data()
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    buffer.append(byte)
+                    if buffer.count > 1_048_576 { throw URLError(.dataLengthExceedsMaximum) }
+                    if byte == 10 {
+                        try await self.sendStreamData(buffer, on: connection)
+                        buffer.removeAll(keepingCapacity: true)
+                    }
+                }
+            } catch {
+                if !started && !Task.isCancelled {
+                    self.sendJSONResponse(status: 502, object: ["error": "agent_stream_unavailable"], on: connection)
+                }
+            }
+        }
+        lock.lock()
+        sseRelays[relayID] = task
+        lock.unlock()
+    }
+
+    private func sendStreamData(_ data: Data, on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            })
+        }
+    }
+
+    private func removeSSERelay(id: UUID) {
+        lock.lock()
+        let task = sseRelays.removeValue(forKey: id)
+        lock.unlock()
+        task?.cancel()
+    }
+
     private func startSSEStream(on connection: NWConnection) {
         let clientID = UUID()
         lock.lock()
         sseClients[clientID] = connection
+        if heartbeatTimer == nil {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + 15, repeating: 15)
+            timer.setEventHandler { [weak self] in
+                self?.broadcast(event: "heartbeat", data: "{\"heartbeat\":true}")
+            }
+            heartbeatTimer = timer
+            timer.resume()
+        }
         lock.unlock()
 
         let initialResponse = "HTTP/1.1 200 OK\r\n"
             + "Content-Type: text/event-stream\r\n"
-            + "Cache-Control: no-cache\r\n"
+            + "Cache-Control: no-cache, no-transform\r\n"
+            + "Access-Control-Allow-Origin: *\r\n"
+            + "X-Accel-Buffering: no\r\n"
             + "Connection: keep-alive\r\n\r\n"
             + ": keepalive\n\n"
 
@@ -1173,6 +1271,20 @@ public final class MobileSyncServer: @unchecked Sendable {
             if error != nil {
                 self?.removeSSEClient(id: clientID)
                 connection.cancel()
+            } else if let self {
+                Task {
+                    let snapshot = await self.dataProvider.makeSnapshot()
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    do {
+                        let data = try encoder.encode(snapshot)
+                        let frame = "event: snapshot\ndata: \(String(decoding: data, as: UTF8.self))\n\n"
+                        try await self.sendStreamData(Data(frame.utf8), on: connection)
+                    } catch {
+                        self.removeSSEClient(id: clientID)
+                        connection.cancel()
+                    }
+                }
             }
         }))
     }
