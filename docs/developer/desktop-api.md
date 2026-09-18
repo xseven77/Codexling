@@ -67,6 +67,7 @@ JSON 的可选字段可能直接缺省。客户端应接受缺省字段、未知
 | GET | `/api/v1/events` | 桌面 Token | 当前服务的 SSE 状态订阅 |
 | GET | `/api/v1/agents/events` | 桌面 Token + 目标 Token | 转发其他桌面服务的 Agent SSE |
 | GET | `/api/v1/agents/snapshot` | 桌面 Token + 目标 Token | Agent 专用快照中转，仅用于手动检查和 SSE 降级 |
+| GET | `/api/v1/agents/discover` | 桌面 Token | 局域网内嗅探在线的 Codexling Agent 设备列表 |
 | GET、POST | `/api/v1/proxy` | 桌面 Token | 桌面侧转发上游请求，缓冲响应 |
 | GET | `/api/v1/pets` | 桌面 Token | 宠物元数据列表 |
 | GET | `/api/v1/pets/{id}/spritesheet.webp` | 桌面 Token | 宠物精灵图 |

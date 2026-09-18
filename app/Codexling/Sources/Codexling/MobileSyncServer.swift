@@ -606,6 +606,11 @@ public final class MobileSyncServer: @unchecked Sendable {
             }
 
             switch (method, requestPath) {
+            case ("GET", "/api/v1/agents/discover"):
+                Task {
+                    let discovered = await self.discoverLANAgents(subnetOverride: queryParams["subnet"])
+                    self.sendJSONResponse(status: 200, object: ["devices": discovered], on: connection)
+                }
             case ("GET", "/api/v1/agents/events"):
                 guard let target = queryParams["target"], let targetURL = URL(string: target),
                       ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
@@ -1356,6 +1361,119 @@ public final class MobileSyncServer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         sseClients.removeValue(forKey: id)
+    }
+
+    private struct DiscoveredDevice: Sendable {
+        let ip: String
+        let port: Int
+        let baseUrl: String
+        let name: String
+        let isPlugin: Bool
+        let isLocal: Bool
+        let version: String?
+
+        func toDictionary() -> [String: Any] {
+            var dict: [String: Any] = [
+                "ip": ip,
+                "port": port,
+                "baseUrl": baseUrl,
+                "name": name,
+                "isPlugin": isPlugin,
+                "isLocal": isLocal
+            ]
+            if let version { dict["version"] = version }
+            return dict
+        }
+    }
+
+    private func discoverLANAgents(subnetOverride: String?) async -> [[String: Any]] {
+        let localIP = GatewayNetworkInfo.currentLANIPv4() ?? "127.0.0.1"
+        let prefix: String
+        if let custom = subnetOverride?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+            let parts = custom.split(separator: ".")
+            if parts.count >= 3 {
+                prefix = "\(parts[0]).\(parts[1]).\(parts[2])"
+            } else {
+                prefix = custom
+            }
+        } else {
+            let parts = localIP.split(separator: ".")
+            if parts.count == 4 {
+                prefix = "\(parts[0]).\(parts[1]).\(parts[2])"
+            } else {
+                prefix = "192.168.1"
+            }
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 0.6
+        config.timeoutIntervalForResource = 0.8
+        let probeSession = URLSession(configuration: config)
+        defer { probeSession.invalidateAndCancel() }
+
+        var discovered: [DiscoveredDevice] = []
+
+        await withTaskGroup(of: DiscoveredDevice?.self) { group in
+            for i in 1...254 {
+                let host = "\(prefix).\(i)"
+                group.addTask {
+                    guard let url = URL(string: "http://\(host):58350/health") else { return nil }
+                    var req = URLRequest(url: url)
+                    req.timeoutInterval = 0.5
+                    req.setValue("Codexling Mobile Discovery", forHTTPHeaderField: "X-Codexling-App-Name")
+                    do {
+                        let (data, response) = try await probeSession.data(for: req)
+                        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              obj["status"] as? String == "ok" else { return nil }
+
+                        var name = "Codexling (\(host))"
+                        var isPlugin = true
+                        var version: String? = nil
+
+                        if let manifestURL = URL(string: "http://\(host):58350/plugin-manifest.json") {
+                            var mReq = URLRequest(url: manifestURL)
+                            mReq.timeoutInterval = 0.5
+                            if let (mData, mResp) = try? await probeSession.data(for: mReq),
+                               (mResp as? HTTPURLResponse)?.statusCode == 200,
+                               let mObj = try? JSONSerialization.jsonObject(with: mData) as? [String: Any] {
+                                version = mObj["version"] as? String
+                                isPlugin = (mObj["name"] as? String) == "codexling-mobile-web"
+                                if let desc = mObj["description"] as? String, !desc.isEmpty {
+                                    name = desc
+                                }
+                            }
+                        }
+
+                        return DiscoveredDevice(
+                            ip: host,
+                            port: 58350,
+                            baseUrl: "http://\(host):58350",
+                            name: name,
+                            isPlugin: isPlugin,
+                            isLocal: (host == localIP),
+                            version: version
+                        )
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+
+            for await result in group {
+                if let result {
+                    discovered.append(result)
+                }
+            }
+        }
+
+        discovered.sort {
+            let last1 = $0.ip.split(separator: ".").last.flatMap { Int($0) } ?? 0
+            let last2 = $1.ip.split(separator: ".").last.flatMap { Int($0) } ?? 0
+            return last1 < last2
+        }
+
+        return discovered.map { $0.toDictionary() }
     }
 
     private func statusMessage(for status: Int) -> String {

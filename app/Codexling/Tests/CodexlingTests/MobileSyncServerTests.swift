@@ -347,6 +347,24 @@ struct MobileSyncServerTests {
         #expect(String(decoding: missingData, as: UTF8.self).contains("missing_provider_authorization"))
     }
 
+    @Test("Agent discover route requires authentication and returns devices")
+    func testAgentDiscovery() async throws {
+        let server = MobileSyncServer(port: 59420, token: "discover-secret", dataProvider: MockDataProvider())
+        defer { server.stop() }
+        try server.start()
+        try await waitFor(timeout: 5) { server.status == .ready }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:59420/api/v1/agents/discover?subnet=127.0.0")!)
+        let (_, unauthed) = try await session.data(for: request)
+        #expect((unauthed as? HTTPURLResponse)?.statusCode == 401)
+        request.setValue("Bearer discover-secret", forHTTPHeaderField: "Authorization")
+        let (data, authed) = try await session.data(for: request)
+        #expect((authed as? HTTPURLResponse)?.statusCode == 200)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["devices"] != nil)
+    }
+
     @Test("Public PWA manifest never includes a pairing token")
     func testPublicManifestDoesNotExposePairingToken() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
