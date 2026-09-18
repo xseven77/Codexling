@@ -601,14 +601,30 @@ public final class MobileSyncServer: @unchecked Sendable {
                     .appendingPathComponent("spritesheet.webp")
                 if FileManager.default.fileExists(atPath: customURL.path),
                    let data = try? Data(contentsOf: customURL) {
-                    sendRawResponse(status: 200, headers: ["Content-Type": "image/webp"], data: data, on: connection)
+                    sendRawResponse(
+                        status: 200,
+                        headers: [
+                            "Content-Type": "image/webp",
+                            "Cache-Control": "public, max-age=604800, immutable"
+                        ],
+                        data: data,
+                        on: connection
+                    )
                     return
                 }
                 // Fallback to plugin pets
                 let pluginURL = pluginDirectoryURL.appendingPathComponent("pets").appendingPathComponent(cleanSub).appendingPathComponent("spritesheet.webp")
                 if FileManager.default.fileExists(atPath: pluginURL.path),
                    let data = try? Data(contentsOf: pluginURL) {
-                    sendRawResponse(status: 200, headers: ["Content-Type": "image/webp"], data: data, on: connection)
+                    sendRawResponse(
+                        status: 200,
+                        headers: [
+                            "Content-Type": "image/webp",
+                            "Cache-Control": "public, max-age=604800, immutable"
+                        ],
+                        data: data,
+                        on: connection
+                    )
                     return
                 }
             }
@@ -649,7 +665,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                                 status: 200,
                                 headers: [
                                     "Content-Type": contentType,
-                                    "Cache-Control": "public, max-age=3600"
+                                    "Cache-Control": "public, max-age=604800, immutable"
                                 ],
                                 data: data,
                                 on: connection
