@@ -497,6 +497,23 @@ public final class MobileSyncServer: @unchecked Sendable {
         }
     }
 
+    /// Optional, untrusted attribution for future request statistics. Never an auth identity.
+    public static func normalizedAppName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = String(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : String(cleaned.prefix(128))
+    }
+
+    public struct APIRequestMetadata: Sendable {
+        public let method: String
+        public let path: String
+        public let appName: String?
+    }
+
+    /// Called after authentication. Metadata excludes query strings, tokens and bodies.
+    public var onAPIRequest: (@Sendable (APIRequestMetadata) -> Void)?
+
     private func processRequest(_ requestText: String, on connection: NWConnection) {
         let lines = requestText.components(separatedBy: "\r\n")
         guard let requestLine = lines.first, !requestLine.isEmpty else {
@@ -550,16 +567,25 @@ public final class MobileSyncServer: @unchecked Sendable {
             return
         }
 
-        // 2. Mobile API Endpoints (Bearer Token or Query Token)
-        if requestPath.hasPrefix("/mobile/") {
+        // Removed API namespace: no alias, redirect or static-file fallback.
+        if requestPath == "/mobile" || requestPath.hasPrefix("/mobile/") {
+            sendJSONResponse(status: 410, object: ["error": "api_removed", "message": "旧版 Web Mobile 已失效，请更新客户端并使用 /api/v1/"] , on: connection)
+            return
+        }
+
+        // 2. Public desktop API endpoints (Bearer Token or Query Token)
+        if requestPath.hasPrefix("/api/v1/") {
             guard validateAuth(headers: headers, queryParams: queryParams) else {
                 sendJSONResponse(status: 401, object: ["error": "unauthorized"], on: connection)
                 return
             }
 
             // Dynamic serving of pet spritesheets
-            if requestPath.hasPrefix("/mobile/pets/") && requestPath.hasSuffix("/spritesheet.webp") {
-                let petSub = String(requestPath.dropFirst("/mobile/pets/".count).dropLast("/spritesheet.webp".count))
+            let appName = Self.normalizedAppName(headers["x-codexling-app-name"] ?? queryParams["app_name"])
+            onAPIRequest?(APIRequestMetadata(method: method, path: requestPath, appName: appName))
+
+            if requestPath.hasPrefix("/api/v1/pets/") && requestPath.hasSuffix("/spritesheet.webp") {
+                let petSub = String(requestPath.dropFirst("/api/v1/pets/".count).dropLast("/spritesheet.webp".count))
                 // Look in Application Support/Codexling/Pets/<petSub>/spritesheet.webp
                 let customURL = FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent("Library/Application Support/Codexling/Pets")
@@ -580,18 +606,18 @@ public final class MobileSyncServer: @unchecked Sendable {
             }
 
             switch (method, requestPath) {
-            case ("GET", "/mobile/events/proxy"):
+            case ("GET", "/api/v1/events/proxy"):
                 guard let target = queryParams["target"], let targetURL = URL(string: target),
                       ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
                       targetURL.host != nil, targetURL.user == nil, targetURL.password == nil,
                       targetURL.query == nil, targetURL.fragment == nil,
-                      targetURL.path.hasSuffix("/mobile/events"),
+                      targetURL.path.hasSuffix("/api/v1/events"),
                       let targetToken = queryParams["target_token"], !targetToken.isEmpty else {
                     sendJSONResponse(status: 400, object: ["error": "invalid_agent_stream"], on: connection)
                     return
                 }
-                startSSERelay(target: targetURL, token: targetToken, on: connection)
-            case ("GET", "/mobile/proxy"), ("POST", "/mobile/proxy"):
+                startSSERelay(target: targetURL, token: targetToken, appName: appName, on: connection)
+            case ("GET", "/api/v1/proxy"), ("POST", "/api/v1/proxy"):
                 guard let targetStr = queryParams["target"], let targetURL = URL(string: targetStr) else {
                     sendResponse(status: 400, headers: [:], body: "Missing target parameter", on: connection)
                     return
@@ -612,6 +638,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     }
                     req.setValue("application/json", forHTTPHeaderField: "Accept")
+                    if let appName { req.setValue(appName, forHTTPHeaderField: "X-Codexling-App-Name") }
 
                     // Domain-specific headers for OpenAI and Google Cloud Code
                     let host = targetURL.host?.lowercased() ?? ""
@@ -643,7 +670,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                         self.sendResponse(status: 502, headers: [:], body: error.localizedDescription, on: connection)
                     }
                 }
-            case ("GET", "/mobile/snapshot"):
+            case ("GET", "/api/v1/snapshot"):
                 Task {
                     let snapshot = await self.dataProvider.makeSnapshot()
                     let encoder = JSONEncoder()
@@ -656,7 +683,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                     }
                 }
 
-            case ("GET", "/mobile/pets"):
+            case ("GET", "/api/v1/pets"):
                 let pets = self.dataProvider.availablePets()
                 let encoder = JSONEncoder()
                 if let data = try? encoder.encode(pets),
@@ -666,7 +693,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                     self.sendResponse(status: 500, headers: [:], body: "Internal Server Error", on: connection)
                 }
 
-            case ("GET", "/mobile/credentials"):
+            case ("GET", "/api/v1/credentials"):
                 Task {
                     let credentials = await self.dataProvider.exportCredentials()
                     let encoder = JSONEncoder()
@@ -679,7 +706,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                     }
                 }
 
-            case ("GET", "/mobile/events"):
+            case ("GET", "/api/v1/events"):
                 startSSEStream(on: connection)
 
             default:
@@ -698,6 +725,15 @@ public final class MobileSyncServer: @unchecked Sendable {
     }
 
     private func servePluginStaticContent(path: String, on connection: NWConnection) {
+        let manifestURL = pluginDirectoryURL.appendingPathComponent("plugin-manifest.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           let manifest = try? JSONDecoder().decode(WebPluginManifest.self, from: data),
+           manifest.isRetiredMobileVersion {
+            sendResponse(status: 410, headers: ["Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"],
+                body: "<!doctype html><meta charset=utf-8><title>版本已失效</title><h1>旧版 Web Mobile 已失效</h1><p>请更新至 0.0.9 或更新版本，并更新桌面端。旧 API 地址已停用。</p>", on: connection)
+            return
+        }
+
         let relativePath = (path == "/" || path.isEmpty) ? "index.html" : String(path.dropFirst())
         let fileURL = pluginDirectoryURL.appendingPathComponent(relativePath)
 
@@ -1023,7 +1059,7 @@ public final class MobileSyncServer: @unchecked Sendable {
 
                 <div class="footer-meta">
                   <span>TOKEN: \(hasToken ? "已就绪 (TOKEN OK)" : "未携带")</span>
-                  <span>API: /mobile/snapshot</span>
+                  <span>API: /api/v1/snapshot</span>
                 </div>
               </div>
 
@@ -1169,7 +1205,7 @@ public final class MobileSyncServer: @unchecked Sendable {
         }
     }
 
-    private func startSSERelay(target: URL, token: String, on connection: NWConnection) {
+    private func startSSERelay(target: URL, token: String, appName: String?, on connection: NWConnection) {
         let relayID = UUID()
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -1190,6 +1226,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                 request.timeoutInterval = 3600
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                if let appName { request.setValue(appName, forHTTPHeaderField: "X-Codexling-App-Name") }
                 let (bytes, response) = try await URLSession.codexlingExternal.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 guard http.statusCode == 200 else {
@@ -1301,6 +1338,7 @@ public final class MobileSyncServer: @unchecked Sendable {
         case 400: "Bad Request"
         case 401: "Unauthorized"
         case 404: "Not Found"
+        case 410: "Gone"
         case 500: "Internal Server Error"
         default: "Status \(status)"
         }

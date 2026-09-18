@@ -4,6 +4,22 @@ import Testing
 
 @Suite("MobileSyncServerTests")
 struct MobileSyncServerTests {
+    @Test("Old Web Mobile versions are retired")
+    func testRetiredMobileVersions() {
+        #expect(WebPluginManifest(version: "0.0.8").isRetiredMobileVersion)
+        #expect(!WebPluginManifest(version: "0.0.9").isRetiredMobileVersion)
+        #expect(!WebPluginManifest(version: "0.0.10").isRetiredMobileVersion)
+        #expect(!WebPluginManifest(name: "custom-app", version: "0.0.1").isRetiredMobileVersion)
+    }
+
+    @Test("Optional application attribution")
+    func testAPIAttribution() {
+        #expect(MobileSyncServer.normalizedAppName(nil) == nil)
+        #expect(MobileSyncServer.normalizedAppName("  ") == nil)
+        #expect(MobileSyncServer.normalizedAppName(" App\r\n ") == "App")
+        #expect(MobileSyncServer.normalizedAppName(String(repeating: "a", count: 200))?.count == 128)
+    }
+
     @Test("Agent SSE relay forwards events without waiting for stream completion")
     func testAgentSSERelay() async throws {
         let upstream = MobileSyncServer(port: 59391, token: "upstream-test-token", dataProvider: MockDataProvider())
@@ -15,11 +31,11 @@ struct MobileSyncServerTests {
         try await waitFor(timeout: 5) { upstream.status == .ready && relay.status == .ready }
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        var url = URLComponents(string: "http://127.0.0.1:59392/mobile/events/proxy")!
+        var url = URLComponents(string: "http://127.0.0.1:59392/api/v1/events/proxy")!
         url.queryItems = [
             URLQueryItem(name: "token", value: "relay-test-token"),
             URLQueryItem(name: "target_token", value: "upstream-test-token"),
-            URLQueryItem(name: "target", value: "http://127.0.0.1:59391/mobile/events")
+            URLQueryItem(name: "target", value: "http://127.0.0.1:59391/api/v1/events")
         ]
         var request = URLRequest(url: url.url!)
         request.timeoutInterval = 5
@@ -323,11 +339,31 @@ struct MobileSyncServerTests {
         #expect((manifest["icons"] as? [[String: String]])?.count == 1)
         #expect(!String(decoding: data, as: UTF8.self).contains(secret))
         let (_, unauthorized) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)/mobile/snapshot")!)
-        #expect((unauthorized as? HTTPURLResponse)?.statusCode == 401)
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/mobile/snapshot")!)
+        #expect((unauthorized as? HTTPURLResponse)?.statusCode == 410)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/v1/snapshot")!)
         request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         let (_, authorized) = try await session.data(for: request)
         #expect((authorized as? HTTPURLResponse)?.statusCode == 200)
+        request.url = URL(string: "http://127.0.0.1:\(port)/api/v1/snapshot?app_name=QueryApp")!
+        request.setValue("HeaderApp", forHTTPHeaderField: "X-Codexling-App-Name")
+        server.onAPIRequest = { metadata in
+            #expect(metadata.path == "/api/v1/snapshot")
+            #expect(metadata.appName == "HeaderApp")
+            #expect(metadata.method == "GET")
+        }
+        let (newData, newResponse) = try await session.data(for: request)
+        #expect((newResponse as? HTTPURLResponse)?.statusCode == 200)
+        #expect(!newData.isEmpty)
+        request.url = URL(string: "http://127.0.0.1:\(port)/mobile/events")!
+        let (retiredData, retiredResponse) = try await session.data(for: request)
+        #expect((retiredResponse as? HTTPURLResponse)?.statusCode == 410)
+        #expect(String(decoding: retiredData, as: UTF8.self).contains("api_removed"))
+        try JSONEncoder().encode(WebPluginManifest(version: "0.0.8"))
+            .write(to: directory.appendingPathComponent("plugin-manifest.json"))
+        let (_, retiredPage) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        #expect((retiredPage as? HTTPURLResponse)?.statusCode == 410)
+
+
     }
 
     @Test("MobileCredentialsExportPayload serialization")

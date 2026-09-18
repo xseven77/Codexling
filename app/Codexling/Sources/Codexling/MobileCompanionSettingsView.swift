@@ -209,7 +209,7 @@ struct MobileCompanionSettingsView: View {
             switch status {
             case .ready:
                 isRestartingService = false
-                onShowToast("移动端同步服务已重启 · 端口 \(syncManager.port)", "checkmark.circle")
+                onShowToast("开放 API 服务已重启 · 端口 \(syncManager.port)", "checkmark.circle")
             case .failed where !syncManager.isAwaitingRetry:
                 // Retries exhausted — this is a terminal failure.
                 isRestartingService = false
@@ -235,8 +235,8 @@ struct MobileCompanionSettingsView: View {
 
     private var serverAndPairingSection: some View {
         SettingsSection(
-            title: "局域网同步服务与移动端配对",
-            subtitle: "通过局域网广播 Agent 状态、额度与伴生宠物，手机扫码免安装即开"
+            title: "开放 API 服务与移动端配对",
+            subtitle: "向自建应用提供状态、额度与宠物 API，支持手机扫码配对"
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 serviceStatusCard
@@ -259,7 +259,7 @@ struct MobileCompanionSettingsView: View {
                     StatusGlyph(systemName: serviceStatusSymbol, tint: serviceStatusTint)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("局域网同步服务")
+                        Text("开放 API 服务")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.codexInk)
 
@@ -271,7 +271,7 @@ struct MobileCompanionSettingsView: View {
                     Spacer(minLength: 12)
 
                     // Label stays for VoiceOver even though the switch renders bare.
-                    Toggle("启用移动端同步服务", isOn: $syncManager.isEnabled)
+                    Toggle("启用开放 API 服务", isOn: $syncManager.isEnabled)
                         .toggleStyle(.switch)
                         .labelsHidden()
                 }

@@ -11,6 +11,10 @@ public struct WebPluginManifest: Codable, Equatable, Sendable {
     public let author: String?
     public let entry: String?
 
+    public var isRetiredMobileVersion: Bool {
+        name == "codexling-mobile-web" && version.compare("0.0.9", options: .numeric) == .orderedAscending
+    }
+
     public init(
         name: String = "codexling-mobile-web",
         version: String = "1.0.0",
@@ -206,6 +210,13 @@ public final class WebPluginInstaller: @unchecked Sendable {
         let indexFile = sourceDir.appendingPathComponent("index.html")
         guard fileManager.fileExists(atPath: indexFile.path) else {
             throw NSError(domain: "WebPluginInstaller", code: 2, userInfo: [NSLocalizedDescriptionKey: "插件包中缺少 index.html，不是合法的 Web 插件"])
+        }
+
+        let manifestURL = sourceDir.appendingPathComponent("plugin-manifest.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           let manifest = try? JSONDecoder().decode(WebPluginManifest.self, from: data),
+           manifest.isRetiredMobileVersion {
+            throw NSError(domain: "WebPluginInstaller", code: 6, userInfo: [NSLocalizedDescriptionKey: "旧版 Web Mobile 已失效，请安装 0.0.9 或更新版本"])
         }
 
         // 3. 准备目标插件目录
