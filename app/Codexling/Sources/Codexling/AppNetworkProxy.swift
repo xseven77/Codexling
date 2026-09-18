@@ -1,6 +1,32 @@
 import Foundation
 import Network
 
+enum ProviderProxyPolicy {
+    static func allows(_ url: URL, method: String) -> Bool {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+              url.fragment == nil, url.port == nil || url.port == 443 else { return false }
+        switch (url.host?.lowercased(), method, url.path) {
+        case ("chatgpt.com", "GET", "/backend-api/wham/usage"),
+             ("chatgpt.com", "GET", "/backend-api/subscriptions"),
+             ("chatgpt.com", "GET", "/backend-api/wham/rate-limit-reset-credits"),
+             ("daily-cloudcode-pa.googleapis.com", "POST", "/v1internal:loadCodeAssist"),
+             ("daily-cloudcode-pa.googleapis.com", "POST", "/v1internal:retrieveUserQuotaSummary"),
+             ("api.deepseek.com", "GET", "/user/balance"):
+            return true
+        default: return false
+        }
+    }
+}
+
+final class ProviderProxyRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        // Never forward supplier credentials to a redirect destination.
+        completionHandler(nil)
+    }
+}
+
 enum AppNetworkProxyProtocol: String, CaseIterable, Identifiable {
     case socks5h
     case http
@@ -135,6 +161,28 @@ private final class CodexlingExternalSessionHolder: @unchecked Sendable {
 
 extension URLSession {
     private static let codexlingExternalHolder = CodexlingExternalSessionHolder()
+
+    private static let codexlingLocal: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.proxyConfigurations = []
+        return URLSession(configuration: configuration)
+    }()
+
+    static func codexlingRelay(for target: URL) -> URLSession {
+        isLocalRelayTarget(target) ? codexlingLocal : codexlingExternal
+    }
+
+    static func isLocalRelayTarget(_ target: URL) -> Bool {
+        guard let host = target.host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host == "[::1]" || host.hasSuffix(".local") || (!host.contains(".") && !host.contains(":")) { return true }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        return octets[0] == 10 || octets[0] == 127
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 169 && octets[1] == 254)
+    }
 
     static var codexlingExternal: URLSession { codexlingExternalHolder.current() }
     static func reloadCodexlingExternalProxy() { codexlingExternalHolder.reload() }

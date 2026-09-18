@@ -65,7 +65,8 @@ JSON 的可选字段可能直接缺省。客户端应接受缺省字段、未知
 | GET | `/health` | 无 | HTTP 服务存活检查 |
 | GET | `/api/v1/snapshot` | 桌面 Token | 当前状态完整快照 |
 | GET | `/api/v1/events` | 桌面 Token | 当前服务的 SSE 状态订阅 |
-| GET | `/api/v1/events/proxy` | 桌面 Token + 目标 Token | 转发其他桌面服务的 Agent SSE |
+| GET | `/api/v1/agents/events` | 桌面 Token + 目标 Token | 转发其他桌面服务的 Agent SSE |
+| GET | `/api/v1/agents/snapshot` | 桌面 Token + 目标 Token | Agent 专用快照中转，仅用于手动检查和 SSE 降级 |
 | GET、POST | `/api/v1/proxy` | 桌面 Token | 桌面侧转发上游请求，缓冲响应 |
 | GET | `/api/v1/pets` | 桌面 Token | 宠物元数据列表 |
 | GET | `/api/v1/pets/{id}/spritesheet.webp` | 桌面 Token | 宠物精灵图 |
@@ -246,11 +247,13 @@ events.onerror = () => {
 // 组件卸载、切换或删除服务时：events.close();
 ```
 
-当前没有事件 ID、Last-Event-ID 重放或离线历史补偿。重连会重新获得当前快照，无法恢复断线期间所有中间状态。SSE 只缩短传输层延迟，桌面发现任务本身的延迟仍然存在。旧服务不支持 SSE 或持续不可用时，可退回低频 `/api/v1/snapshot` 轮询；流正常时避免重复轮询同一个 Agent 服务。
+当前没有事件 ID、Last-Event-ID 重放或离线历史补偿。重连会重新获得当前快照，无法恢复断线期间所有中间状态。SSE 只缩短传输层延迟，桌面发现任务本身的延迟仍然存在。Mobile 首先等待 SSE 首条快照；5 秒未收到有效快照、流断开或 45 秒无消息时，才补查快照。流正常时不主动重复拉取，点击立即检查可主动补查。
+
+需要中转快照时使用 `GET /api/v1/agents/snapshot?target=<目标完整快照 URL>`，当前桌面 Token 放在 `Authorization`，目标 Token 放在 `X-Target-Authorization`，两者均使用 `Bearer` 格式。target 仅允许 HTTP/HTTPS、不含用户名密码、query 或 fragment，路径必须以 `/api/v1/snapshot` 结尾。Agent 快照不使用供应商通用 `/api/v1/proxy`。局域网快照及 SSE 中转直接连接目标，不经过供应商外网代理；当前桌面仍须能访问目标网络。
 
 ## 7. 其他 Agent 服务的 SSE 转发
 
-`GET /api/v1/events/proxy` 由当前桌面服务连接另一台桌面的事件流，适合 Agent 链接池和手机无法直接访问目标的情况。
+`GET /api/v1/agents/events` 由当前桌面服务连接另一台桌面的事件流，适合 Agent 链接池和手机无法直接访问目标的情况。
 
 | 参数 | 必填 | 含义 |
 | --- | --- | --- |
@@ -261,7 +264,7 @@ events.onerror = () => {
 target 只接受 HTTP/HTTPS URL，需要 host，不允许内嵌用户名密码、query 或 fragment；path 必须以 `/api/v1/events`  结尾。当前服务能访问目标网络是前提。
 
 ```js
-const relayURL = new URL('/api/v1/events/proxy', 'https://desktop.example.com');
+const relayURL = new URL('/api/v1/agents/events', 'https://desktop.example.com');
 relayURL.searchParams.set('token', 'YOUR_CURRENT_DESKTOP_TOKEN');
 relayURL.searchParams.set('target', 'http://192.168.10.11:58350/api/v1/events');
 relayURL.searchParams.set('target_token', 'YOUR_TARGET_DESKTOP_TOKEN');
@@ -278,7 +281,7 @@ relay.addEventListener('snapshot', event => {
 
 Agent 池的名字、选择和启用状态属于调用应用的配置，服务器没有池管理 API。Agent 池切换只切换任务来源；供应商代理及账号信息继续使用用户配置的当前桌面服务。
 
-## 8. 供应商及 HTTP 代理
+## 8. 供应商信息代理
 
 `GET /api/v1/proxy?target=...` 或 `POST /api/v1/proxy?target=...`。
 
@@ -293,7 +296,7 @@ Agent 池的名字、选择和启用状态属于调用应用的配置，服务�
 | POST 请求体 | 当前实现按 UTF-8 文本转发 |
 | chatgpt-account-id 请求头或 account_id 查询参数 | ChatGPT 上游账号标识，按需传入 |
 
-显式提供 `x-target-authorization`，避免缺省逻辑把桌面 Authorization 当成上游认证。不要将桌面 Token 当作供应商 Token。
+必须显式提供 `x-target-authorization`；缺失返回 `400 / missing_provider_authorization`。桌面 Authorization 不作为上游认证。
 
 ```js
 const proxyURL = new URL('/api/v1/proxy', 'https://desktop.example.com');
@@ -315,9 +318,9 @@ const upstreamData = await response.json();
 - 上游请求超时 30 秒，完整读取响应后返回；不支持把它当作 SSE 或模型生成流接口。
 - 上游 HTTP 状态透传；响应按 UTF-8 文本处理，无法解码时使用 `{}`，Content-Type 被设为 application/json。不能承诺二进制代理。
 - 请求头不是全部透传；仅处理上述头和桌面为 ChatGPT / Google 等上游补充的特定头。
-- 缺少或无法解析 target：400 文本 `Missing target parameter`；网络异常：502 文本错误。
-- 通用代理当前没有与 SSE 转发相同的目标地址约束或目标白名单。当前桌面 Token 具有较高权限，文档站不能自动带 Token 执行任意目标请求。
-- POST 可以引发上游操作，不能将“允许 POST”理解成“仅允许查询”。
+- 缺少或无法解析 target：400 文本 `Missing target parameter`；网络异常：502 JSON，包含 error、code 和 message。
+- 只接受 HTTPS、默认或 443 端口、无用户名密码和 fragment 的供应商查询 URL；精确限制域名、路径与方法。不支持的目标返回 `400 / unsupported_provider_request`。禁止跟随上游重定向。Agent、桌面 API 和任意其他网址均不得使用此入口。
+- GET 允许 chatgpt.com 的 `/backend-api/wham/usage`、`/backend-api/subscriptions`、`/backend-api/wham/rate-limit-reset-credits`，以及 api.deepseek.com 的 `/user/balance`。POST 只允许 daily-cloudcode-pa.googleapis.com 的 `/v1internal:loadCodeAssist`、`/v1internal:retrieveUserQuotaSummary`。新增供应商接口须更新服务端允许列表。
 
 目前没有“不向调用应用交付供应商凭证、按桌面连接 ID 自动注入认证”的统一代理 API。如果后续希望应用只配置当前服务 Token 就能刷新任意供应商，应单独设计服务器端连接代理接口；不要把此能力写成现有功能。
 

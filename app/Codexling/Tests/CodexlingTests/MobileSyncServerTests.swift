@@ -31,7 +31,7 @@ struct MobileSyncServerTests {
         try await waitFor(timeout: 5) { upstream.status == .ready && relay.status == .ready }
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        var url = URLComponents(string: "http://127.0.0.1:59392/api/v1/events/proxy")!
+        var url = URLComponents(string: "http://127.0.0.1:59392/api/v1/agents/events")!
         url.queryItems = [
             URLQueryItem(name: "token", value: "relay-test-token"),
             URLQueryItem(name: "target_token", value: "upstream-test-token"),
@@ -308,6 +308,43 @@ struct MobileSyncServerTests {
     func testPluginDirectoryDefault() {
         let defaultURL = MobileSyncServer.defaultPluginDirectoryURL
         #expect(defaultURL.path.contains("Plugins/mobile-web"))
+    }
+
+    @Test("Dedicated Agent snapshot relay validates target and forwards target authentication")
+    func testAgentSnapshotRelay() async throws {
+        let server = MobileSyncServer(port: 59419, token: "relay-secret", dataProvider: MockDataProvider())
+        defer { server.stop() }
+        try server.start()
+        try await waitFor(timeout: 5) { server.status == .ready }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        var url = URLComponents(string: "http://127.0.0.1:59419/api/v1/agents/snapshot")!
+        url.queryItems = [URLQueryItem(name: "target", value: "http://127.0.0.1:59419/api/v1/snapshot")]
+        var request = URLRequest(url: url.url!)
+        request.setValue("Bearer relay-secret", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer wrong-target-token", forHTTPHeaderField: "X-Target-Authorization")
+        let (_, rejected) = try await session.data(for: request)
+        #expect((rejected as? HTTPURLResponse)?.statusCode == 401)
+        request.setValue("Bearer relay-secret", forHTTPHeaderField: "X-Target-Authorization")
+        let (data, accepted) = try await session.data(for: request)
+        #expect((accepted as? HTTPURLResponse)?.statusCode == 200)
+        #expect((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["activity"] != nil)
+        url.queryItems = [URLQueryItem(name: "target", value: "http://127.0.0.1:59419/api/v1/credentials")]
+        request.url = url.url!
+        let (_, invalid) = try await session.data(for: request)
+        #expect((invalid as? HTTPURLResponse)?.statusCode == 400)
+        url.path = "/api/v1/proxy"
+        url.queryItems = [URLQueryItem(name: "target", value: "http://127.0.0.1:59419/api/v1/snapshot")]
+        request.url = url.url!
+        let (blockedData, blocked) = try await session.data(for: request)
+        #expect((blocked as? HTTPURLResponse)?.statusCode == 400)
+        #expect(String(decoding: blockedData, as: UTF8.self).contains("unsupported_provider_request"))
+        url.queryItems = [URLQueryItem(name: "target", value: "https://api.deepseek.com/user/balance")]
+        request.url = url.url!
+        request.setValue(nil, forHTTPHeaderField: "X-Target-Authorization")
+        let (missingData, missing) = try await session.data(for: request)
+        #expect((missing as? HTTPURLResponse)?.statusCode == 400)
+        #expect(String(decoding: missingData, as: UTF8.self).contains("missing_provider_authorization"))
     }
 
     @Test("Public PWA manifest never includes a pairing token")

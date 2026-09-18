@@ -606,7 +606,7 @@ public final class MobileSyncServer: @unchecked Sendable {
             }
 
             switch (method, requestPath) {
-            case ("GET", "/api/v1/events/proxy"):
+            case ("GET", "/api/v1/agents/events"):
                 guard let target = queryParams["target"], let targetURL = URL(string: target),
                       ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
                       targetURL.host != nil, targetURL.user == nil, targetURL.password == nil,
@@ -617,10 +617,29 @@ public final class MobileSyncServer: @unchecked Sendable {
                     return
                 }
                 startSSERelay(target: targetURL, token: targetToken, appName: appName, on: connection)
-            case ("GET", "/api/v1/proxy"), ("POST", "/api/v1/proxy"):
+            case ("GET", "/api/v1/agents/snapshot"), ("GET", "/api/v1/proxy"), ("POST", "/api/v1/proxy"):
                 guard let targetStr = queryParams["target"], let targetURL = URL(string: targetStr) else {
                     sendResponse(status: 400, headers: [:], body: "Missing target parameter", on: connection)
                     return
+                }
+                if requestPath == "/api/v1/agents/snapshot" {
+                    guard ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
+                          targetURL.host != nil, targetURL.user == nil, targetURL.password == nil,
+                          targetURL.query == nil, targetURL.fragment == nil,
+                          targetURL.path.hasSuffix("/api/v1/snapshot"),
+                          headers["x-target-authorization"]?.hasPrefix("Bearer ") == true else {
+                        sendJSONResponse(status: 400, object: ["error": "invalid_agent_snapshot"], on: connection)
+                        return
+                    }
+                } else {
+                    guard ProviderProxyPolicy.allows(targetURL, method: method) else {
+                        sendJSONResponse(status: 400, object: ["error": "unsupported_provider_request"], on: connection)
+                        return
+                    }
+                    guard let authorization = headers["x-target-authorization"], !authorization.isEmpty else {
+                        sendJSONResponse(status: 400, object: ["error": "missing_provider_authorization"], on: connection)
+                        return
+                    }
                 }
                 Task {
                     var req = URLRequest(url: targetURL)
@@ -629,7 +648,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                     if !requestBody.isEmpty, let bodyData = requestBody.data(using: .utf8) {
                         req.httpBody = bodyData
                     }
-                    if let auth = headers["x-target-authorization"] ?? headers["authorization"] {
+                    if let auth = headers["x-target-authorization"] {
                         req.setValue(auth, forHTTPHeaderField: "Authorization")
                     }
                     if let ct = headers["content-type"] {
@@ -661,13 +680,20 @@ public final class MobileSyncServer: @unchecked Sendable {
                     }
 
                     do {
-                        let (data, response) = try await URLSession.codexlingExternal.data(for: req)
+                        let isAgent = requestPath == "/api/v1/agents/snapshot"
+                        let providerSession = isAgent ? nil : URLSession(
+                            configuration: URLSession.codexlingExternal.configuration,
+                            delegate: ProviderProxyRedirectDelegate(), delegateQueue: nil)
+                        defer { providerSession?.finishTasksAndInvalidate() }
+                        let session = providerSession ?? URLSession.codexlingRelay(for: targetURL)
+                        let (data, response) = try await session.data(for: req)
                         let httpResponse = response as? HTTPURLResponse
                         let statusCode = httpResponse?.statusCode ?? 200
                         let responseText = String(data: data, encoding: .utf8) ?? "{}"
                         self.sendResponse(status: statusCode, headers: ["Content-Type": "application/json"], body: responseText, on: connection)
                     } catch {
-                        self.sendResponse(status: 502, headers: [:], body: error.localizedDescription, on: connection)
+                        let code = (error as NSError).code
+                        self.sendJSONResponse(status: 502, object: ["error": "upstream_unavailable", "code": code, "message": error.localizedDescription], on: connection)
                     }
                 }
             case ("GET", "/api/v1/snapshot"):
@@ -1227,7 +1253,7 @@ public final class MobileSyncServer: @unchecked Sendable {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                 if let appName { request.setValue(appName, forHTTPHeaderField: "X-Codexling-App-Name") }
-                let (bytes, response) = try await URLSession.codexlingExternal.bytes(for: request)
+                let (bytes, response) = try await URLSession.codexlingRelay(for: target).bytes(for: request)
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 guard http.statusCode == 200 else {
                     self.sendJSONResponse(status: http.statusCode, object: ["error": "agent_stream_failed"], on: connection)
