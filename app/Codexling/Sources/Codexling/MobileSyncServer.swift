@@ -555,7 +555,7 @@ public final class MobileSyncServer: @unchecked Sendable {
         if method == "OPTIONS" {
             sendResponse(status: 204, headers: [
                 "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-Codexling-App-Name, X-Target-Authorization, ChatGPT-Account-Id",
                 "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
             ], body: "", on: connection)
             return
@@ -1178,7 +1178,7 @@ public final class MobileSyncServer: @unchecked Sendable {
         var response = "HTTP/1.1 \(status) \(statusMessage(for: status))\r\n"
         var finalHeaders = headers
         finalHeaders["Access-Control-Allow-Origin"] = "*"
-        finalHeaders["Access-Control-Allow-Headers"] = "*"
+        finalHeaders["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, X-Codexling-App-Name, X-Target-Authorization, ChatGPT-Account-Id"
         finalHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         finalHeaders["Content-Length"] = "\(data.count)"
         finalHeaders["Connection"] = "close"

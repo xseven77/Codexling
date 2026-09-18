@@ -42,7 +42,7 @@ Authorization: Bearer YOUR_DESKTOP_TOKEN
 
 Token 来自桌面配对设置，不是供应商 OAuth Token / API Key。当前 Token 没有按应用或接口划分权限：同一个 Token 可以访问快照、代理和凭证导出。只读任务应用不应请求 `/api/v1/credentials`。
 
-认证失败返回 `401` 和 `{"error":"unauthorized"}`。`/health`、静态插件文件、OPTIONS 不需要认证。当前响应允许跨域访问，预检允许 GET、POST、OPTIONS 和请求头；这不代替 Token 认证，也不意味着供应商官方接口允许浏览器跨域。
+认证失败返回 `401` 和 `{"error":"unauthorized"}`。`/health`、静态插件文件、OPTIONS 不需要认证。当前响应允许跨域访问，预检允许 GET、POST、OPTIONS；允许的请求头显式包括 Authorization、Content-Type、Accept、X-Codexling-App-Name、X-Target-Authorization、ChatGPT-Account-Id；这不代替 Token 认证，也不意味着供应商官方接口允许浏览器跨域。
 
 接口错误格式尚未统一，客户端必须先检查 HTTP 状态，再按 Content-Type 或文本处理，不能假设所有错误都是 JSON。未支持的路由或方法通常返回 `404`，不是统一的 `405`。
 

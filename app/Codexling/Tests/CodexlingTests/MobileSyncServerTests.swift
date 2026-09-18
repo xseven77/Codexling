@@ -338,6 +338,17 @@ struct MobileSyncServerTests {
         #expect(manifest["scope"] as? String == "./")
         #expect((manifest["icons"] as? [[String: String]])?.count == 1)
         #expect(!String(decoding: data, as: UTF8.self).contains(secret))
+        var preflight = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/v1/snapshot")!)
+        preflight.httpMethod = "OPTIONS"
+        preflight.setValue("https://mobile.example.com", forHTTPHeaderField: "Origin")
+        preflight.setValue("GET", forHTTPHeaderField: "Access-Control-Request-Method")
+        preflight.setValue("authorization,x-codexling-app-name", forHTTPHeaderField: "Access-Control-Request-Headers")
+        let (_, preflightResponse) = try await session.data(for: preflight)
+        let preflightHTTP = try #require(preflightResponse as? HTTPURLResponse)
+        #expect(preflightHTTP.statusCode == 204)
+        let allowedHeaders = preflightHTTP.value(forHTTPHeaderField: "Access-Control-Allow-Headers")?.lowercased() ?? ""
+        #expect(allowedHeaders.contains("authorization"))
+        #expect(allowedHeaders.contains("x-codexling-app-name"))
         let (_, unauthorized) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)/mobile/snapshot")!)
         #expect((unauthorized as? HTTPURLResponse)?.statusCode == 410)
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/v1/snapshot")!)
